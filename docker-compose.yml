@@ -1,0 +1,8 @@
+services:
+  backend:
+    build: .
+    container_name: autosnab_backend_mvp2
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: sqlite:///./autosnab_mvp.db
