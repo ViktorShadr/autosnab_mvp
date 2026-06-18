@@ -240,3 +240,66 @@ def test_mvp2_send_to_accounting_and_export_csv():
     csv_response = client.post("/api/v1/receiving/export/google-sheets-mvp")
     assert csv_response.status_code == 200
     assert csv_response.json()["items_csv"].endswith("priemka_pozicii.csv")
+
+
+def test_mvp3_invoice_history_and_html_view():
+    receiving_id = _prepare_confirmed_receiving()
+    docs = client.get(f"/api/v1/receiving/{receiving_id}/documents")
+    assert docs.status_code == 200
+    assert len(docs.json()["documents"]) == 1
+    document_id = docs.json()["documents"][0]["id"]
+
+    history = client.get("/api/v1/documents/history")
+    assert history.status_code == 200
+    assert len(history.json()["documents"]) == 1
+
+    page = client.get(f"/api/v1/documents/{document_id}/view")
+    assert page.status_code == 200
+    assert "Накладная" in page.text
+    assert "Добрая столовая" in page.text
+
+
+def test_mvp3_iiko_payload_and_send():
+    receiving_id = _prepare_confirmed_receiving()
+    payload = client.get(f"/api/v1/iiko/receivings/{receiving_id}/payload")
+    assert payload.status_code == 200
+    assert payload.json()["externalNumber"] == "01TCPC4P-000001"
+    assert payload.json()["source"] == "autosnab_mvp3"
+
+    send = client.post(
+        f"/api/v1/iiko/receivings/{receiving_id}/send",
+        json={"target_system": "iiko", "dry_run": True},
+    )
+    assert send.status_code == 200
+    assert send.json()["status"] == "iiko_prepared"
+
+    exports = client.get("/api/v1/iiko/exports")
+    assert exports.status_code == 200
+    assert len(exports.json()["exports"]) == 1
+
+
+def test_mvp3_analytics_and_supplier_control():
+    receiving_id = _start_receiving()
+    response = client.post(
+        f"/api/v1/receiving/{receiving_id}/compare-invoice",
+        json={
+            "invoice_number": "1056",
+            "invoice_date": "2026-06-12",
+            "supplier_legal_name": "ООО Другой поставщик",
+            "items": [
+                {"name": "Молоко кокосовое Aroy-D 400 мл", "quantity": 4, "unit": "шт", "price": 250},
+                {"name": "Соус BBQ", "quantity": 1, "unit": "шт", "price": 120},
+            ],
+        },
+    )
+    assert response.status_code == 200
+
+    analytics = client.get("/api/v1/analytics/discrepancies")
+    assert analytics.status_code == 200
+    assert analytics.json()["totals"]["problem_items"] >= 1
+
+    control = client.get("/api/v1/suppliers/control")
+    assert control.status_code == 200
+    suppliers = control.json()["suppliers"]
+    assert suppliers[0]["supplier"] == "Питер Кельн"
+    assert suppliers[0]["control_status"] in {"watch", "control_required"}
