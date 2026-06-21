@@ -47,7 +47,7 @@ GET  /api/v1/invoice-review/exports/iiko
 
 ### Минимальный набор данных для отправки в iiko
 
-Для MVP-4 backend принимает и проверяет следующие данные:
+Backend принимает и проверяет следующие данные:
 
 - поставщик;
 - юридическое название поставщика, если распознано;
@@ -182,7 +182,7 @@ GET /api/v1/invoice-review/{review_id}/apps-script
 ### Учетная система / iiko MVP
 
 - `GET /api/v1/iiko/receivings/{receiving_id}/payload` — iiko-oriented payload для приходного документа.
-- `POST /api/v1/iiko/receivings/{receiving_id}/send` — MVP mock-отправка в iiko.
+- `POST /api/v1/iiko/receivings/{receiving_id}/send` — mock-отправка в iiko.
 - `GET /api/v1/iiko/exports` — история iiko-экспортов.
 - `POST /api/v1/accounting/mappings` — ручная связь товара поставщика с номенклатурой учетной системы.
 - `GET /api/v1/accounting/mappings` — список связей.
@@ -240,13 +240,13 @@ pytest
 
 - Реальный OCR/Vision подключен через Google Cloud Vision, но работает только при наличии Google credentials и `GOOGLE_VISION_ENABLED=true`.
 - Реальное создание Google Таблицы подключено через Google Sheets API, но работает только при наличии Google credentials и `GOOGLE_SHEETS_ENABLED=true`.
-- Промежуточный интерфейс MVP-4 реализован только через Google Таблицу. HTML-интерфейс проверки не используется.
+- Промежуточный интерфейс реализован только через Google Таблицу. HTML-интерфейс проверки не используется.
 - iiko-интеграция выполнена как MVP adapter/mock: формируется прозрачный payload и сохраняется export. Для реальной отправки нужны URL, токен, организация, склад, поставщик и правила конкретного iiko API.
 - MAX/Telegram/n8n остаются внешним слоем, который должен вызывать backend endpoint'ы.
 
 ## Реальный OCR и реальное создание Google Таблицы через API
 
-В текущей версии MVP-4 добавлен полный интеграционный контур для реального сценария:
+В текущей версии добавлен полный интеграционный контур для реального сценария:
 
 ```text
 Фото / файл накладной
@@ -440,7 +440,7 @@ Content-Type: application/xml
 
 Теперь перед отправкой в iiko формируется XML `incomingInvoiceDto` с шапкой документа и строками `incomingInvoiceItemDto`.
 
-### Поля в Google Таблице после перехода на вариант 3
+### Поля в Google Таблице
 
 В Google Таблице пользователь видит и редактирует только бизнес-поля накладной:
 
@@ -562,9 +562,9 @@ IIKO_MAPPING_MIN_CONFIDENCE=0.72
 Если `IIKO_INTEGRATION_ENABLED=false`, система не обращается в настоящий iiko, оставляет уже заполненные поля и помечает отсутствующие поля как `needs_review`.
 
 
-## Актуальная логика Google Таблицы для MVP-4
+## Актуальная логика Google Таблицы
 
-Правильная схема MVP-4 теперь такая:
+Правильная схема теперь такая:
 
 ```text
 Лист "Проверка накладной"      → пользователь проверяет шапку накладной
