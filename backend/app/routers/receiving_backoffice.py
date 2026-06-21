@@ -8,7 +8,7 @@ from app.db.session import get_db
 from app.models.accounting import AccountingExport
 from app.models.receiving import Receiving, ReceivingDocument
 from app.schemas.receiving import SendAccountingRequest
-from app.services.mvp3_service import (
+from app.services.receiving_backoffice_service import (
     build_discrepancy_analytics,
     build_iiko_payload,
     build_invoice_html,
@@ -16,7 +16,7 @@ from app.services.mvp3_service import (
     document_to_dict,
 )
 
-router = APIRouter(tags=["mvp3"])
+router = APIRouter(tags=["receiving-backoffice"])
 
 
 @router.get("/receiving/{receiving_id}/documents")

@@ -42,7 +42,7 @@ def build_iiko_payload(receiving: Receiving) -> dict:
             for item in base_payload["items"]
         ],
         "comment": base_payload.get("comment"),
-        "source": "autosnab_mvp3",
+        "source": "autosnab_iiko_adapter",
     }
 
 
