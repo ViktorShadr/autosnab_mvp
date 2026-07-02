@@ -39,3 +39,7 @@
 ## [2026-07-03] coordination | table logic intake
 
 - Registered the table-logic note, spreadsheet CSV, and screenshot clarifying the Apps Script behavior and the document-level upload status flow.
+
+## [2026-07-03] summary | today's conclusions
+
+- Captured the day's conclusion: the project is a document-processing pipeline, the MVP focus is reliable recognition and table placement, and PDF/SBIS must remain adapters over one shared document core.
