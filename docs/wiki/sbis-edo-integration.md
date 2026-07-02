@@ -85,3 +85,5 @@ Keep raw documents in a structure like:
 - Where exactly should the working table live in this repo flow?
 - Do we store raw files in local filesystem only, or also in object storage later?
 - Do we need a separate DB table for SBIS sync history and dedupe keys?
+- There is an additional process hint from screenshots: OCR/document ingestion should stay centralized, not split between isolated per-source flows.
+- One screenshot references an existing Google Docs table named `АвтоСнаб Кафе Ромашка` and mentions `@AndrewGF1` as a contact for the OCR/doc flow.

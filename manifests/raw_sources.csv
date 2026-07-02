@@ -2,3 +2,4 @@ source_id,company,vendor,kind,filename,raw_rel_path,status,compiled_into,notes
 sbis-edo-brief-2026-07-02,autosnab_mvp,manual,markdown,ТЗ для разработчика_ интеграция СБИС ЭДО с выгрузкой документов в таблицу.md,inbox/ТЗ для разработчика_ интеграция СБИС ЭДО с выгрузкой документов в таблицу.md,new,,ТЗ на read-only интеграцию с СБИС ЭДО
 sbis-edo-screenshot-1-2026-07-02,autosnab_mvp,manual,image,Вставленное изображение.png,inbox/Вставленное изображение.png,new,,Скриншот переписки с упоминанием СБИС/EDO
 sbis-edo-screenshot-2-2026-07-02,autosnab_mvp,manual,image,Вставленное изображение (2).png,inbox/Вставленное изображение (2).png,new,,Скриншот переписки со ссылкой на Saby help
+sbis-edo-screenshot-3-2026-07-02,autosnab_mvp,manual,image,Вставленное изображение (3).png,inbox/Вставленное изображение (3).png,new,,Скриншот переписки про централизованную OCR-логику и ссылку на таблицу

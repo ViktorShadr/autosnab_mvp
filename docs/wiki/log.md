@@ -11,3 +11,7 @@
 ## [2026-07-02] requirements | SBIS EDO intake
 
 - Registered the new SBIS EDO task files in `manifests/raw_sources.csv` and compiled the read-only integration requirements into `docs/wiki/sbis-edo-integration.md`.
+
+## [2026-07-02] requirements | additional screenshot intake
+
+- Registered `Вставленное изображение (3).png` in `manifests/raw_sources.csv` and captured the centralized OCR/table-flow hint from the new screenshot.
