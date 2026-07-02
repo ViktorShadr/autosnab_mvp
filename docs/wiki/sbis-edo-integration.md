@@ -195,3 +195,26 @@ The meeting notes added on 2026-07-03 clarify the immediate task split:
 ### Practical implication
 
 The short-term work is still the same MVP document path, but with a stronger emphasis on multi-page document UX and parsing strategy before SBIS becomes the next-week focus.
+
+## Table structure and Apps Script constraints
+
+The new notes and screenshot on 2026-07-03 clarify the working table behavior:
+
+- the table is an intermediate validation layer between the первичный документ and the accounting system
+- columns are grouped conceptually into:
+  - fields from the original document
+  - fields from the accounting system reference data
+  - recalculation fields
+  - validation / status fields
+  - final fields for the accounting system
+- the existing Apps Script looks up column names from the second row, so the current header names must not be renamed casually
+- document-level upload/testing currently works through the `Загрузка` column
+- if a document already has an error, duplicate, or line under review, it should not be uploaded
+- after testing, the row status becomes `Загружено` or `Отправлено в УС`
+- a future `Вернуть на проверку` action is planned for cases where a previously uploaded document needs to be corrected
+
+### Source-specific implication
+
+- keep the current header names stable
+- avoid table schema drift between the PDF path and the SBIS path
+- define only the canonical contract and the writer rules, not a new header set per source

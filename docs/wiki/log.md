@@ -35,3 +35,7 @@
 ## [2026-07-03] coordination | meeting agenda intake
 
 - Registered the meeting agenda and captured the immediate task split: multi-page upload UX, business-logic coordination with Lilia, contact sharing, and parsing strategy review.
+
+## [2026-07-03] coordination | table logic intake
+
+- Registered the table-logic note, spreadsheet CSV, and screenshot clarifying the Apps Script behavior and the document-level upload status flow.
