@@ -132,3 +132,46 @@ Do not centralize everything into one giant handler. Centralize the *document mo
 - For an MVP, yes, you can build your own EDO module.
 - For a production-grade version, you should first refactor the project toward a source-agnostic intake pipeline.
 - If you skip that refactor and wire SBIS straight into the current invoice-review path, it will work short-term but become fragile quickly.
+
+## Parallel development constraint
+
+Another developer is building the PDF export path in parallel, so we must keep both tracks aligned.
+
+### Rule
+
+- Do not fork the business model into separate PDF and SBIS versions.
+- Do not let each developer invent their own document schema.
+- Agree on one canonical document contract first, then let each source implement an adapter to that contract.
+
+### Practical boundary
+
+- PDF developer owns the PDF source adapter and PDF-specific extraction.
+- SBIS work owns the SBIS source adapter and SBIS-specific extraction.
+- Shared code owns the canonical document model, dedupe, raw artifact storage, classification, and table writer.
+
+### Coordination artifact
+
+Create and maintain one short interface spec in the repo:
+
+- canonical document header
+- line item shape
+- raw artifact shape
+- required processing statuses
+- table column mapping rules
+
+If this spec changes, both tracks must update together. That is the main guardrail against divergence.
+
+## Final execution plan
+
+1. Freeze the canonical document contract with the PDF developer.
+2. Keep the current PDF path unchanged and add SBIS as a separate source adapter.
+3. Introduce a shared document core for normalization, dedupe, raw storage, and status tracking.
+4. Make both PDF and SBIS write into the same working table through the same writer contract.
+5. Validate the result on one PDF document and one SBIS document before expanding the scope.
+
+### MVP boundary
+
+- No separate repo.
+- No rewrite of the current OCR flow.
+- No duplicated business schema for PDF and SBIS.
+- No direct SBIS coupling into invoice-review handlers.

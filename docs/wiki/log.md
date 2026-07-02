@@ -19,3 +19,11 @@
 ## [2026-07-02] analysis | EDO architecture verdict
 
 - Concluded that a custom SBIS EDO module is feasible, but the right implementation shape is a source-agnostic intake core with SBIS as one adapter.
+
+## [2026-07-02] coordination | parallel PDF work
+
+- Noted that the PDF export path is being developed by another engineer in parallel, so the canonical document contract must be agreed before either branch drifts.
+
+## [2026-07-02] planning | final execution plan
+
+- Recorded the final MVP plan: freeze the shared contract, keep the PDF flow intact, add SBIS as a source adapter, and use one writer for both sources.
