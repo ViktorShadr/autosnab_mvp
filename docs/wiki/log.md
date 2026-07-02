@@ -27,3 +27,7 @@
 ## [2026-07-02] planning | final execution plan
 
 - Recorded the final MVP plan: freeze the shared contract, keep the PDF flow intact, add SBIS as a source adapter, and use one writer for both sources.
+
+## [2026-07-03] coordination | delivery priority update
+
+- Registered the new screenshot intake and captured the updated priority: show the document-recognition/table MVP this week, then move to SBIS EDO next week.

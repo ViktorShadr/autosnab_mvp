@@ -175,3 +175,10 @@ If this spec changes, both tracks must update together. That is the main guardra
 - No rewrite of the current OCR flow.
 - No duplicated business schema for PDF and SBIS.
 - No direct SBIS coupling into invoice-review handlers.
+
+## Delivery priority from latest screenshot
+
+- This week: show a working MVP for document recognition and table placement.
+- Next week: move to SBIS EDO work.
+- Keep the scope visible and ask for help early if blocked.
+- If the line stays stable, the work can continue in this direction on commercial terms.
