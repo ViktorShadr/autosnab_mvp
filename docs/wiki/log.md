@@ -31,3 +31,7 @@
 ## [2026-07-03] coordination | delivery priority update
 
 - Registered the new screenshot intake and captured the updated priority: show the document-recognition/table MVP this week, then move to SBIS EDO next week.
+
+## [2026-07-03] coordination | meeting agenda intake
+
+- Registered the meeting agenda and captured the immediate task split: multi-page upload UX, business-logic coordination with Lilia, contact sharing, and parsing strategy review.

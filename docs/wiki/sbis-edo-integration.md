@@ -182,3 +182,16 @@ If this spec changes, both tracks must update together. That is the main guardra
 - Next week: move to SBIS EDO work.
 - Keep the scope visible and ask for help early if blocked.
 - If the line stays stable, the work can continue in this direction on commercial terms.
+
+## Meeting agenda intake
+
+The meeting notes added on 2026-07-03 clarify the immediate task split:
+
+- make multi-page document upload and page visibility comfortable for the user
+- coordinate business-logic questions with Lilia
+- share Lilia's contacts to keep communication moving
+- review parsing options, including whether a service account is needed
+
+### Practical implication
+
+The short-term work is still the same MVP document path, but with a stronger emphasis on multi-page document UX and parsing strategy before SBIS becomes the next-week focus.
