@@ -87,3 +87,48 @@ Keep raw documents in a structure like:
 - Do we need a separate DB table for SBIS sync history and dedupe keys?
 - There is an additional process hint from screenshots: OCR/document ingestion should stay centralized, not split between isolated per-source flows.
 - One screenshot references an existing Google Docs table named `АвтоСнаб Кафе Ромашка` and mentions `@AndrewGF1` as a contact for the OCR/doc flow.
+
+## Feasibility analysis
+
+Yes, this is realistic in the current project, but only if the EDO flow is implemented as a new source adapter that feeds a shared document core.
+
+### What already helps
+
+- `Receiving`, `ReceivingDocument`, and `ReceivingItem` already give you a common persistence model for incoming documents.
+- `invoice_review_service.py` already acts as a central orchestration layer for OCR, parsing, Google Sheets export, and iiko preview/export.
+- The project already treats raw files, parsed metadata, and generated table rows as separate layers, which is the right shape for a multi-source pipeline.
+
+### What is missing
+
+- There is no SBIS client, auth layer, sync scheduler, or sync history table yet.
+- There is no explicit source registry for "bot upload" vs "SBIS EDO" vs future sources.
+- There is no raw-file storage abstraction for attachments and metadata snapshots.
+- There is no central dedupe engine keyed by source document identity + attachment identity + content hash.
+- The current code path is still mostly invoice-centric; EDO should not be bolted directly into invoice-review handlers.
+
+### Best architecture
+
+Use a shared core with source-specific adapters:
+
+- `source adapters`:
+  - bot upload
+  - SBIS EDO
+- `document core`:
+  - normalize header
+  - store raw payloads
+  - dedupe
+  - classify
+  - write table row
+- `presentation/export`:
+  - Google Sheets
+  - future export targets
+
+### Recommendation
+
+Do not centralize everything into one giant handler. Centralize the *document model and pipeline*, but keep SBIS as its own adapter. That gives you one place for business rules and multiple ingestion sources without turning the code into a monolith.
+
+### Practical verdict
+
+- For an MVP, yes, you can build your own EDO module.
+- For a production-grade version, you should first refactor the project toward a source-agnostic intake pipeline.
+- If you skip that refactor and wire SBIS straight into the current invoice-review path, it will work short-term but become fragile quickly.

@@ -15,3 +15,7 @@
 ## [2026-07-02] requirements | additional screenshot intake
 
 - Registered `Вставленное изображение (3).png` in `manifests/raw_sources.csv` and captured the centralized OCR/table-flow hint from the new screenshot.
+
+## [2026-07-02] analysis | EDO architecture verdict
+
+- Concluded that a custom SBIS EDO module is feasible, but the right implementation shape is a source-agnostic intake core with SBIS as one adapter.
