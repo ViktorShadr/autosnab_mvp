@@ -136,3 +136,9 @@
 - Implemented shared-sheet prepend mode for Google Sheets so new invoice blocks go to the top with a blank separator row.
 - Diagnosed the real shared-sheet failure as a column-contract mismatch against the live `Накладная` sheet, not an overwrite/prepend bug.
 - Reworked the shared-sheet mapper to target the real `АвтоСнаб Кафе Ромашка` sheet contract and updated reverse parsing accordingly.
+
+## [2026-07-04] summary | day wrap-up
+
+- Captured today's outcome in wiki: MinerU is now the documented local extraction backend, with OCR remaining as fallback.
+- Kept the Google Sheets path aligned to the real `Накладная` column contract and documented the live write-range fix.
+- Left `.env`, secret OAuth files, the local database, exports, and uploads out of version control.

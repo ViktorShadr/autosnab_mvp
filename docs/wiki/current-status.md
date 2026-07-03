@@ -56,3 +56,4 @@ status: current
 - The local extraction layer now targets MinerU's documented CLI/output-directory flow instead of stdout-only parsing.
 - The remaining operational step is to verify the MinerU package installs cleanly in the target environment and then run one real invoice through the MinerU backend switch.
 - The remaining live task is to retest the Google write flow against the user-owned spreadsheet copy and verify that values now land in the correct business columns.
+- The 2026-07-04 wrap-up is now captured in wiki: the local extraction path is MinerU-ready, the Google Sheets writer is documented and fixed at the column-contract level, and only safe docs were prepared for commit.
