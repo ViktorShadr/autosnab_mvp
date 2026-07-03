@@ -31,6 +31,11 @@ status: current
 - A practical launch/test runbook is now recorded in `docs/wiki/runbook.md`.
 - Comparison against the tested spreadsheet copy shows that shared-sheet prepend works structurally, but the inserted values are mapped against the wrong column order for the real `Накладная` sheet.
 - The shared-sheet writer has now been rewritten to map rows into the real `Накладная` column order instead of the old `Накладные` register order; live Google retest is still required.
+- The shared-sheet writer now computes the Google write range from the actual row width, fixing the `AL` vs `AM` mismatch that blocked the live retest.
+- The OCR parser now filters out noisy item rows before they reach `Receiving` or the Google Sheet, reducing accidental garbage rows in the table.
+- A local document-extraction service has been added: MinerU can now be enabled as the primary backend, with the current OCR/parser chain kept as fallback.
+- The MinerU contract is now concrete: use `mineru -p <input_path> -o <output_path> -b pipeline`, then read the structured JSON/markdown output from the result directory.
+- The project dependencies now include `mineru[all]`, and the Docker image installs it so the same extraction flow can run locally or in контейнере.
 - Today’s implementation track established the full local MVP loop: wiki writeback, raw intake, runbook, shared-sheet prepend mode, diagnosis of the column-contract bug, and a mapper rewrite aligned to the real `Накладная` sheet.
 
 ## Today summary
@@ -45,4 +50,9 @@ status: current
 - The repo now has a clearer split between the short-term document-validation MVP and the longer-term supplier-catalog/search roadmap.
 - The nearest delivery target is not the broader catalog roadmap but the MVP flow from downloaded invoices into the validation table.
 - The current write bug is a column-contract mismatch, not a failure of top insertion or separator-row insertion.
+- The immediate blocking bug is now the fixed write-range width on the shared `Накладная` sheet, not the mapper shape itself.
+- OCR quality is now constrained by a post-filter on item rows, so the remaining issue should be true recognition limits rather than unfiltered garbage rows.
+- The repo now has a switchable local extraction layer, and MinerU is wired in as a documented CLI/output-directory backend that can be enabled from `.env`.
+- The local extraction layer now targets MinerU's documented CLI/output-directory flow instead of stdout-only parsing.
+- The remaining operational step is to verify the MinerU package installs cleanly in the target environment and then run one real invoice through the MinerU backend switch.
 - The remaining live task is to retest the Google write flow against the user-owned spreadsheet copy and verify that values now land in the correct business columns.

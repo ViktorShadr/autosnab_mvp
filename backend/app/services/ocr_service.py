@@ -132,8 +132,17 @@ def parse_invoice_text_to_payload(raw_text: str, fallback_filename: str | None =
             else None
         ) or _extract_supplier_inn(lines, supplier)
 
-    items = _extract_items(lines)
+    extracted_items = _extract_items(lines)
+    items = _filter_reasonable_items(extracted_items)
     total_sum = _extract_invoice_total(joined, items)
+    parser_notes = [
+        "Поля распознаны автоматически через Google Drive OCR и должны быть проверены пользователем в Google Таблице.",
+        "Если товарные строки не распознаны, заполните их вручную в таблице перед отправкой.",
+    ]
+    if len(items) != len(extracted_items):
+        parser_notes.append(
+            f"Из {len(extracted_items)} распознанных товарных строк {len(items)} прошли фильтр качества OCR."
+        )
     return {
         "supplier": supplier,
         "supplier_legal_name": supplier,
@@ -154,10 +163,7 @@ def parse_invoice_text_to_payload(raw_text: str, fallback_filename: str | None =
         "total_sum": total_sum,
         "raw_text": raw_text,
         "items": items,
-        "parser_notes": [
-            "Поля распознаны автоматически через Google Drive OCR и должны быть проверены пользователем в Google Таблице.",
-            "Если товарные строки не распознаны, заполните их вручную в таблице перед отправкой.",
-        ],
+        "parser_notes": parser_notes,
     }
 
 
@@ -1278,6 +1284,31 @@ def _extract_items(lines: list[str]) -> list[dict]:
         items = columnwise_items
 
     return items
+
+
+def _filter_reasonable_items(items: list[dict]) -> list[dict]:
+    filtered: list[dict] = []
+    for item in items:
+        name = str(item.get("name") or "").strip()
+        quantity = item.get("quantity")
+        price = item.get("price")
+        line_sum = item.get("sum")
+        if not name or not _looks_like_product_name(name):
+            continue
+        if not isinstance(quantity, (int, float)) or quantity <= 0:
+            continue
+        if not isinstance(price, (int, float)) or price <= 0:
+            continue
+        if line_sum is not None and (not isinstance(line_sum, (int, float)) or line_sum <= 0):
+            continue
+        letters = sum(1 for ch in name if ch.isalpha())
+        digits = sum(1 for ch in name if ch.isdigit())
+        if letters < 3:
+            continue
+        if digits > letters * 2:
+            continue
+        filtered.append(item)
+    return filtered
 
 
 UPD_ROW_STOP_WORDS = (

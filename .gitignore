@@ -155,6 +155,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+.env
 
 # Spyder project settings
 .spyderproject
@@ -218,6 +219,10 @@ __marimo__/
 
 # АвтоСнаб local secrets and uploaded invoice files
 service-account.json
+
+# IDE and local vault state
+.idea/
+.obsidian/
 **/service-account.json
 backend/secrets/*.json
 backend/uploads/invoices/*

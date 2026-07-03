@@ -35,8 +35,7 @@ from app.services.invoice_review_service import (
     get_latest_google_spreadsheet_info,
     send_google_sheet_and_confirm_to_iiko,
 )
-from app.services.invoice_parser_service import extract_invoice_payload_with_fallback
-from app.services.ocr_service import OcrConfigurationError, recognize_invoice_image
+from app.services.document_extraction_service import extract_invoice_document
 
 router = APIRouter(prefix="/invoice-review", tags=["invoice-review"])
 
@@ -263,19 +262,13 @@ async def upload_invoice_photo_real_ocr(
     with file_path.open("wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    try:
-        ocr_result = recognize_invoice_image(str(file_path))
-    except OcrConfigurationError as exc:
-        ocr_result = _fallback_ocr_result(exc)
-    except Exception as exc:  # noqa: BLE001 - external OCR errors must not break upload
-        ocr_result = _fallback_ocr_result(exc)
-
-    parsed = extract_invoice_payload_with_fallback(ocr_result["raw_text"], safe_name)
+    extraction = extract_invoice_document(str(file_path), safe_name)
+    parsed = extraction["payload"]
     payload = InvoiceReviewCreateRequest(
         file_id=safe_name,
         file_type=file.content_type or "image",
         file_url=str(file_path),
-        raw_text=ocr_result["raw_text"],
+        raw_text=extraction.get("raw_text"),
         request_id=request_id,
         supplier=parsed.get("supplier"),
         supplier_legal_name=parsed.get("supplier_legal_name"),
@@ -302,12 +295,12 @@ async def upload_invoice_photo_real_ocr(
     csv_path = save_review_csv(receiving)
     response = _review_response(receiving, sheet, csv_path)
     response["ocr"] = {
-        "provider": ocr_result["provider"],
-        "pages": ocr_result.get("pages"),
-        "raw_text_length": len(ocr_result.get("raw_text") or ""),
+        "provider": extraction["provider"],
+        "pages": extraction.get("pages"),
+        "raw_text_length": len(extraction.get("raw_text") or ""),
     }
-    if ocr_result.get("error"):
-        response["ocr"]["error"] = ocr_result["error"]
+    if extraction.get("error"):
+        response["ocr"]["error"] = extraction["error"]
     response["parser_notes"] = parsed.get("parser_notes", [])
     response["parser_provider"] = parsed.get("parser_provider")
     if create_google_sheet:

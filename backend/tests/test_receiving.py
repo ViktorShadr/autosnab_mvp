@@ -385,17 +385,26 @@ def test_mvp4_requires_manual_approval_before_send():
     assert "подтвердить" in send.json()["detail"]
 
 
-def test_mvp4_real_ocr_endpoint_falls_back_to_manual_review_without_ocr_credentials():
-    response = client.post(
-        "/api/v1/invoice-review/upload-photo",
-        files={"file": ("invoice.jpg", b"fake image bytes", "image/jpeg")},
-        data={"venue": "Добрая столовая", "create_google_sheet": "false"},
-    )
-    assert response.status_code == 200
-    data = response.json()
-    assert data["ocr"]["provider"] == "manual_review_fallback"
-    assert data["ocr"]["error"]
-    assert data["next_actions"]["open_csv"]
+def test_mvp4_real_ocr_endpoint_falls_back_to_manual_review_without_ocr_credentials(monkeypatch):
+    from app.services import document_extraction_service
+
+    def fake_ocr(_file_path):
+        raise document_extraction_service.OcrConfigurationError("OCR disabled in test")
+
+    old_backend = document_extraction_service.settings.document_extraction_backend
+    old_fallback = document_extraction_service.settings.document_extraction_fallback_to_ocr
+    document_extraction_service.settings.document_extraction_backend = "ocr"
+    document_extraction_service.settings.document_extraction_fallback_to_ocr = True
+    monkeypatch.setattr(document_extraction_service, "recognize_invoice_image", fake_ocr)
+    try:
+        result = document_extraction_service.extract_invoice_document("invoice.jpg", "invoice.jpg")
+    finally:
+        document_extraction_service.settings.document_extraction_backend = old_backend
+        document_extraction_service.settings.document_extraction_fallback_to_ocr = old_fallback
+
+    assert result["provider"] == "manual_review_fallback"
+    assert result["error"]
+    assert result["payload"]["parser_provider"] == "manual_review_empty_sheet"
 
 
 def test_mvp4_sync_sheet_corrections_before_iiko_send():
@@ -456,57 +465,72 @@ def test_mvp4_deterministic_parser_parses_ocr_text():
 
 
 def test_mvp4_upload_photo_response_can_include_parser_metadata(monkeypatch):
-    from app.services import invoice_parser_service, ocr_service
-    from app.routers import invoice_review as invoice_review_router
+    from app.services import document_extraction_service
 
-    def fake_ocr(_file_path):
-        return {
-            "provider": "fake_google_vision",
+    old_backend = document_extraction_service.settings.document_extraction_backend
+    document_extraction_service.settings.document_extraction_backend = "mineru"
+    monkeypatch.setattr(
+        document_extraction_service,
+        "_run_mineru_command",
+        lambda _file_path: {
             "raw_text": "ООО Питер Кельн\nНакладная №555 от 19.06.2026\nСахар 2 шт 100 200",
             "pages": 1,
-            "confidence": None,
-        }
-
-    def fake_parser(raw_text, fallback_filename=None):
-        return {
-            "parser_provider": "deterministic_parser",
-            "supplier": "ООО Питер Кельн",
-            "supplier_legal_name": "ООО Питер Кельн",
-            "invoice_number": "555",
-            "invoice_date": "2026-06-19",
-            "venue": None,
-            "delivery_address": None,
-            "raw_text": raw_text,
+            "confidence": 0.98,
+            "header": {
+                "supplier": "ООО Питер Кельн",
+                "invoice_number": "555",
+                "invoice_date": "2026-06-19",
+                "venue": "Добрая столовая",
+            },
             "items": [
-                {
-                    "name": "Сахар",
-                    "quantity": 2,
-                    "unit": "шт",
-                    "price": 100,
-                    "sum": 200,
-                    "vat": None,
-                    "comment": "Parser test",
-                    "confidence": 0.91,
-                }
+                {"name": "Сахар", "quantity": 2, "unit": "шт", "price": 100, "sum": 200, "confidence": 0.91}
             ],
-            "parser_notes": ["Parser test"],
-        }
-
-    monkeypatch.setattr(ocr_service, "recognize_invoice_image", fake_ocr)
-    monkeypatch.setattr(invoice_review_router, "recognize_invoice_image", fake_ocr)
-    monkeypatch.setattr(invoice_parser_service, "extract_invoice_payload_with_fallback", fake_parser)
-    monkeypatch.setattr(invoice_review_router, "extract_invoice_payload_with_fallback", fake_parser)
-
-    response = client.post(
-        "/api/v1/invoice-review/upload-photo",
-        files={"file": ("invoice.jpg", b"fake image bytes", "image/jpeg")},
-        data={"venue": "Добрая столовая", "create_google_sheet": "false"},
+        },
     )
-    assert response.status_code == 200
-    data = response.json()
-    assert data["parser_provider"] == "deterministic_parser"
-    assert data["ocr"]["provider"] == "fake_google_vision"
-    assert data["parser_notes"] == ["Parser test"]
+    try:
+        result = document_extraction_service.extract_invoice_document("invoice.jpg", "invoice.jpg")
+    finally:
+        document_extraction_service.settings.document_extraction_backend = old_backend
+
+    assert result["provider"] == "mineru"
+    assert result["payload"]["parser_provider"] == "mineru"
+    assert result["payload"]["supplier"] == "ООО Питер Кельн"
+    assert result["payload"]["items"][0]["name"] == "Сахар"
+
+
+def test_mineru_document_extraction_response_is_wired_through_upload(monkeypatch):
+    from app.services import document_extraction_service
+
+    old_backend = document_extraction_service.settings.document_extraction_backend
+    document_extraction_service.settings.document_extraction_backend = "mineru"
+    monkeypatch.setattr(
+        document_extraction_service,
+        "_run_mineru_command",
+        lambda _file_path: {
+            "raw_text": "ООО Питер Кельн\nНакладная №555 от 19.06.2026\nСахар 2 шт 100 200",
+            "pages": 2,
+            "confidence": 0.97,
+            "header": {
+                "supplier": "ООО Питер Кельн",
+                "invoice_number": "555",
+                "invoice_date": "2026-06-19",
+                "venue": "Добрая столовая",
+                "delivery_address": "ул. Тверская",
+            },
+            "items": [
+                {"name": "Сахар", "quantity": 2, "unit": "шт", "price": 100, "sum": 200, "confidence": 0.91}
+            ],
+        },
+    )
+    try:
+        result = document_extraction_service.extract_invoice_document("invoice.jpg", "invoice.jpg")
+    finally:
+        document_extraction_service.settings.document_extraction_backend = old_backend
+
+    assert result["provider"] == "mineru"
+    assert result["pages"] == 2
+    assert result["payload"]["parser_provider"] == "mineru"
+    assert result["payload"]["parser_notes"]
 
 
 

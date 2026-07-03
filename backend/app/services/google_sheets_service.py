@@ -301,7 +301,7 @@ def _insert_into_existing_spreadsheet(
         body={"requests": requests},
     ).execute()
 
-    target_range = f"{target_sheet_name}!A{first_document_row_number}:AL{insert_end_index}"
+    target_range = f"{target_sheet_name}!A{first_document_row_number}:{_column_index_to_a1(column_count - 1)}{insert_end_index}"
     sheets_service.spreadsheets().values().update(
         spreadsheetId=spreadsheet_id,
         range=target_range,
@@ -384,6 +384,17 @@ def _remap_source_rows_to_shared_sheet(source_rows: list[list[Any]], receiving) 
         if index != 1:
             target_row[39] = ""
         result.append(target_row)
+    return result
+
+
+def _column_index_to_a1(column_index: int) -> str:
+    if column_index < 0:
+        raise ValueError("column_index must be non-negative")
+    result = ""
+    index = column_index + 1
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        result = chr(ord("A") + remainder) + result
     return result
 
 

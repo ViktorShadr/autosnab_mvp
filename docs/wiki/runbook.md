@@ -68,6 +68,12 @@ IIKO_TOKEN=
 IIKO_TIMEOUT_SECONDS=30
 IIKO_AUTO_MAPPING_ENABLED=true
 IIKO_MAPPING_MIN_CONFIDENCE=0.72
+
+# Optional local MinerU backend
+DOCUMENT_EXTRACTION_BACKEND=ocr
+DOCUMENT_EXTRACTION_FALLBACK_TO_OCR=true
+MINERU_COMMAND=mineru -p {file_path} -o {output_dir} -b pipeline
+MINERU_TIMEOUT_SECONDS=180
 ```
 
 ## Shared-sheet mode
@@ -119,6 +125,8 @@ Notes:
 - `docker-compose.yml` mounts `backend/secrets` and `backend/uploads`
 - `.env` is loaded into the backend container
 - current Docker setup still points one env override at `GOOGLE_SERVICE_ACCOUNT_FILE`, but the active Google flow in code is OAuth-user based
+- `backend/requirements.txt` now installs `mineru[all]`, so the image can run the local MinerU backend when `DOCUMENT_EXTRACTION_BACKEND=mineru`
+- if you want the Docker container to stay on OCR-only mode, keep `DOCUMENT_EXTRACTION_BACKEND=ocr`
 
 ## Google OAuth setup
 

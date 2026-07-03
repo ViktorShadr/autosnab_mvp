@@ -65,6 +65,45 @@ def test_torg12_invoice_number_date_and_inline_multiple_items_are_extracted():
     assert payload["items"][2]["sum"] == 16525.42
 
 
+def test_noisy_items_are_filtered_before_return(monkeypatch):
+    import app.services.ocr_service as ocr_service
+
+    def fake_extract_items(_lines):
+        return [
+            {
+                "name": "Сахар песок",
+                "quantity": 2.0,
+                "unit": "кг",
+                "price": 100.0,
+                "sum": 200.0,
+                "vat": None,
+                "vat_percent": None,
+                "vat_sum": None,
+                "comment": None,
+                "confidence": None,
+            },
+            {
+                "name": "123 456 789",
+                "quantity": 1.0,
+                "unit": "шт",
+                "price": 10.0,
+                "sum": 10.0,
+                "vat": None,
+                "vat_percent": None,
+                "vat_sum": None,
+                "comment": None,
+                "confidence": None,
+            },
+        ]
+
+    monkeypatch.setattr(ocr_service, "_extract_items", fake_extract_items)
+
+    payload = parse_invoice_text_to_payload("Накладная 1\nООО Тест\nВсего 200", "Накладная.jpg")
+
+    assert [item["name"] for item in payload["items"]] == ["Сахар песок"]
+    assert any("фильтр качества OCR" in note for note in payload["parser_notes"])
+
+
 def test_torg12_separated_rows_multiple_items_are_extracted():
     raw_text = """
     Сумма с учетом НДС руб. коп.

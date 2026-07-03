@@ -101,6 +101,33 @@
 - Updated the reverse sheet parser so send/sync logic can read item rows from the `Накладная` contract as well as the older register-style field names.
 - Local syntax checks passed; live Google retest is still needed.
 
+## [2026-07-03] fix | shared-sheet write range widened to match row width
+
+- Fixed the shared-sheet Google write range so it is derived from the actual row width instead of hardcoded to `AL`.
+- This removes the `Requested writing within range ... but tried writing to column [AM]` error during live retest.
+
+## [2026-07-03] fix | OCR item-row post-filter added
+
+- Added a post-filter that removes low-quality item rows before they are stored in `Receiving` or written into Google Sheets.
+- Added a regression test to ensure noisy item candidates do not become table rows.
+
+## [2026-07-03] implementation | local document extraction layer added
+
+- Added a switchable document-extraction service that can use MinerU as the primary local backend.
+- Kept the current Google Drive OCR + deterministic parser chain as the default fallback so the existing flow remains usable.
+- Added tests for the MinerU path and the OCR fallback path at the service layer.
+
+## [2026-07-03] implementation | MinerU CLI contract aligned
+
+- Aligned the local extraction adapter with MinerU's documented CLI flow: `mineru -p <input_path> -o <output_path> -b pipeline`.
+- Added output-directory readers for structured JSON and markdown/text outputs.
+- Added a unit test for MinerU output directory parsing.
+
+## [2026-07-03] implementation | MinerU added to dependency and Docker path
+
+- Added `mineru[all]` to backend Python dependencies so local installs and the Docker image can include the MinerU backend.
+- Updated the Docker image notes and runbook to reflect the MinerU-enabled extraction flow and the OCR fallback mode.
+
 ## [2026-07-03] summary | day wrap-up
 
 - Restored the wiki-first operating loop on this PC, including raw-root/inbox setup and writeback discipline.

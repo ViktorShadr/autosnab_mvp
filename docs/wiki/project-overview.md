@@ -19,7 +19,8 @@ status: current
 The immediate delivery track is invoice / primary-document intake:
 
 - user uploads a photo, scan, PDF, or later an EDO file
-- the system extracts document fields and line items
+- the system extracts document fields and line items through a local extraction backend
+- OCR remains the default backend, and MinerU is now available as the local high-structure backend for harder documents
 - data lands in a validation table
 - a user checks, fixes, and then sends the result into the accounting system
 
@@ -42,13 +43,14 @@ The repo should keep one shared document/data core and avoid source-specific for
 
 - PDF/photo uploads are one source adapter
 - SBIS EDO is the next source adapter
+- MinerU is another extraction backend feeding the same document core
 - supplier price ingestion is another adjacent intake flow
 - business rules, normalization, status handling, and exports should stay centralized
 
 ## Near-term boundary
 
 - This week: reliable document recognition and placement into the existing validation table
-- Before SBIS: stabilize multi-page UX, parsing behavior, and table/status logic
+- Before SBIS: stabilize multi-page UX, parsing behavior, table/status logic, and the MinerU/OCR extraction boundary
 - Next phase: SBIS EDO as a read-only adapter into the same document flow
 
 ## Longer-term roadmap signals

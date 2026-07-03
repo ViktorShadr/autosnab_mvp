@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     public_api_base_url: str = "https://YOUR_API_HOST"
     uploaded_invoices_dir: str = "uploads/invoices"
 
+    # Document extraction pipeline. OCR remains the default, MinerU is an optional
+    # local document parser that can be enabled when it is installed/configured.
+    document_extraction_backend: str = "ocr"
+    document_extraction_fallback_to_ocr: bool = True
+    mineru_command: str | None = "mineru -p {file_path} -o {output_dir} -b pipeline"
+    mineru_timeout_seconds: float = 180.0
+
     # iiko Server API integration for incoming invoice XML.
     iiko_integration_enabled: bool = False
     iiko_base_url: str | None = None

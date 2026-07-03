@@ -10,9 +10,11 @@ Backend-проект для сценария загрузки накладной
 ↓
 загрузка через web-страницу backend
 ↓
-Google Drive OCR распознает текст документа
+локальный document extraction backend
 ↓
-встроенный regex parser структурирует OCR-текст в JSON
+OCR по умолчанию или MinerU как локальный backend
+↓
+встроенный parser нормализует текст / JSON в рабочий payload
 ↓
 если данные не найдены — создается пустая таблица для ручной проверки
 ↓
@@ -40,8 +42,10 @@ GET /api/v1/invoice-review/upload-page
 На странице можно выбрать фото, скан или PDF накладной. После загрузки backend:
 
 - сохраняет файл в папку `uploads/invoices`;
-- запускает Google Drive OCR;
-- передает распознанный текст во встроенный regex parser;
+- запускает локальный document extraction backend;
+- при `DOCUMENT_EXTRACTION_BACKEND=ocr` использует Google Drive OCR;
+- при `DOCUMENT_EXTRACTION_BACKEND=mineru` использует MinerU;
+- передает результат во встроенный parser;
 - создает запись проверки накладной в базе;
 - создает CSV-копию в `exports/invoice_review_{review_id}.csv`;
 - при включенном `GOOGLE_SHEETS_ENABLED=true` создает Google Таблицу для проверки.
@@ -153,6 +157,18 @@ Google Vision API больше не используется.
 - OAuth Client ID;
 - авторизация пользователя через `/api/v1/google-oauth/authorize`.
 
+### 4.1 Локальный MinerU backend
+
+MinerU можно использовать как локальный backend вместо Google Drive OCR.
+
+Используемый контракт:
+
+```text
+mineru -p <input_path> -o <output_path> -b pipeline
+```
+
+Backend читает structured JSON / markdown / text из output directory MinerU и затем нормализует результат в тот же рабочий payload, что и OCR-ветка.
+
 Логика OCR:
 
 ```text
@@ -170,17 +186,19 @@ JPG / PNG / PDF
 Файл текущего парсера OCR-текста:
 
 ```text
+backend/app/services/document_extraction_service.py
 backend/app/services/invoice_parser_service.py
 ```
 
 Каскад обработки:
 
 ```text
-1. встроенный regex parser
-2. manual_review_empty_sheet
+1. MinerU или Google Drive OCR
+2. встроенный deterministic parser / нормализация payload
+3. manual_review_empty_sheet
 ```
 
-В текущей версии внешний AI parser не используется. Проект не требует внешних API-ключей для разбора накладной. Если regex parser не нашел полезные поля, backend создает пустую таблицу для ручной проверки.
+В текущей версии внешний AI parser не используется. Проект не требует внешних API-ключей для разбора накладной. Если локальный backend или parser не нашли полезные поля, backend создает пустую таблицу для ручной проверки.
 
 ### 6. Отправка в iiko
 
@@ -227,6 +245,7 @@ backend/app/services/invoice_review_service.py
 backend/app/services/google_sheets_service.py
 backend/app/services/google_oauth_service.py
 backend/app/services/ocr_service.py
+backend/app/services/document_extraction_service.py
 backend/app/services/invoice_parser_service.py
 backend/app/services/iiko_incoming_invoice_service.py
 backend/app/services/iiko_reference_mapping_service.py
@@ -342,6 +361,11 @@ GOOGLE_DRIVE_FOLDER_ID=
 PUBLIC_API_BASE_URL=http://localhost:8000
 UPLOADED_INVOICES_DIR=uploads/invoices
 
+DOCUMENT_EXTRACTION_BACKEND=ocr
+DOCUMENT_EXTRACTION_FALLBACK_TO_OCR=true
+MINERU_COMMAND=mineru -p {file_path} -o {output_dir} -b pipeline
+MINERU_TIMEOUT_SECONDS=180
+
 IIKO_INTEGRATION_ENABLED=false
 IIKO_BASE_URL=
 IIKO_LOGIN=
@@ -432,6 +456,7 @@ docker compose up
 ```
 
 При Docker-запуске нужно убедиться, что папка `backend/secrets` содержит OAuth-файлы, а `.env` указывает корректные пути.
+В Docker-образе также устанавливается `mineru[all]`, поэтому локальный MinerU-backend можно включить через `DOCUMENT_EXTRACTION_BACKEND=mineru`.
 
 ## Пример загрузки накладной через curl
 
@@ -493,7 +518,7 @@ pytest
 - Google Vision API не используется.
 - Основной Google-доступ идет через OAuth пользователя, а не через service account.
 - Если OAuth не выполнен, Google Drive OCR и создание Google Таблиц не сработают.
-- Внешние AI/API-ключи не используются: разбор выполняется встроенным regex parser.
+- Внешние AI/API-ключи не используются: разбор выполняется локальным OCR/MinerU backend и встроенной нормализацией.
 - Реальная отправка в iiko требует заполненных настроек iiko и включения `IIKO_INTEGRATION_ENABLED=true`.
 - При `IIKO_INTEGRATION_ENABLED=false` данные сохраняются как mock/export payload.
 - MAX, Telegram, n8n и другие внешние интерфейсы остаются внешним слоем и должны вызывать backend endpoint'ы.
