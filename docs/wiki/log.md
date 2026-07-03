@@ -84,3 +84,7 @@
 
 - Added a local unit test for the prepend writer logic: new document rows go directly under the configured header rows and a blank separator row is appended after the block.
 - Full pytest execution was not possible in the current shell because dev dependencies are missing from the environment.
+
+## [2026-07-03] operations | runbook added
+
+- Added a practical runbook for local start, Docker start, OAuth setup, shared-sheet mode, smoke tests, and local verification commands.

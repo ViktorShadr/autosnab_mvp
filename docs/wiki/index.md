@@ -4,6 +4,7 @@
 - [SCHEMA.md](./SCHEMA.md)
 - [project-overview.md](./project-overview.md)
 - [current-status.md](./current-status.md)
+- [runbook.md](./runbook.md)
 - [invoice-table-mvp-checklist.md](./invoice-table-mvp-checklist.md)
 - [sources-and-data.md](./sources-and-data.md)
 - [supplier-catalog-roadmap.md](./supplier-catalog-roadmap.md)

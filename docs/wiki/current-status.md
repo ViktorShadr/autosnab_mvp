@@ -28,6 +28,7 @@ status: current
 - Deeper review of the Lilia walkthrough confirms that the highest-risk MVP areas are document-level status gating, stable table headers, duplicate control, manual reference completion, and recalculation logic.
 - A concrete implementation checklist for that MVP is now recorded in `docs/wiki/invoice-table-mvp-checklist.md`.
 - The Google Sheets writer now supports a shared-table mode: new invoice blocks can be inserted at the top of an existing sheet with one empty separator row between documents.
+- A practical launch/test runbook is now recorded in `docs/wiki/runbook.md`.
 
 ## Today summary
 
