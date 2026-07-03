@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     google_application_credentials: str | None = None
     google_service_account_file: str | None = None
     google_drive_folder_id: str | None = None
+    google_target_spreadsheet_id: str | None = None
+    google_target_sheet_name: str = "Накладная"
+    google_target_header_row_count: int = 2
     google_sheets_enabled: bool = False
     google_apps_script_enabled: bool = False
     google_drive_ocr_enabled: bool = True

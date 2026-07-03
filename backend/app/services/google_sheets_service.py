@@ -57,6 +57,15 @@ def create_invoice_review_spreadsheet(
     sheets_service = build("sheets", "v4", credentials=credentials)
     drive_service = build("drive", "v3", credentials=credentials)
 
+    target_spreadsheet_id = settings.google_target_spreadsheet_id
+    if target_spreadsheet_id:
+        return _insert_into_existing_spreadsheet(
+            sheets_service=sheets_service,
+            drive_service=drive_service,
+            spreadsheet_id=target_spreadsheet_id,
+            sheet_data=sheet_data,
+        )
+
     primary_sheet_name = sheet_data.get("primary_sheet_name") or next(iter(sheet_data["sheets"]))
     spreadsheet_body = {
         "properties": {"title": sheet_data["spreadsheet_name"]},
@@ -226,6 +235,95 @@ def _format_spreadsheet(sheets_service, spreadsheet_id: str) -> None:
         )
     if requests:
         sheets_service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body={"requests": requests}).execute()
+
+
+def _insert_into_existing_spreadsheet(
+    *,
+    sheets_service,
+    drive_service,
+    spreadsheet_id: str,
+    sheet_data: dict,
+) -> dict[str, Any]:
+    spreadsheet = sheets_service.spreadsheets().get(
+        spreadsheetId=spreadsheet_id,
+        fields="spreadsheetUrl,sheets.properties(sheetId,title,gridProperties.rowCount,columnCount)",
+    ).execute()
+    spreadsheet_url = spreadsheet["spreadsheetUrl"]
+    target_sheet_name = settings.google_target_sheet_name
+    target_sheet = None
+    for sheet in spreadsheet.get("sheets", []):
+        props = sheet.get("properties", {})
+        if props.get("title") == target_sheet_name:
+            target_sheet = props
+            break
+    if target_sheet is None:
+        raise GoogleSheetsConfigurationError(
+            f"В target spreadsheet не найден лист '{target_sheet_name}'."
+        )
+
+    source_sheet_name = sheet_data.get("primary_sheet_name") or next(iter(sheet_data["sheets"]))
+    source_rows = sheet_data["sheets"].get(source_sheet_name) or []
+    if not source_rows:
+        raise GoogleSheetsConfigurationError("Нет данных для записи в target spreadsheet.")
+
+    # In a shared operator sheet the real machine-bound header already exists.
+    # New documents are inserted immediately under that header, newest first.
+    document_rows = source_rows[1:] if len(source_rows) > 1 else []
+    if not document_rows:
+        document_rows = [[""] * len(source_rows[0])]
+    column_count = max(len(row) for row in source_rows)
+    separator_row = [""] * column_count
+    rows_to_insert = document_rows + [separator_row]
+
+    header_row_count = max(settings.google_target_header_row_count, 1)
+    insert_start_index = header_row_count
+    insert_end_index = insert_start_index + len(rows_to_insert)
+    first_document_row_number = insert_start_index + 1
+    last_document_row_number = first_document_row_number + len(document_rows) - 1
+
+    requests = [
+        {
+            "insertDimension": {
+                "range": {
+                    "sheetId": target_sheet["sheetId"],
+                    "dimension": "ROWS",
+                    "startIndex": insert_start_index,
+                    "endIndex": insert_end_index,
+                },
+                "inheritFromBefore": False,
+            }
+        }
+    ]
+    sheets_service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={"requests": requests},
+    ).execute()
+
+    target_range = f"{target_sheet_name}!A{first_document_row_number}:AL{insert_end_index}"
+    sheets_service.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range=target_range,
+        valueInputOption="RAW",
+        body={"values": rows_to_insert},
+    ).execute()
+
+    return {
+        "spreadsheet_id": spreadsheet_id,
+        "spreadsheet_url": spreadsheet_url,
+        "spreadsheet_name": sheet_data["spreadsheet_name"],
+        "sheet_name": target_sheet_name,
+        "header_row_count": header_row_count,
+        "block_start_row": first_document_row_number,
+        "block_end_row": last_document_row_number,
+        "separator_row": last_document_row_number + 1,
+        "mode": "prepend_into_existing_sheet",
+        "send_button": {
+            "installed": False,
+            "status": "button_removed",
+            "send_page_url": None,
+            "message": "Кнопка-ссылка 'Отправить в iiko' на листе общего реестра не создаётся.",
+        },
+    }
 
 
 def serialize_sheet_result(result: dict[str, Any]) -> str:

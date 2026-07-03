@@ -788,6 +788,10 @@ def get_latest_google_spreadsheet_info(db: Session, receiving_id: int) -> dict[s
         "spreadsheet_id": spreadsheet_id,
         "spreadsheet_url": payload.get("spreadsheet_url"),
         "spreadsheet_name": payload.get("spreadsheet_name"),
+        "sheet_name": payload.get("sheet_name"),
+        "header_row_count": payload.get("header_row_count"),
+        "block_start_row": payload.get("block_start_row"),
+        "block_end_row": payload.get("block_end_row"),
     }
 
 
@@ -798,12 +802,25 @@ def send_google_sheet_and_confirm_to_iiko(
     dry_run: bool = False,
 ) -> AccountingExport:
     spreadsheet = get_latest_google_spreadsheet_info(db, receiving_id)
-    sheet_values = _read_google_sheet_values(spreadsheet["spreadsheet_id"])
+    sheet_values = _read_google_sheet_values(
+        spreadsheet["spreadsheet_id"],
+        sheet_name=spreadsheet.get("sheet_name"),
+        header_row_count=spreadsheet.get("header_row_count"),
+        block_start_row=spreadsheet.get("block_start_row"),
+        block_end_row=spreadsheet.get("block_end_row"),
+    )
     payload = _build_sync_payload_from_sheet(sheet_values, allow_with_warnings=allow_with_warnings, dry_run=dry_run)
     return sync_sheet_and_confirm_to_iiko(db, receiving_id, payload)
 
 
-def _read_google_sheet_values(spreadsheet_id: str) -> dict[str, list[list[Any]]]:
+def _read_google_sheet_values(
+    spreadsheet_id: str,
+    *,
+    sheet_name: str | None = None,
+    header_row_count: int | None = None,
+    block_start_row: int | None = None,
+    block_end_row: int | None = None,
+) -> dict[str, list[list[Any]]]:
     try:
         from googleapiclient.discovery import build
     except ImportError as exc:
@@ -812,6 +829,20 @@ def _read_google_sheet_values(spreadsheet_id: str) -> dict[str, list[list[Any]]]
 
     credentials = get_google_user_credentials()
     sheets_service = build("sheets", "v4", credentials=credentials)
+
+    if sheet_name and block_start_row and block_end_row:
+        header_start_row = max(int(header_row_count or 1), 1)
+        target_range = f"{sheet_name}!A{header_start_row}:AL{block_end_row}"
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range=target_range,
+        ).execute()
+        return {
+            "invoices": result.get("values", []),
+            "summary": [],
+            "items": [],
+        }
+
     spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id, fields="sheets.properties.title").execute()
     titles = {sheet["properties"]["title"] for sheet in spreadsheet.get("sheets", [])}
     requested_ranges = []
