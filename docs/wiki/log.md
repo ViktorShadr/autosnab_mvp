@@ -100,3 +100,12 @@
 - Reworked the shared-sheet writer to emit rows in the real `Накладная` column order used by `АвтоСнаб Кафе Ромашка`.
 - Updated the reverse sheet parser so send/sync logic can read item rows from the `Накладная` contract as well as the older register-style field names.
 - Local syntax checks passed; live Google retest is still needed.
+
+## [2026-07-03] summary | day wrap-up
+
+- Restored the wiki-first operating loop on this PC, including raw-root/inbox setup and writeback discipline.
+- Registered and compiled new raw sources into project overview, supplier roadmap, validation-table behavior, MVP checklist, and runbook pages.
+- Confirmed the immediate delivery focus: downloaded invoices -> validation table MVP.
+- Implemented shared-sheet prepend mode for Google Sheets so new invoice blocks go to the top with a blank separator row.
+- Diagnosed the real shared-sheet failure as a column-contract mismatch against the live `Накладная` sheet, not an overwrite/prepend bug.
+- Reworked the shared-sheet mapper to target the real `АвтоСнаб Кафе Ромашка` sheet contract and updated reverse parsing accordingly.
