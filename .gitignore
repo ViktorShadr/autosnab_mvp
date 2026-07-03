@@ -223,3 +223,9 @@ backend/secrets/*.json
 backend/uploads/invoices/*
 !backend/uploads/invoices/.gitkeep
 .env.local
+/.idea/.gitignore
+/.idea/autosnab_mvp.iml
+/.idea/misc.xml
+/.idea/vcs.xml
+/.idea/inspectionProfiles/profiles_settings.xml
+/.idea/modules.xml
