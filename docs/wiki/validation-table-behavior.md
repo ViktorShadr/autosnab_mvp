@@ -2,8 +2,8 @@
 title: Validation Table Behavior
 source: inbox/Созвон с Лилией.md
 source_hash: ffd34f080314822f
-compiled_at: 2026-07-03T14:39:13+00:00
-compiled_from: [src_ffd34f0803, src_137b730e1a]
+compiled_at: 2026-07-03T16:20:00+00:00
+compiled_from: [src_ffd34f0803, src_137b730e1a, src_239bf1096e]
 created: 2026-07-03
 updated: 2026-07-03
 tags: [table, validation, workflow, spreadsheet]
@@ -140,3 +140,38 @@ For the nearest MVP, the main things to watch are:
 - do not assume every document has supplier and INN
 - keep room for a future `Вернуть на проверку` / correction cycle
 - avoid manual entry of conversion coefficients when they can be computed
+
+## Current shared-sheet insertion bug
+
+The comparison between the original `АвтоСнаб Кафе Ромашка .xlsx` and the tested `Копия АвтоСнаб Кафе Ромашка .xlsx` shows:
+
+- old document blocks are not being overwritten directly
+- new document blocks are inserted at the top as intended
+- one blank separator row is also inserted between blocks
+
+However, the inserted rows are mapped against the wrong column contract.
+
+### What is happening
+
+The backend currently builds rows in the old `Накладные` register order, then inserts those values into the shared `Накладная` sheet without remapping to the real column order of that sheet.
+
+### Visible symptom
+
+Examples from the tested copy:
+
+- upload timestamp lands under `Статус загрузки`
+- internal document id lands under `Статус строки`
+- document form lands under `Дубль`
+- document date lands under `Форма документа`
+- document number lands under `Загрузка`
+- supplier-related values shift into the next business columns
+- line item fields also shift left/right relative to the real `Накладная` sheet contract
+
+### Practical conclusion
+
+The current bug is not "prepend vs overwrite". The real bug is:
+
+- the top-insert behavior works
+- the row payload shape does not match the target sheet header order
+
+So the next fix must be a dedicated mapper for the real `Накладная` sheet, not another change to row insertion mechanics.

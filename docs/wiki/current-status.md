@@ -29,6 +29,8 @@ status: current
 - A concrete implementation checklist for that MVP is now recorded in `docs/wiki/invoice-table-mvp-checklist.md`.
 - The Google Sheets writer now supports a shared-table mode: new invoice blocks can be inserted at the top of an existing sheet with one empty separator row between documents.
 - A practical launch/test runbook is now recorded in `docs/wiki/runbook.md`.
+- Comparison against the tested spreadsheet copy shows that shared-sheet prepend works structurally, but the inserted values are mapped against the wrong column order for the real `Накладная` sheet.
+- The shared-sheet writer has now been rewritten to map rows into the real `Накладная` column order instead of the old `Накладные` register order; live Google retest is still required.
 
 ## Today summary
 
@@ -41,3 +43,4 @@ status: current
 - The latest inbox intake is registered and waiting for compile/writeback into wiki pages as needed.
 - The repo now has a clearer split between the short-term document-validation MVP and the longer-term supplier-catalog/search roadmap.
 - The nearest delivery target is not the broader catalog roadmap but the MVP flow from downloaded invoices into the validation table.
+- The current write bug is a column-contract mismatch, not a failure of top insertion or separator-row insertion.

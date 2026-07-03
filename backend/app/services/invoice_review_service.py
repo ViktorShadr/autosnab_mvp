@@ -954,6 +954,8 @@ def _register_items_from_sheet_rows(rows: list[list[Any]]) -> list[dict[str, Any
         if not name or _is_upload_disabled(row.get("Загрузить в УС")):
             continue
         vat_percent = _float_from_sheet(row.get("Ставка НДС %"))
+        if vat_percent is None:
+            vat_percent = _float_from_sheet(row.get("Ставка НДС"))
         vat_sum = _float_from_sheet(row.get("Сумма НДС"))
         line_sum = _float_from_sheet(row.get("Стоимость без НДС"))
         total_with_vat = _float_from_sheet(row.get("Общая стоимость"))
@@ -961,10 +963,14 @@ def _register_items_from_sheet_rows(rows: list[list[Any]]) -> list[dict[str, Any
             line_sum = round(total_with_vat - vat_sum, 2)
         quantity = _float_from_sheet(row.get("Кол-во из документа"))
         if quantity is None:
+            quantity = _float_from_sheet(row.get("Кол-во в документе"))
+        if quantity is None:
             quantity = _float_from_sheet(row.get("Количество"))
         if quantity is None:
             quantity = _float_from_sheet(row.get("Кол-во"))
         price = _float_from_sheet(row.get("Цена за единицу"))
+        if price is None:
+            price = _float_from_sheet(row.get("Цена за ед-цу"))
         if price is None:
             price = _float_from_sheet(row.get("Цена"))
         items.append(
@@ -972,7 +978,7 @@ def _register_items_from_sheet_rows(rows: list[list[Any]]) -> list[dict[str, Any
                 "line_number": index,
                 "name": name,
                 "quantity": quantity or 0,
-                "unit": str(row.get("Ед.изм.") or "шт"),
+                "unit": str(row.get("Ед.изм.") or row.get("Ед.изм. в документе") or "шт"),
                 "price": price or 0,
                 "sum": line_sum,
                 "vat_percent": vat_percent,

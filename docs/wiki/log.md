@@ -88,3 +88,15 @@
 ## [2026-07-03] operations | runbook added
 
 - Added a practical runbook for local start, Docker start, OAuth setup, shared-sheet mode, smoke tests, and local verification commands.
+
+## [2026-07-03] analysis | shared-sheet copy compared against original
+
+- Registered and compared `Копия АвтоСнаб Кафе Ромашка .xlsx` against the original workbook.
+- Confirmed that new invoice blocks are inserted at the top and separated by blank rows, but the inserted values follow the old `Накладные` register order instead of the real `Накладная` sheet column order.
+- The immediate fix target is therefore the row-to-column mapper, not the prepend mechanics.
+
+## [2026-07-03] implementation | shared-sheet mapper rewritten for real header contract
+
+- Reworked the shared-sheet writer to emit rows in the real `Накладная` column order used by `АвтоСнаб Кафе Ромашка`.
+- Updated the reverse sheet parser so send/sync logic can read item rows from the `Накладная` contract as well as the older register-style field names.
+- Local syntax checks passed; live Google retest is still needed.

@@ -69,6 +69,16 @@ class _FakeExecute:
         return self.payload
 
 
+class _FakeDocument:
+    def __init__(self, file_url):
+        self.file_url = file_url
+
+
+class _FakeReceiving:
+    def __init__(self, file_url):
+        self.documents = [_FakeDocument(file_url)]
+
+
 def test_insert_into_existing_spreadsheet_prepends_block_and_separator():
     fake_service = _FakeSheetsService()
     old_sheet_name = settings.google_target_sheet_name
@@ -77,6 +87,7 @@ def test_insert_into_existing_spreadsheet_prepends_block_and_separator():
     settings.google_target_header_row_count = 2
     try:
         result = _insert_into_existing_spreadsheet(
+            receiving=_FakeReceiving("uploads/invoices/test.jpg"),
             sheets_service=fake_service,
             drive_service=None,
             spreadsheet_id="test-id",
@@ -120,8 +131,14 @@ def test_insert_into_existing_spreadsheet_prepends_block_and_separator():
 
     value_update = fake_service.spreadsheets_resource.values_resource.updated[0]
     assert value_update["range"] == "Накладная!A3:AL5"
-    assert value_update["body"]["values"] == [
-        ["doc-1", "item-1", "10"],
-        ["", "item-2", "20"],
-        ["", "", ""],
-    ]
+    written = value_update["body"]["values"]
+    assert len(written) == 3
+    assert len(written[0]) == 40
+    assert written[0][16] == "item-1"
+    assert written[0][20] == "10"
+    assert written[0][37] == ""
+    assert written[0][39] == "uploads/invoices/test.jpg"
+    assert written[1][16] == "item-2"
+    assert written[1][20] == "20"
+    assert written[1][39] == ""
+    assert written[2] == [""] * 40

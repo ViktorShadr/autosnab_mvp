@@ -60,6 +60,7 @@ def create_invoice_review_spreadsheet(
     target_spreadsheet_id = settings.google_target_spreadsheet_id
     if target_spreadsheet_id:
         return _insert_into_existing_spreadsheet(
+            receiving=receiving,
             sheets_service=sheets_service,
             drive_service=drive_service,
             spreadsheet_id=target_spreadsheet_id,
@@ -239,6 +240,7 @@ def _format_spreadsheet(sheets_service, spreadsheet_id: str) -> None:
 
 def _insert_into_existing_spreadsheet(
     *,
+    receiving,
     sheets_service,
     drive_service,
     spreadsheet_id: str,
@@ -246,7 +248,7 @@ def _insert_into_existing_spreadsheet(
 ) -> dict[str, Any]:
     spreadsheet = sheets_service.spreadsheets().get(
         spreadsheetId=spreadsheet_id,
-        fields="spreadsheetUrl,sheets.properties(sheetId,title,gridProperties.rowCount,columnCount)",
+        fields="spreadsheetUrl,sheets.properties(sheetId,title,gridProperties(rowCount,columnCount))",
     ).execute()
     spreadsheet_url = spreadsheet["spreadsheetUrl"]
     target_sheet_name = settings.google_target_sheet_name
@@ -268,10 +270,10 @@ def _insert_into_existing_spreadsheet(
 
     # In a shared operator sheet the real machine-bound header already exists.
     # New documents are inserted immediately under that header, newest first.
-    document_rows = source_rows[1:] if len(source_rows) > 1 else []
+    document_rows = _remap_source_rows_to_shared_sheet(source_rows, receiving)
     if not document_rows:
         document_rows = [[""] * len(source_rows[0])]
-    column_count = max(len(row) for row in source_rows)
+    column_count = max(len(row) for row in document_rows)
     separator_row = [""] * column_count
     rows_to_insert = document_rows + [separator_row]
 
@@ -324,6 +326,65 @@ def _insert_into_existing_spreadsheet(
             "message": "Кнопка-ссылка 'Отправить в iiko' на листе общего реестра не создаётся.",
         },
     }
+
+
+def _remap_source_rows_to_shared_sheet(source_rows: list[list[Any]], receiving) -> list[list[Any]]:
+    if not source_rows:
+        return []
+    source_headers = [str(cell).strip() for cell in source_rows[0]]
+    target_width = 40
+    result: list[list[Any]] = []
+    for index, row in enumerate(source_rows[1:], start=1):
+        row_map = {
+            header: row[column_index] if column_index < len(row) else ""
+            for column_index, header in enumerate(source_headers)
+            if header
+        }
+        target_row = [""] * target_width
+        target_row[0] = row_map.get("Статус загрузки", "")
+        target_row[1] = row_map.get("Статус строки", "")
+        target_row[2] = row_map.get("Причина ручной корректировки", "")
+        target_row[3] = row_map.get("Индикатор дубля документа", "")
+        target_row[4] = row_map.get("Форма документа", "")
+        target_row[5] = row_map.get("Загрузить в УС", "0")
+        target_row[6] = row_map.get("Дата документа", "")
+        target_row[7] = row_map.get("№ Документа", "")
+        target_row[8] = row_map.get("Поставщик", "")
+        target_row[9] = row_map.get("ИНН Поставщика", "")
+        target_row[10] = ""
+        target_row[11] = row_map.get("Получатель", "")
+        target_row[12] = row_map.get("Торговая точка", "")
+        target_row[13] = row_map.get("Склад", "")
+        target_row[14] = row_map.get("Основание", "")
+        target_row[15] = row_map.get("Товар найден в справочнике", "")
+        target_row[16] = row_map.get("Наименование товара из документа", "")
+        target_row[17] = row_map.get("Наименование товара в УС", "")
+        target_row[18] = row_map.get("Ед.изм.", "")
+        target_row[19] = row_map.get("Ед.изм. в УС", "")
+        target_row[20] = row_map.get("Кол-во из документа", "")
+        target_row[21] = row_map.get("Кол-во в УС", "")
+        target_row[22] = row_map.get("Цена за единицу", "")
+        target_row[23] = row_map.get("Цена в УС", "")
+        target_row[24] = row_map.get("Стоимость без НДС", "")
+        target_row[25] = row_map.get("Ставка НДС %", "")
+        target_row[26] = row_map.get("Сумма НДС", "")
+        target_row[27] = row_map.get("Общая стоимость", "")
+        target_row[28] = row_map.get("Сумма накладной", "") if index == 1 else ""
+        target_row[29] = row_map.get("Дата приема", "")
+        target_row[30] = row_map.get("Принял, Ф.И.О.", "")
+        target_row[31] = row_map.get("Госсистемы", "")
+        target_row[32] = row_map.get("Кол-во в заявке", "")
+        target_row[33] = row_map.get("Цена по прайсу", "")
+        target_row[34] = row_map.get("Последняя дата поставки", "")
+        target_row[35] = row_map.get("Последняя цена", "")
+        target_row[36] = row_map.get("Отклонение от цены прайса", "")
+        target_row[37] = row_map.get("Время загрузки документа", "") if index == 1 else ""
+        target_row[38] = row_map.get("ID документа", "") if index == 1 else ""
+        target_row[39] = (getattr(receiving, "documents", None) and getattr(receiving.documents[-1], "file_url", "")) or ""
+        if index != 1:
+            target_row[39] = ""
+        result.append(target_row)
+    return result
 
 
 def serialize_sheet_result(result: dict[str, Any]) -> str:
