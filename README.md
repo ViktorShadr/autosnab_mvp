@@ -64,21 +64,22 @@ python -m mineru.cli.client \
 
 - `DOCUMENT_EXTRACTION_FALLBACK_TO_OCR=true`
 
-### 3. Встроенный parser и ручной fallback
-
-Внешний AI parser в активной версии не используется.
+### 3. OpenAI structured parser и ручной fallback
 
 Сейчас pipeline такой:
 
 ```text
 invoice file
--> Google Drive OCR or MinerU
--> deterministic parser
+-> PDF text / Google Drive OCR / MinerU evidence
+-> OpenAI strict structured output
+-> deterministic normalization and status rules
 -> invoice review payload
--> Google Sheet or manual review fallback
+-> deterministic Google Sheets mapper
 ```
 
-Если extraction или parser не дают достаточно данных, система все равно сохраняет review и может создать таблицу для ручной проверки.
+OpenAI не выбирает колонки и не пишет в Google Sheets. Для запуска задайте
+`OPENAI_API_KEY`; модель по умолчанию настраивается через
+`OPENAI_INVOICE_MODEL=gpt-5-mini`.
 
 ### 4. Google Sheets как рабочий интерфейс оператора
 

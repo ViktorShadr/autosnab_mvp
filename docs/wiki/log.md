@@ -175,3 +175,28 @@
 - Added `.dockerignore` so the image build no longer uploads `.venv`, local databases, exports, uploads, and other heavy local artifacts.
 - Updated `docker-compose.yml` to support `docker compose up --build` with persistent volumes for SQLite, uploads, exports, and MinerU/HuggingFace cache.
 - Updated the README and runbook so Docker startup instructions now match the active runtime contract.
+
+## [2026-07-04] intake | root workbook and updated calculator note reviewed
+
+- Registered the new root copies `MVP Бух калькулятор (2).md` and `АвтоСнаб Кафе Ромашка .xlsx` in `manifests/raw_sources.csv`.
+- Compiled their concrete findings into wiki: exact status transitions, first-row-only document statuses, row-specific `Корректировка`, and the current `Накладная` write contract across `A:AN`.
+- Noted that the exported `.xlsx` shows some broken named-range validations (`#REF!`), so the live Google Sheet must remain the final source of truth for dropdowns and Apps Script behavior.
+
+## [2026-07-04] planning | OpenAI-first parsing track
+
+- Recorded the new implementation direction: delegate final document parsing to an OpenAI model, keep OCR/MinerU as evidence providers or fallbacks, and preserve deterministic Google Sheets mapping.
+- Defined the immediate plan boundary: add an OpenAI parser layer into the existing extraction service, validate/normalize model output, and keep the `Накладная` shared-sheet contract stable.
+
+## [2026-07-04] implementation | OpenAI invoice parser pipeline
+
+- Added a strict Pydantic invoice contract and an OpenAI Responses API parser over PDF, MinerU, or OCR evidence.
+- Added deterministic date, INN, amount, VAT, line-total, document-total, duplicate, OCR-error, status, and correction normalization.
+- Kept Google Sheets deterministic: the writer reads row-2 headers, writes only the `A:AN` business contract, and limits document-level fields to the first row.
+- Added structured per-document debug traces under `exports/openai_debug` and preserved parser metadata in the existing review document metadata.
+- Added focused schema, mock-provider, golden-scenario, status-gate, extraction, and mapper tests; 28 targeted tests pass.
+- The full suite still hangs in the pre-existing `test_receiving.py` path. Live OpenAI and Google Sheet calls were not run because they require external credentials and the user-owned target sheet.
+
+## [2026-07-04] fix | Docker build unblocked from uvicorn dependency resolution
+
+- Reduced the backend runtime dependency from `uvicorn[standard]==0.34.0` to `uvicorn==0.34.3`.
+- This keeps the container command unchanged (`python -m uvicorn ...`) but avoids pulling optional `standard` extras during Docker build, which were not required by the current runtime and were making pip resolution less reliable.

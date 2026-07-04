@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db.session import get_db
 from app.models.accounting import AccountingExport
-from app.models.receiving import Receiving
+from app.models.receiving import Receiving, ReceivingDocument
 from app.schemas.invoice_review import (
     ConfirmSendToIikoRequest,
     InvoiceReviewCreateRequest,
@@ -160,7 +160,7 @@ def upload_invoice_page():
     <section class="card">
       <h1>АвтоСнаб - Загрузка накладной</h1>
       <div class="subtitle">
-        Загрузите фото, скан или PDF накладной. Перед отправкой можно выбрать метод распознавания: Google OCR, MinerU или гибридный режим.
+        Загрузите фото, скан или PDF накладной. OpenAI структурирует evidence, полученный из PDF, MinerU или OCR.
       </div>
       <form id="uploadForm">
         <div class="field">
@@ -170,12 +170,13 @@ def upload_invoice_page():
         <div class="field">
           <label for="extractionMethod">Метод распознавания</label>
           <select id="extractionMethod" name="extraction_method">
+            <option value="openai" selected>OpenAI structured parser</option>
             <option value="google_ocr">Google OCR</option>
             <option value="mineru">MinerU</option>
-            <option value="hybrid" selected>Гибрид: MinerU -> Google OCR fallback</option>
+            <option value="hybrid">Гибрид: MinerU -> Google OCR fallback</option>
           </select>
           <div class="hint">
-            `Google OCR` использует Google Drive OCR. `MinerU` идет только через локальный backend. `Гибрид` сначала пробует MinerU, затем откатывается на Google OCR.
+            OpenAI получает только извлеченный текст/структуру и не управляет Google Sheets.
           </div>
         </div>
         <div class="button-row">
@@ -193,6 +194,7 @@ def upload_invoice_page():
     const extractionMethodInput = document.getElementById('extractionMethod');
 
     const methodLabels = {
+      openai: 'OpenAI structured parser',
       google_ocr: 'Google OCR',
       mineru: 'MinerU',
       hybrid: 'гибридный режим'
@@ -312,6 +314,7 @@ async def upload_invoice_photo_real_ocr(
         extraction_method=extraction_method,
     )
     parsed = extraction["payload"]
+    _apply_duplicate_status(db, parsed)
     payload = InvoiceReviewCreateRequest(
         file_id=safe_name,
         file_type=file.content_type or "image",
@@ -337,6 +340,7 @@ async def upload_invoice_photo_real_ocr(
         chat_id=chat_id,
         user_id=user_id,
         items=[RecognizedInvoiceItem(**item) for item in parsed.get("items", [])],
+        parser_metadata=parsed.get("parser_metadata") or {},
     )
     receiving = create_invoice_review(db, payload)
     sheet = build_review_sheet(receiving)
@@ -364,6 +368,8 @@ async def upload_invoice_photo_real_ocr(
 
 
 def _extraction_method_label(value: str | None) -> str | None:
+    if value == "openai":
+        return "OpenAI structured parser"
     if value == "google_ocr":
         return "Google OCR"
     if value == "mineru":
@@ -371,6 +377,38 @@ def _extraction_method_label(value: str | None) -> str | None:
     if value == "hybrid":
         return "Гибрид: MinerU -> Google OCR fallback"
     return None
+
+
+def _apply_duplicate_status(db: Session, parsed: dict) -> None:
+    metadata = parsed.get("parser_metadata")
+    if not isinstance(metadata, dict):
+        return
+    invoice_number = str(parsed.get("invoice_number") or "").strip()
+    supplier = str(parsed.get("supplier") or "").strip().casefold()
+    invoice_date = str(parsed.get("invoice_date") or "").strip()
+    total_sum = parsed.get("total_sum")
+    if not invoice_number and not supplier:
+        return
+
+    possible = False
+    for document in db.query(ReceivingDocument).all():
+        if invoice_number and document.invoice_number == invoice_number:
+            existing_supplier = (document.supplier_legal_name or "").strip().casefold()
+            if supplier and existing_supplier == supplier:
+                metadata.update(duplicate="Да", upload_status="Не готово", row_status="Распознано")
+                return
+            possible = True
+        if supplier and (document.supplier_legal_name or "").strip().casefold() == supplier:
+            if invoice_date and document.invoice_date == invoice_date:
+                try:
+                    stored = json.loads(document.recognized_items_json or "{}")
+                    stored_total = (stored.get("header") or {}).get("total_sum")
+                except (json.JSONDecodeError, AttributeError):
+                    stored_total = None
+                if total_sum is not None and stored_total == total_sum:
+                    possible = True
+    if possible:
+        metadata.update(duplicate="?", upload_status="Требует проверки", row_status="Распознано")
 
 
 @router.post("/upload", response_model=InvoiceReviewResponse)

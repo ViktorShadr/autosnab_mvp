@@ -32,9 +32,9 @@ class Settings(BaseSettings):
     public_api_base_url: str = "https://YOUR_API_HOST"
     uploaded_invoices_dir: str = "uploads/invoices"
 
-    # Document extraction pipeline. OCR remains the default, MinerU is an optional
-    # local document parser that can be enabled when it is installed/configured.
-    document_extraction_backend: str = "ocr"
+    # Document extraction pipeline. OpenAI is the default structuring layer;
+    # PDF text, MinerU, and OCR remain evidence providers.
+    document_extraction_backend: str = "openai"
     document_extraction_fallback_to_ocr: bool = True
     mineru_command: str | None = (
         "{python_executable} -m mineru.cli.client "
@@ -52,8 +52,13 @@ class Settings(BaseSettings):
     iiko_auto_mapping_enabled: bool = True
     iiko_mapping_min_confidence: float = 0.72
 
-    # OCR text is structured by the built-in deterministic parser.
-    # External AI parsers are not used in the current project version.
+    # OpenAI structures extracted evidence. Business rules and sheet writes stay local.
+    openai_api_key: str | None = None
+    openai_invoice_model: str = "gpt-5-mini"
+    openai_timeout_seconds: float = 120.0
+    openai_max_evidence_chars: int = 120_000
+    openai_debug_log_enabled: bool = True
+    openai_debug_log_dir: str = "exports/openai_debug"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

@@ -158,6 +158,39 @@ def test_extract_invoice_document_google_ocr_forces_ocr(monkeypatch):
     assert result["selected_method"] == "google_ocr"
 
 
+def test_extract_invoice_document_openai_collects_evidence_then_parses(monkeypatch):
+    monkeypatch.setattr(
+        document_extraction_service,
+        "_collect_openai_evidence",
+        lambda _file_path, _filename: {
+            "raw_text": "evidence",
+            "source_type": "image",
+            "ocr_used": True,
+            "extraction_method": "google_drive_ocr",
+            "pages": 1,
+        },
+    )
+    monkeypatch.setattr(
+        document_extraction_service,
+        "parse_invoice_with_openai",
+        lambda evidence: {
+            "supplier": "OpenAI Supplier",
+            "items": [{"name": "Item"}],
+            "parser_provider": "openai",
+        },
+    )
+
+    result = document_extraction_service.extract_invoice_document(
+        "invoice.jpg",
+        "invoice.jpg",
+        extraction_method="openai",
+    )
+
+    assert result["provider"] == "openai"
+    assert result["selected_method"] == "openai"
+    assert result["payload"]["supplier"] == "OpenAI Supplier"
+
+
 def test_extract_invoice_document_hybrid_falls_back_to_ocr(monkeypatch):
     monkeypatch.setattr(
         document_extraction_service,

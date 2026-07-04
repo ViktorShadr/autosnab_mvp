@@ -78,11 +78,15 @@ IIKO_TIMEOUT_SECONDS=30
 IIKO_AUTO_MAPPING_ENABLED=true
 IIKO_MAPPING_MIN_CONFIDENCE=0.72
 
-# Optional local MinerU backend
-DOCUMENT_EXTRACTION_BACKEND=ocr
+# OpenAI parser over PDF/MinerU/OCR evidence
+DOCUMENT_EXTRACTION_BACKEND=openai
 DOCUMENT_EXTRACTION_FALLBACK_TO_OCR=true
 MINERU_COMMAND={python_executable} -m mineru.cli.client -p {file_path} -o {output_dir} -b pipeline -l cyrillic
 MINERU_TIMEOUT_SECONDS=900
+OPENAI_API_KEY=<secret>
+OPENAI_INVOICE_MODEL=gpt-5-mini
+OPENAI_DEBUG_LOG_ENABLED=true
+OPENAI_DEBUG_LOG_DIR=exports/openai_debug
 ```
 
 ## Shared-sheet mode

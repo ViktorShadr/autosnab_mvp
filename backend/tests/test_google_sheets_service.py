@@ -7,7 +7,11 @@ sys.path.insert(0, str(ROOT))
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 
 from app.config import settings  # noqa: E402
-from app.services.google_sheets_service import _insert_into_existing_spreadsheet  # noqa: E402
+from app.services.google_sheets_service import (  # noqa: E402
+    SHARED_INVOICE_HEADERS,
+    _insert_into_existing_spreadsheet,
+    _remap_source_rows_to_shared_sheet,
+)
 
 
 class _FakeValuesResource:
@@ -38,7 +42,7 @@ class _FakeSpreadsheetsResource:
                         "properties": {
                             "sheetId": 321,
                             "title": "Накладная",
-                            "gridProperties": {"rowCount": 100, "columnCount": 38},
+                            "gridProperties": {"rowCount": 100, "columnCount": 47},
                         }
                     }
                 ],
@@ -77,6 +81,33 @@ class _FakeDocument:
 class _FakeReceiving:
     def __init__(self, file_url):
         self.documents = [_FakeDocument(file_url)]
+
+
+def test_shared_mapper_uses_headers_and_writes_document_fields_only_on_first_row():
+    source = [
+        [
+            "Статус загрузки", "Статус строки", "Причина ручной корректировки",
+            "Индикатор дубля документа", "Дата документа", "№ Документа",
+            "Поставщик", "Наименование товара из документа",
+        ],
+        ["Требует проверки", "Правка вручную", "Другое", "?", "2026-07-04", "42", "Supplier", "Item 1"],
+        ["", "", "Нет в справочнике", "", "", "", "", "Item 2"],
+    ]
+
+    rows = _remap_source_rows_to_shared_sheet(
+        source,
+        _FakeReceiving("uploads/invoice.jpg"),
+        SHARED_INVOICE_HEADERS,
+    )
+    indexes = {header: index for index, header in enumerate(SHARED_INVOICE_HEADERS)}
+
+    assert rows[0][indexes["Статус загрузки"]] == "Требует проверки"
+    assert rows[0][indexes["Статус строки"]] == "Правка вручную"
+    assert rows[1][indexes["Статус загрузки"]] == ""
+    assert rows[1][indexes["Статус строки"]] == ""
+    assert rows[0][indexes["Корректировка"]] == "Другое"
+    assert rows[1][indexes["Корректировка"]] == "Нет в справочнике"
+    assert rows[1][indexes["Дата документа"]] == ""
 
 
 def test_insert_into_existing_spreadsheet_prepends_block_and_separator():
@@ -232,7 +263,7 @@ def test_insert_into_existing_spreadsheet_prepends_block_and_separator():
 
     batch_update = fake_service.spreadsheets_resource.batch_updates[0]
     requests = batch_update["body"]["requests"]
-    assert requests == [
+    assert requests[0] == (
         {
             "insertDimension": {
                 "range": {
@@ -244,7 +275,13 @@ def test_insert_into_existing_spreadsheet_prepends_block_and_separator():
                 "inheritFromBefore": False,
             }
         }
+    )
+    assert [request["copyPaste"]["pasteType"] for request in requests[1:]] == [
+        "PASTE_FORMAT",
+        "PASTE_DATA_VALIDATION",
+        "PASTE_FORMULA",
     ]
+    assert requests[-1]["copyPaste"]["source"]["startColumnIndex"] == 40
 
     value_update = fake_service.spreadsheets_resource.values_resource.updated[0]
     assert value_update["range"] == "Накладная!A3:AN5"

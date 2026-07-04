@@ -9,6 +9,7 @@ from typing import Any
 
 from app.config import settings
 from app.services.invoice_parser_service import extract_invoice_payload_with_fallback
+from app.services.openai_invoice_parser_service import OpenAIInvoiceParserError, parse_invoice_with_openai
 from app.services.ocr_service import OcrConfigurationError, recognize_invoice_image
 
 
@@ -27,13 +28,36 @@ def extract_invoice_document(
     fallback_filename: str | None = None,
     extraction_method: str | None = None,
 ) -> dict[str, Any]:
-    """Extract a normalized invoice payload from a local file.
-
-    OCR remains the default path. When the MinerU backend is enabled, we try it
-    first and fall back to OCR + deterministic parsing if the MinerU run is not
-    available or produces weak output.
-    """
+    """Extract evidence and return a normalized invoice payload."""
     backend = _resolve_extraction_method(extraction_method)
+    if backend == "openai":
+        evidence = _collect_openai_evidence(file_path, fallback_filename)
+        try:
+            payload = parse_invoice_with_openai(evidence)
+        except OpenAIInvoiceParserError as exc:
+            manual_result = _manual_review_result(str(exc), fallback_filename)
+            manual_result.update(
+                {
+                    "provider": "openai_error",
+                    "raw_text": evidence.get("raw_text") or "",
+                    "pages": evidence.get("pages"),
+                    "selected_method": backend,
+                    "evidence": evidence,
+                }
+            )
+            return manual_result
+        return {
+            "provider": "openai",
+            "raw_text": evidence.get("raw_text") or "",
+            "confidence": None,
+            "pages": evidence.get("pages"),
+            "payload": payload,
+            "parser_provider": "openai",
+            "parser_notes": payload.get("parser_notes", []),
+            "selected_method": backend,
+            "evidence": evidence,
+        }
+
     if backend in {"mineru", "hybrid"}:
         try:
             mineru_result = _extract_with_mineru(file_path, fallback_filename)
@@ -68,6 +92,7 @@ def extract_invoice_document(
 def _resolve_extraction_method(extraction_method: str | None) -> str:
     method = (extraction_method or "").strip().lower()
     normalized = {
+        "openai": "openai",
         "google_ocr": "google_ocr",
         "ocr": "google_ocr",
         "mineru": "mineru",
@@ -76,10 +101,80 @@ def _resolve_extraction_method(extraction_method: str | None) -> str:
     if normalized:
         return normalized
 
-    configured_backend = (settings.document_extraction_backend or "ocr").strip().lower()
+    configured_backend = (settings.document_extraction_backend or "openai").strip().lower()
+    if configured_backend == "openai":
+        return "openai"
     if configured_backend == "mineru":
         return "hybrid" if settings.document_extraction_fallback_to_ocr else "mineru"
     return "google_ocr"
+
+
+def _collect_openai_evidence(file_path: str, fallback_filename: str | None) -> dict[str, Any]:
+    source_type = _source_type(file_path, fallback_filename)
+    evidence: dict[str, Any] = {
+        "filename": fallback_filename or Path(file_path).name,
+        "source_type": source_type,
+        "ocr_used": False,
+        "extraction_method": "",
+        "raw_text": "",
+        "structured_document": None,
+        "pages": None,
+    }
+
+    if source_type == "pdf":
+        pdf_text = _extract_pdf_text(file_path)
+        if pdf_text.strip():
+            evidence.update(raw_text=pdf_text, extraction_method="pdf_text")
+            return evidence
+
+    try:
+        mineru_result = _extract_with_mineru(file_path, fallback_filename)
+    except Exception:  # noqa: BLE001 - OCR remains the evidence fallback
+        mineru_result = None
+    if mineru_result and (mineru_result.get("raw_text") or "").strip():
+        evidence.update(
+            raw_text=mineru_result.get("raw_text") or "",
+            extraction_method="mineru",
+            structured_document=mineru_result.get("structured_document"),
+            pages=mineru_result.get("pages"),
+        )
+        return evidence
+
+    ocr_result = _extract_with_ocr(file_path, fallback_filename)
+    evidence.update(
+        raw_text=ocr_result.get("raw_text") or "",
+        extraction_method=ocr_result.get("provider") or "google_drive_ocr",
+        ocr_used=True,
+        pages=ocr_result.get("pages"),
+    )
+    if ocr_result.get("error"):
+        evidence["error"] = ocr_result["error"]
+    return evidence
+
+
+def _extract_pdf_text(file_path: str) -> str:
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        return ""
+    try:
+        reader = PdfReader(file_path)
+        return "\n\n".join((page.extract_text() or "").strip() for page in reader.pages).strip()
+    except Exception:  # noqa: BLE001 - malformed/scanned PDFs continue to MinerU/OCR
+        return ""
+
+
+def _source_type(file_path: str, fallback_filename: str | None) -> str:
+    suffix = Path(fallback_filename or file_path).suffix.lower()
+    if suffix == ".pdf":
+        return "pdf"
+    if suffix in {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".heic"}:
+        return "image"
+    if suffix in {".xls", ".xlsx", ".csv"}:
+        return "excel"
+    if suffix == ".xml":
+        return "xml"
+    return "unknown"
 
 
 def _extract_with_ocr(file_path: str, fallback_filename: str | None) -> dict[str, Any]:

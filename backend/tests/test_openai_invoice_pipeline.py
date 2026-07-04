@@ -1,0 +1,169 @@
+from types import SimpleNamespace
+
+import pytest
+from pydantic import ValidationError
+
+from app.schemas.invoice_parser import InvoiceParserResult
+from app.services.invoice_normalization_service import normalize_invoice_result, to_legacy_invoice_payload
+from app.services.openai_invoice_parser_service import parse_invoice_with_openai
+from app.services.invoice_review_service import ensure_upload_status_allows_send
+
+
+def _parsed_invoice(**overrides):
+    payload = {
+        "document": {
+            "document_date": "04.07.2026",
+            "document_number": "A-42",
+            "supplier_name": 'ООО "Поставщик"',
+            "supplier_inn": "77 0123 4567",
+            "shipper": "",
+            "receiver": 'ООО "Кафе"',
+            "basis": "Договор 1",
+            "total_without_vat": 100,
+            "vat_total": 20,
+            "total_with_vat": 120,
+        },
+        "items": [
+            {
+                "line_number": 1,
+                "raw_name": "Товар",
+                "unit": "шт",
+                "quantity": 2,
+                "price": 50,
+                "amount_without_vat": 100,
+                "vat_rate": "20",
+                "vat_amount": 20,
+                "amount_with_vat": 120,
+                "confidence": 0.98,
+                "source_fragment": "Товар 2 шт 50 100 НДС 20 120",
+            }
+        ],
+        "review_flags": [],
+        "source_trace": {
+            "source_type": "image",
+            "ocr_used": True,
+            "extraction_method": "google_drive_ocr",
+            "raw_text_sample": "sample",
+        },
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_parser_contract_forbids_unknown_fields():
+    payload = _parsed_invoice()
+    payload["unexpected"] = True
+
+    with pytest.raises(ValidationError):
+        InvoiceParserResult.model_validate(payload)
+
+
+def test_openai_parser_uses_structured_response_and_returns_legacy_payload(tmp_path, monkeypatch):
+    parsed = InvoiceParserResult.model_validate(_parsed_invoice())
+
+    class FakeResponses:
+        def __init__(self):
+            self.kwargs = None
+
+        def parse(self, **kwargs):
+            self.kwargs = kwargs
+            return SimpleNamespace(output_parsed=parsed)
+
+    responses = FakeResponses()
+    client = SimpleNamespace(responses=responses)
+    monkeypatch.setattr("app.services.openai_invoice_parser_service.settings.openai_debug_log_enabled", False)
+
+    result = parse_invoice_with_openai(
+        {
+            "filename": "invoice.jpg",
+            "source_type": "image",
+            "ocr_used": True,
+            "extraction_method": "google_drive_ocr",
+            "raw_text": "invoice evidence",
+        },
+        client=client,
+    )
+
+    assert responses.kwargs["text_format"] is InvoiceParserResult
+    assert result["parser_provider"] == "openai"
+    assert result["invoice_date"] == "2026-07-04"
+    assert result["supplier_inn"] == "7701234567"
+    assert result["items"][0]["sum"] == 100.0
+    assert result["parser_metadata"]["upload_status"] == "Проверить"
+
+
+@pytest.mark.parametrize(
+    ("case", "mutator", "duplicate", "expected_upload", "expected_row", "correction"),
+    [
+        ("normal", lambda data: None, "", "Проверить", "Распознано", ""),
+        (
+            "poor_line",
+            lambda data: data["items"][0].update(raw_name="", confidence=0.2),
+            "",
+            "Требует проверки",
+            "Правка вручную",
+            "Другое",
+        ),
+        (
+            "not_in_catalog",
+            lambda data: data["review_flags"].append(
+                {
+                    "scope": "item",
+                    "line_number": 1,
+                    "field": "raw_name",
+                    "reason": "Товар отсутствует в справочнике.",
+                    "severity": "warning",
+                }
+            ),
+            "",
+            "Требует проверки",
+            "Правка вручную",
+            "Нет в справочнике",
+        ),
+        (
+            "total_mismatch",
+            lambda data: data["document"].update(total_with_vat=999),
+            "",
+            "Требует проверки",
+            "Правка вручную",
+            "",
+        ),
+        ("possible_duplicate", lambda data: None, "?", "Требует проверки", "Распознано", ""),
+        ("confirmed_duplicate", lambda data: None, "Да", "Не готово", "Распознано", ""),
+    ],
+)
+def test_golden_invoice_scenarios(
+    case,
+    mutator,
+    duplicate,
+    expected_upload,
+    expected_row,
+    correction,
+):
+    data = _parsed_invoice()
+    mutator(data)
+
+    result = normalize_invoice_result(data, duplicate=duplicate)
+    payload = to_legacy_invoice_payload(result)
+
+    assert result.upload_status == expected_upload, case
+    assert result.row_status == expected_row, case
+    assert payload["parser_metadata"]["duplicate"] == duplicate
+    if correction:
+        assert payload["items"][0]["correction"] == correction
+
+
+def test_ocr_error_has_deterministic_not_ready_status():
+    result = normalize_invoice_result(_parsed_invoice(), ocr_error="provider unavailable")
+
+    assert result.upload_status == "Не готово"
+    assert result.row_status == "Ошибка загрузки"
+    assert result.item_corrections == {1: "Ошибка OCR"}
+
+
+@pytest.mark.parametrize("status", ["Не готово", "Требует проверки", "Проверить"])
+def test_only_upload_status_can_be_sent_to_accounting(status):
+    with pytest.raises(ValueError, match="требуется 'Загрузить'"):
+        ensure_upload_status_allows_send(status)
+
+    ensure_upload_status_allows_send("Загрузить")

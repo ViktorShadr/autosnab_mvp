@@ -9,6 +9,20 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
+SHARED_INVOICE_HEADERS = [
+    "Статус загрузки", "Статус строки", "Корректировка", "Дубль", "Форма документа",
+    "Загрузка", "Дата документа", "№ Документа", "Поставщик", "ИНН Поставщика",
+    "Грузоотправитель", "Получатель", "Торговая точка", "Склад", "Основание",
+    "Товар найден в справочнике", "Наименование товара из документа",
+    "Наименование товара в УС", "Ед.изм. в документе", "Ед.изм. в УС",
+    "Кол-во в документе", "Кол-во в УС", "Цена за ед-цу", "Цена в УС",
+    "Стоимость без НДС", "Ставка НДС", "Сумма НДС", "Общая стоимость",
+    "Сумма накладной", "Дата приема", "Принял, Ф.И.О.", "Госсистемы",
+    "Кол-во в заявке", "Цена по прайсу", "Предыдущая дата поставки",
+    "Предыдущая цена", "Отклонение от цены прайса", "Время загрузки документа",
+    "ID документа", "Ссылка на исходный документ",
+]
+
 
 INVOICE_REGISTER_COLUMN_WIDTHS = {
     0: 190,   # Время загрузки документа
@@ -270,7 +284,13 @@ def _insert_into_existing_spreadsheet(
 
     # In a shared operator sheet the real machine-bound header already exists.
     # New documents are inserted immediately under that header, newest first.
-    document_rows = _remap_source_rows_to_shared_sheet(source_rows, receiving)
+    target_headers = _read_target_headers(
+        sheets_service,
+        spreadsheet_id,
+        target_sheet_name,
+        settings.google_target_header_row_count,
+    )
+    document_rows = _remap_source_rows_to_shared_sheet(source_rows, receiving, target_headers)
     if not document_rows:
         document_rows = [[""] * len(source_rows[0])]
     column_count = max(len(row) for row in document_rows)
@@ -296,6 +316,40 @@ def _insert_into_existing_spreadsheet(
             }
         }
     ]
+    target_column_count = (target_sheet.get("gridProperties") or {}).get("columnCount", 0)
+    if target_column_count >= 47:
+        template_row_start = insert_end_index
+        inserted_rows = {
+            "sheetId": target_sheet["sheetId"],
+            "startRowIndex": insert_start_index,
+            "endRowIndex": insert_end_index,
+        }
+        template_row = {
+            "sheetId": target_sheet["sheetId"],
+            "startRowIndex": template_row_start,
+            "endRowIndex": template_row_start + 1,
+        }
+        for paste_type in ("PASTE_FORMAT", "PASTE_DATA_VALIDATION"):
+            requests.append(
+                {
+                    "copyPaste": {
+                        "source": {**template_row, "startColumnIndex": 0, "endColumnIndex": 47},
+                        "destination": {**inserted_rows, "startColumnIndex": 0, "endColumnIndex": 47},
+                        "pasteType": paste_type,
+                        "pasteOrientation": "NORMAL",
+                    }
+                }
+            )
+        requests.append(
+            {
+                "copyPaste": {
+                    "source": {**template_row, "startColumnIndex": 40, "endColumnIndex": 47},
+                    "destination": {**inserted_rows, "startColumnIndex": 40, "endColumnIndex": 47},
+                    "pasteType": "PASTE_FORMULA",
+                    "pasteOrientation": "NORMAL",
+                }
+            }
+        )
     sheets_service.spreadsheets().batchUpdate(
         spreadsheetId=spreadsheet_id,
         body={"requests": requests},
@@ -328,11 +382,42 @@ def _insert_into_existing_spreadsheet(
     }
 
 
-def _remap_source_rows_to_shared_sheet(source_rows: list[list[Any]], receiving) -> list[list[Any]]:
+def _read_target_headers(
+    sheets_service,
+    spreadsheet_id: str,
+    sheet_name: str,
+    header_row_number: int,
+) -> list[str]:
+    values_resource = sheets_service.spreadsheets().values()
+    if not hasattr(values_resource, "get"):
+        return SHARED_INVOICE_HEADERS
+    response = values_resource.get(
+        spreadsheetId=spreadsheet_id,
+        range=f"{sheet_name}!A{header_row_number}:AN{header_row_number}",
+    ).execute()
+    rows = response.get("values") or []
+    headers = [str(value).strip() for value in (rows[0] if rows else [])]
+    if not headers:
+        raise GoogleSheetsConfigurationError(f"Строка заголовков {header_row_number} листа '{sheet_name}' пуста.")
+    missing = [header for header in SHARED_INVOICE_HEADERS if header not in headers]
+    if missing:
+        raise GoogleSheetsConfigurationError(
+            "В листе 'Накладная' отсутствуют обязательные заголовки: " + ", ".join(missing)
+        )
+    return headers
+
+
+def _remap_source_rows_to_shared_sheet(
+    source_rows: list[list[Any]],
+    receiving,
+    target_headers: list[str] | None = None,
+) -> list[list[Any]]:
     if not source_rows:
         return []
     source_headers = [str(cell).strip() for cell in source_rows[0]]
-    target_width = 40
+    target_headers = target_headers or SHARED_INVOICE_HEADERS
+    target_width = len(target_headers)
+    target_indexes = {header: index for index, header in enumerate(target_headers)}
     result: list[list[Any]] = []
     for index, row in enumerate(source_rows[1:], start=1):
         row_map = {
@@ -341,48 +426,60 @@ def _remap_source_rows_to_shared_sheet(source_rows: list[list[Any]], receiving) 
             if header
         }
         target_row = [""] * target_width
-        target_row[0] = row_map.get("Статус загрузки", "")
-        target_row[1] = row_map.get("Статус строки", "")
-        target_row[2] = row_map.get("Причина ручной корректировки", "")
-        target_row[3] = row_map.get("Индикатор дубля документа", "")
-        target_row[4] = row_map.get("Форма документа", "")
-        target_row[5] = row_map.get("Загрузить в УС", "0")
-        target_row[6] = row_map.get("Дата документа", "")
-        target_row[7] = row_map.get("№ Документа", "")
-        target_row[8] = row_map.get("Поставщик", "")
-        target_row[9] = row_map.get("ИНН Поставщика", "")
-        target_row[10] = ""
-        target_row[11] = row_map.get("Получатель", "")
-        target_row[12] = row_map.get("Торговая точка", "")
-        target_row[13] = row_map.get("Склад", "")
-        target_row[14] = row_map.get("Основание", "")
-        target_row[15] = row_map.get("Товар найден в справочнике", "")
-        target_row[16] = row_map.get("Наименование товара из документа", "")
-        target_row[17] = row_map.get("Наименование товара в УС", "")
-        target_row[18] = row_map.get("Ед.изм.", "")
-        target_row[19] = row_map.get("Ед.изм. в УС", "")
-        target_row[20] = row_map.get("Кол-во из документа", "")
-        target_row[21] = row_map.get("Кол-во в УС", "")
-        target_row[22] = row_map.get("Цена за единицу", "")
-        target_row[23] = row_map.get("Цена в УС", "")
-        target_row[24] = row_map.get("Стоимость без НДС", "")
-        target_row[25] = row_map.get("Ставка НДС %", "")
-        target_row[26] = row_map.get("Сумма НДС", "")
-        target_row[27] = row_map.get("Общая стоимость", "")
-        target_row[28] = row_map.get("Сумма накладной", "") if index == 1 else ""
-        target_row[29] = row_map.get("Дата приема", "")
-        target_row[30] = row_map.get("Принял, Ф.И.О.", "")
-        target_row[31] = row_map.get("Госсистемы", "")
-        target_row[32] = row_map.get("Кол-во в заявке", "")
-        target_row[33] = row_map.get("Цена по прайсу", "")
-        target_row[34] = row_map.get("Последняя дата поставки", "")
-        target_row[35] = row_map.get("Последняя цена", "")
-        target_row[36] = row_map.get("Отклонение от цены прайса", "")
-        target_row[37] = row_map.get("Время загрузки документа", "") if index == 1 else ""
-        target_row[38] = row_map.get("ID документа", "") if index == 1 else ""
-        target_row[39] = (getattr(receiving, "documents", None) and getattr(receiving.documents[-1], "file_url", "")) or ""
-        if index != 1:
-            target_row[39] = ""
+        mapped_values = {
+            "Статус загрузки": row_map.get("Статус загрузки", ""),
+            "Статус строки": row_map.get("Статус строки", ""),
+            "Корректировка": row_map.get("Причина ручной корректировки", ""),
+            "Дубль": row_map.get("Индикатор дубля документа", ""),
+            "Форма документа": row_map.get("Форма документа", ""),
+            "Загрузка": row_map.get("Загрузить в УС", ""),
+            "Дата документа": row_map.get("Дата документа", ""),
+            "№ Документа": row_map.get("№ Документа", ""),
+            "Поставщик": row_map.get("Поставщик", ""),
+            "ИНН Поставщика": row_map.get("ИНН Поставщика", ""),
+            "Грузоотправитель": row_map.get("Грузоотправитель", row_map.get("Грузополучатель", "")),
+            "Получатель": row_map.get("Получатель", ""),
+            "Торговая точка": row_map.get("Торговая точка", ""),
+            "Склад": row_map.get("Склад", ""),
+            "Основание": row_map.get("Основание", ""),
+            "Товар найден в справочнике": row_map.get("Товар найден в справочнике", ""),
+            "Наименование товара из документа": row_map.get("Наименование товара из документа", ""),
+            "Наименование товара в УС": row_map.get("Наименование товара в УС", ""),
+            "Ед.изм. в документе": row_map.get("Ед.изм.", ""),
+            "Ед.изм. в УС": row_map.get("Ед.изм. в УС", ""),
+            "Кол-во в документе": row_map.get("Кол-во из документа", ""),
+            "Кол-во в УС": row_map.get("Кол-во в УС", ""),
+            "Цена за ед-цу": row_map.get("Цена за единицу", ""),
+            "Цена в УС": row_map.get("Цена в УС", ""),
+            "Стоимость без НДС": row_map.get("Стоимость без НДС", ""),
+            "Ставка НДС": row_map.get("Ставка НДС %", ""),
+            "Сумма НДС": row_map.get("Сумма НДС", ""),
+            "Общая стоимость": row_map.get("Общая стоимость", ""),
+            "Сумма накладной": row_map.get("Сумма накладной", ""),
+            "Дата приема": row_map.get("Дата приема", ""),
+            "Принял, Ф.И.О.": row_map.get("Принял, Ф.И.О.", ""),
+            "Госсистемы": row_map.get("Госсистемы", ""),
+            "Кол-во в заявке": row_map.get("Кол-во в заявке", ""),
+            "Цена по прайсу": row_map.get("Цена по прайсу", ""),
+            "Предыдущая дата поставки": row_map.get("Последняя дата поставки", ""),
+            "Предыдущая цена": row_map.get("Последняя цена", ""),
+            "Отклонение от цены прайса": row_map.get("Отклонение от цены прайса", ""),
+            "Время загрузки документа": row_map.get("Время загрузки документа", ""),
+            "ID документа": row_map.get("ID документа", ""),
+            "Ссылка на исходный документ": (
+                (getattr(receiving, "documents", None) and getattr(receiving.documents[-1], "file_url", ""))
+                or ""
+            ),
+        }
+        first_row_only = {
+            "Статус загрузки", "Статус строки", "Дубль", "Форма документа", "Дата документа",
+            "№ Документа", "Поставщик", "ИНН Поставщика", "Грузоотправитель", "Получатель",
+            "Торговая точка", "Склад", "Основание", "Сумма накладной",
+            "Время загрузки документа", "ID документа", "Ссылка на исходный документ",
+        }
+        for header, value in mapped_values.items():
+            if header in target_indexes:
+                target_row[target_indexes[header]] = "" if index != 1 and header in first_row_only else value
         result.append(target_row)
     return result
 

@@ -26,6 +26,7 @@ REQUIRED_FIELDS = {
 INVOICE_REGISTER_SHEET_NAME = "Накладные"
 INVOICE_REGISTER_SPREADSHEET_NAME = "АвтоСнаб Накладные"
 INVOICE_REGISTER_HEADERS = [
+    "Статус загрузки",
     "Время загрузки документа",
     "ID документа",
     "Индикатор дубля документа",
@@ -339,6 +340,8 @@ def _invoice_register_header_values(
         "warehouse": warehouse,
         "basis": basis,
         "total_sum": total_sum,
+        "upload_status": _sheet_display_value(header_meta.get("upload_status") or ""),
+        "row_status": _sheet_display_value(header_meta.get("row_status") or ""),
     }
 
 
@@ -394,15 +397,16 @@ def _invoice_register_item_row(
         price_by_pricelist = ""
         deviation_from_pricelist = ""
         upload_to_us = ""
-        status = ""
-        manual_reason = ""
+        status = header_values.get("row_status", "") if index == 1 else ""
+        manual_reason = row_meta.get("correction") or ""
         us_product_name = ""
         product_found = ""
 
     return [
+        _single_value_for_first_item_row(header_values, "upload_status", index),
         _single_value_for_first_item_row(header_values, "upload_time", index),
         _single_value_for_first_item_row(header_values, "document_id", index),
-        header_values["duplicate_indicator"],
+        _single_value_for_first_item_row(header_values, "duplicate_indicator", index),
         _single_value_for_first_item_row(header_values, "document_form", index),
         _single_value_for_first_item_row(header_values, "document_date", index),
         _single_value_for_first_item_row(header_values, "document_number", index),
@@ -537,6 +541,7 @@ def confirm_and_send_to_iiko(db: Session, receiving_id: int, payload) -> Account
     receiving = _get_receiving(db, receiving_id)
     if not payload.approved:
         raise ValueError("Перед отправкой пользователь должен подтвердить проверку накладной")
+    ensure_upload_status_allows_send(getattr(payload, "upload_status", None))
     issues = validate_review(receiving)
     if issues and not payload.allow_with_warnings:
         raise ValueError("Накладная требует проверки: " + "; ".join(issues))
@@ -596,6 +601,13 @@ def confirm_and_send_to_iiko(db: Session, receiving_id: int, payload) -> Account
     db.commit()
     db.refresh(export)
     return export
+
+
+def ensure_upload_status_allows_send(upload_status: str | None) -> None:
+    if upload_status and upload_status != "Загрузить":
+        raise ValueError(
+            f"Накладная не может быть отправлена: статус загрузки '{upload_status}', требуется 'Загрузить'."
+        )
 
 
 def build_apps_script_sample(receiving: Receiving, public_api_base_url: str = "https://YOUR_API_HOST") -> str:
@@ -892,6 +904,7 @@ def _build_sync_payload_from_sheet(sheet_values: dict[str, list[list[Any]]], all
             target_warehouse_id=None,
             approved_by="Google Таблица",
             comment="Подтверждено через кнопку Google Таблицы",
+            upload_status=summary.get("Статус загрузки") or None,
             supplier=supplier,
             supplier_legal_name=supplier,
             iiko_supplier_id=None,
@@ -1406,6 +1419,10 @@ def _header_payload(payload) -> dict[str, Any]:
         "iiko_default_store_id": iiko_default_store_id,
         "iiko_organization": getattr(payload, "iiko_organization", None),
         "iiko_organization_id": getattr(payload, "iiko_organization_id", None),
+        "parser_metadata": getattr(payload, "parser_metadata", None) or {},
+        "upload_status": (getattr(payload, "parser_metadata", None) or {}).get("upload_status", ""),
+        "row_status": (getattr(payload, "parser_metadata", None) or {}).get("row_status", ""),
+        "duplicate_indicator": (getattr(payload, "parser_metadata", None) or {}).get("duplicate", ""),
     }
 
 def _item_payload(item, index: int | None = None) -> dict:
@@ -1432,6 +1449,8 @@ def _item_payload(item, index: int | None = None) -> dict:
         "mapping_error": getattr(item, "mapping_error", None),
         "comment": item.comment,
         "confidence": item.confidence,
+        "correction": getattr(item, "correction", None),
+        "amount_with_vat": getattr(item, "amount_with_vat", None),
     }
 
 

@@ -3,9 +3,9 @@ title: Validation Table Behavior
 source: inbox/Созвон с Лилией.md
 source_hash: ffd34f080314822f
 compiled_at: 2026-07-03T16:20:00+00:00
-compiled_from: [src_ffd34f0803, src_137b730e1a, src_239bf1096e]
+compiled_from: [src_ffd34f0803, src_137b730e1a, src_239bf1096e, src_4c95377e5e, src_121c42f2ea]
 created: 2026-07-03
-updated: 2026-07-03
+updated: 2026-07-04
 tags: [table, validation, workflow, spreadsheet]
 status: current
 ---
@@ -26,6 +26,23 @@ The call with Lilia makes one more thing explicit: she demonstrated the intended
 - those names must stay stable
 - warning/blocking around header renames is desirable because both script logic and code are name-bound
 - the upper explanatory row can change, but the actual machine-bound header row should be treated as frozen contract
+
+## Observed real sheet contract
+
+The root workbook copy reviewed on 2026-07-04 makes the current working contract more concrete:
+
+- the authoritative operator sheet is `Накладная`
+- row 1 is explanatory and can vary; row 2 is the machine-bound contract
+- the actual business contract spans `A:AN` (`40` columns), from `Статус загрузки` to `Ссылка на исходный документ`
+- the workbook also contains helper/automation columns in `AO:AU`; some of them mirror status/duplicate/correction logic and should be preserved rather than overwritten by backend payload shaping
+- reference tabs already exist for suppliers, own-company/trade-point/warehouse mapping, products, and pack-size conversions: `Поставщики`, `Наша фирма`, `Товары`, `Справочник фасовок`
+
+Important implementation consequence:
+
+- the backend should write the document block against the row-2 contract in `A:AN`
+- formulas, validations, and helper logic outside that contract should be treated as spreadsheet-owned behavior
+
+The local `.xlsx` export also shows broken dropdown references (`#REF!`) for some list validations. That strongly suggests the live Google Sheet, not an exported `.xlsx`, must remain the final source of truth for named ranges and Apps Script behavior.
 
 ## Source document fields
 
@@ -65,6 +82,40 @@ The demonstrated operator logic was roughly:
 - only documents that satisfy the status conditions are allowed into the test/accounting upload step
 
 This means your MVP should optimize for controllable review states, not just for producing rows.
+
+### Exact transition rules from the updated instruction
+
+After initial load:
+
+- clean recognition: `Статус загрузки = Проверить`, `Статус строки = Распознано`
+- manual issue found: `Корректировка = Нет в справочнике / Исключение / Сопоставление / Другое`, `Статус загрузки = Требует проверки`, `Статус строки = Правка вручную`
+- OCR failure: `Корректировка = Ошибка OCR`, `Статус загрузки = Не готово`, `Статус строки = Ошибка загрузки`
+- confirmed duplicate on intake: `Дубль = Да`, `Статус загрузки = Не готово`, `Статус строки = Распознано`
+- possible duplicate on intake: `Дубль = ?`, `Статус загрузки = Требует проверки`, `Статус строки = Распознано`
+
+During operator correction:
+
+- `Корректировка` is filled only on the specific item row with the problem
+- after fixing data, the operator restores `Статус строки = Распознано` in the first row of the document block
+- if duplicate ambiguity is resolved as false alarm, the operator clears `Дубль`, can restore `Статус загрузки = Проверить`, sets the upload checkbox, and runs `Проверить выбранные документы`
+
+After document check:
+
+- no remaining problems: `Статус загрузки = Загрузить`, `Статус строки = Готов к загрузке`, `Корректировка` is cleared
+- still unresolved manual issues: `Статус загрузки = Требует проверки`, `Статус строки = Правка вручную`
+- OCR error or confirmed duplicate still present: `Статус загрузки = Не готово`
+
+After upload to the test sheet / accounting system:
+
+- only documents with `Статус загрузки = Загрузить` and `Статус строки = Готов к загрузке` are eligible
+- successful send sets `Статус загрузки = Загружено` and `Статус строки = Отправлено в УС`
+- the upload checkbox is cleared automatically
+
+After `Вернуть на проверку`:
+
+- `Статус загрузки = Требует проверки`
+- `Статус строки = Возврат на проверку`
+- after edits, the operator restores `Статус строки = Распознано` and repeats the normal check/load cycle
 
 ## Duplicate handling
 
@@ -140,6 +191,9 @@ For the nearest MVP, the main things to watch are:
 - do not assume every document has supplier and INN
 - keep room for a future `Вернуть на проверку` / correction cycle
 - avoid manual entry of conversion coefficients when they can be computed
+- populate document-level statuses only in the first row of each inserted document block
+- keep `Корректировка` row-specific instead of copying it across the whole block
+- preserve the live sheet's formulas, validations, checkboxes, and helper columns rather than trying to recreate them in backend payloads
 
 ## Current shared-sheet insertion bug
 

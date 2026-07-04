@@ -23,6 +23,8 @@ class RecognizedInvoiceItem(BaseModel):
     store_id: str | None = Field(default=None, description="iiko store/account GUID for item <store>")
     mapping_status: str | None = Field(default=None, description="ready / needs_review for automatic iiko mapping")
     mapping_error: str | None = Field(default=None, description="Human-readable mapping problem, if any")
+    correction: str | None = None
+    amount_with_vat: float | None = None
 
 
 class InvoiceReviewCreateRequest(BaseModel):
@@ -56,6 +58,7 @@ class InvoiceReviewCreateRequest(BaseModel):
     chat_id: str | None = None
     user_id: str | None = None
     items: list[RecognizedInvoiceItem] = Field(default_factory=list)
+    parser_metadata: dict = Field(default_factory=dict)
 
 
 class InvoiceReviewUpdateRequest(BaseModel):
@@ -83,6 +86,7 @@ class InvoiceReviewUpdateRequest(BaseModel):
     iiko_organization: str | None = None
     iiko_organization_id: str | None = None
     items: list[RecognizedInvoiceItem]
+    parser_metadata: dict = Field(default_factory=dict)
 
 
 class ConfirmSendToIikoRequest(BaseModel):
@@ -119,6 +123,7 @@ class SheetConfirmedItem(BaseModel):
 
 
 class SyncSheetAndConfirmRequest(ConfirmSendToIikoRequest):
+    upload_status: str | None = None
     supplier: str | None = None
     supplier_legal_name: str | None = None
     iiko_supplier_id: str | None = None
