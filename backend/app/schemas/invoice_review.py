@@ -1,6 +1,14 @@
 from pydantic import BaseModel, Field
 
 
+class PipelineLogEntry(BaseModel):
+    stage: str
+    status: str
+    message: str
+    details: dict = Field(default_factory=dict)
+    recommendation: str | None = None
+
+
 class RecognizedInvoiceItem(BaseModel):
     name: str = Field(..., examples=["Молоко кокосовое Aroy-D 400 мл"])
     raw_name: str | None = None
@@ -180,4 +188,5 @@ class InvoiceReviewResponse(BaseModel):
     ocr: dict | None = None
     parser_provider: str | None = None
     parser_notes: list[str] = Field(default_factory=list)
+    pipeline_logs: list[PipelineLogEntry] = Field(default_factory=list)
     next_actions: dict

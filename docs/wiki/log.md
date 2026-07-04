@@ -213,3 +213,15 @@
 
 - Added inline preview rendering for selected invoice images and PDFs directly on the upload page before submission.
 - Added a Google OAuth status panel and popup-based authorization entrypoint on the same page, with callback postMessage support so the upload screen can refresh auth state without forcing the operator through separate URLs.
+
+## [2026-07-04] ui | upload page pipeline trace and stop rules
+
+- Added explicit `pipeline_logs` from backend extraction stages into the invoice upload response and rendered them on the upload page for operator-visible tracing.
+- Added hard stop behavior for empty pre-OpenAI evidence and empty OpenAI structured payloads: the backend now returns a structured error instead of saving an empty review document.
+- Added retry guidance in the upload UI so empty OCR/MinerU flows can recommend switching to `OpenAI structured parser`.
+
+## [2026-07-04] ui | live upload trace polling
+
+- Added a lightweight backend upload-trace store plus `/api/v1/invoice-review/upload-trace/{trace_id}` endpoint.
+- The upload page now generates a `trace_id`, starts polling before file submission, and renders live stages while the backend is still processing the document.
+- Trace coverage now includes extraction steps, OpenAI request start/finish, deterministic reference mapping, and Google Sheets write attempts.

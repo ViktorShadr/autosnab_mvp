@@ -189,6 +189,69 @@ def test_extract_invoice_document_openai_collects_evidence_then_parses(monkeypat
     assert result["provider"] == "openai"
     assert result["selected_method"] == "openai"
     assert result["payload"]["supplier"] == "OpenAI Supplier"
+    assert any(log["stage"] == "openai_request_complete" for log in result["pipeline_logs"])
+
+
+def test_extract_invoice_document_openai_stops_on_empty_evidence(monkeypatch):
+    monkeypatch.setattr(
+        document_extraction_service,
+        "_collect_openai_evidence",
+        lambda _file_path, _filename: {
+            "raw_text": "",
+            "source_type": "image",
+            "ocr_used": True,
+            "extraction_method": "manual_review_fallback",
+            "pages": 0,
+            "structured_document": None,
+            "error": "OCR timeout",
+        },
+    )
+
+    result = document_extraction_service.extract_invoice_document(
+        "invoice.jpg",
+        "invoice.jpg",
+        extraction_method="openai",
+    )
+
+    assert result["provider"] == "openai_empty_evidence"
+    assert result["stop_recommended"] is True
+    assert result["retry_recommended_method"] == "openai"
+    assert any(log["stage"] == "openai_skipped_empty_evidence" for log in result["pipeline_logs"])
+
+
+def test_extract_invoice_document_openai_stops_on_empty_model_payload(monkeypatch):
+    monkeypatch.setattr(
+        document_extraction_service,
+        "_collect_openai_evidence",
+        lambda _file_path, _filename: {
+            "raw_text": "evidence",
+            "source_type": "image",
+            "ocr_used": True,
+            "extraction_method": "google_drive_ocr",
+            "pages": 1,
+            "structured_document": None,
+        },
+    )
+    monkeypatch.setattr(
+        document_extraction_service,
+        "parse_invoice_with_openai",
+        lambda evidence: {
+            "supplier": None,
+            "items": [],
+            "parser_provider": "openai",
+        },
+    )
+
+    result = document_extraction_service.extract_invoice_document(
+        "invoice.jpg",
+        "invoice.jpg",
+        extraction_method="openai",
+    )
+
+    assert result["provider"] == "openai"
+    assert result["stop_recommended"] is True
+    assert result["error"] == "OpenAI parser вернул пустой структурированный JSON."
+    assert any(log["stage"] == "openai_request_complete" and log["status"] == "error" for log in result["pipeline_logs"])
 
 
 def test_extract_invoice_document_hybrid_falls_back_to_ocr(monkeypatch):

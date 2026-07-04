@@ -383,7 +383,7 @@ def test_upload_photo_passes_selected_extraction_method(monkeypatch, tmp_path):
     captured = {}
     monkeypatch.setattr(invoice_review_router.settings, "uploaded_invoices_dir", str(tmp_path))
 
-    def fake_extract(file_path, fallback_filename=None, extraction_method=None):
+    def fake_extract(file_path, fallback_filename=None, extraction_method=None, on_log=None):
         captured["file_path"] = file_path
         captured["fallback_filename"] = fallback_filename
         captured["extraction_method"] = extraction_method
@@ -392,6 +392,14 @@ def test_upload_photo_passes_selected_extraction_method(monkeypatch, tmp_path):
             "selected_method": "hybrid",
             "raw_text": "ООО Питер Кельн",
             "pages": 1,
+            "pipeline_logs": [
+                {
+                    "stage": "mineru_complete",
+                    "status": "ok",
+                    "message": "MinerU вернул полезные данные.",
+                    "details": {"items_count": 0},
+                }
+            ],
             "payload": {
                 "supplier": "ООО Питер Кельн",
                 "supplier_legal_name": "ООО Питер Кельн",
@@ -419,6 +427,114 @@ def test_upload_photo_passes_selected_extraction_method(monkeypatch, tmp_path):
     assert captured["fallback_filename"] == "invoice.jpg"
     assert captured["extraction_method"] == "hybrid"
     assert response.json()["ocr"]["selected_method"] == "hybrid"
+    assert response.json()["pipeline_logs"]
+
+
+def test_upload_photo_stops_and_returns_pipeline_logs_for_empty_result(monkeypatch, tmp_path):
+    from app.routers import invoice_review as invoice_review_router
+
+    monkeypatch.setattr(invoice_review_router.settings, "uploaded_invoices_dir", str(tmp_path))
+
+    def fake_extract(file_path, fallback_filename=None, extraction_method=None, on_log=None):
+        return {
+            "provider": "openai_empty_evidence",
+            "selected_method": "openai",
+            "raw_text": "",
+            "pages": 0,
+            "error": "Перед OpenAI parser не удалось получить текст или structured evidence.",
+            "stop_recommended": True,
+            "retry_recommended_method": "openai",
+            "retry_recommended_label": "OpenAI structured parser",
+            "pipeline_logs": [
+                {
+                    "stage": "collect_evidence_complete",
+                    "status": "warning",
+                    "message": "Evidence для OpenAI parser пустой.",
+                    "details": {"raw_text_length": 0},
+                }
+            ],
+            "payload": {
+                "supplier": None,
+                "items": [],
+                "parser_provider": "manual_review_empty_sheet",
+                "parser_notes": [],
+            },
+        }
+
+    monkeypatch.setattr(invoice_review_router, "extract_invoice_document", fake_extract)
+
+    response = client.post(
+        "/api/v1/invoice-review/upload-photo",
+        files={"file": ("invoice.jpg", b"fake-image", "image/jpeg")},
+        data={
+            "create_google_sheet": "false",
+            "extraction_method": "openai",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["pipeline_logs"][0]["stage"] == "collect_evidence_complete"
+    assert response.json()["detail"]["retry_recommended_method"] == "openai"
+
+
+def test_upload_trace_endpoint_returns_live_trace(monkeypatch, tmp_path):
+    from app.routers import invoice_review as invoice_review_router
+
+    monkeypatch.setattr(invoice_review_router.settings, "uploaded_invoices_dir", str(tmp_path))
+
+    def fake_extract(file_path, fallback_filename=None, extraction_method=None, on_log=None):
+        if on_log:
+            on_log(
+                {
+                    "stage": "openai_request_start",
+                    "status": "running",
+                    "message": "Отправляю evidence в OpenAI parser.",
+                    "details": {"raw_text_length": 123},
+                }
+            )
+        return {
+            "provider": "openai",
+            "selected_method": "openai",
+            "raw_text": "evidence",
+            "pages": 1,
+            "pipeline_logs": [
+                {
+                    "stage": "openai_request_start",
+                    "status": "running",
+                    "message": "Отправляю evidence в OpenAI parser.",
+                    "details": {"raw_text_length": 123},
+                }
+            ],
+            "payload": {
+                "supplier": "ООО Питер Кельн",
+                "supplier_legal_name": "ООО Питер Кельн",
+                "invoice_number": "123",
+                "invoice_date": "2026-07-04",
+                "venue": "Добрая столовая",
+                "items": [],
+                "parser_provider": "openai",
+                "parser_notes": [],
+            },
+        }
+
+    monkeypatch.setattr(invoice_review_router, "extract_invoice_document", fake_extract)
+
+    trace_id = "test-trace-1"
+    response = client.post(
+        "/api/v1/invoice-review/upload-photo",
+        files={"file": ("invoice.jpg", b"fake-image", "image/jpeg")},
+        data={
+            "create_google_sheet": "false",
+            "extraction_method": "openai",
+            "upload_trace_id": trace_id,
+        },
+    )
+
+    assert response.status_code == 200
+    trace_response = client.get(f"/api/v1/invoice-review/upload-trace/{trace_id}")
+    assert trace_response.status_code == 200
+    assert trace_response.json()["completed"] is True
+    assert trace_response.json()["logs"][0]["stage"] == "openai_request_start"
 
 
 def test_mvp4_requires_manual_approval_before_send():

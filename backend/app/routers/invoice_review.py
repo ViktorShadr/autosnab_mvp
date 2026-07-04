@@ -15,6 +15,7 @@ from app.schemas.invoice_review import (
     ConfirmSendToIikoRequest,
     InvoiceReviewCreateRequest,
     InvoiceReviewResponse,
+    PipelineLogEntry,
     InvoiceReviewUpdateRequest,
     RecognizedInvoiceItem,
     SyncSheetAndConfirmRequest,
@@ -38,6 +39,7 @@ from app.services.invoice_review_service import (
 from app.services.document_extraction_service import extract_invoice_document
 from app.services.google_sheets_service import load_invoice_reference_catalogs
 from app.services.item_normalization_service import apply_reference_mapping_to_payload
+from app.services.upload_trace_service import append_trace_log, finalize_trace, get_trace, initialize_trace
 
 router = APIRouter(prefix="/invoice-review", tags=["invoice-review"])
 
@@ -217,6 +219,70 @@ def upload_invoice_page():
       line-height: 1.45;
       white-space: pre-wrap;
     }
+    .pipeline-log-box {
+      margin-top: 18px;
+      padding: 16px;
+      border-radius: 12px;
+      background: #0f172a;
+      color: #e2e8f0;
+      border: 1px solid #1e293b;
+    }
+    .pipeline-log-title {
+      font-size: 16px;
+      font-weight: 700;
+      margin-bottom: 12px;
+    }
+    .pipeline-log-entry {
+      padding: 12px 0;
+      border-top: 1px solid rgba(148, 163, 184, 0.2);
+    }
+    .pipeline-log-entry:first-child {
+      border-top: 0;
+      padding-top: 0;
+    }
+    .pipeline-log-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 14px;
+      margin-bottom: 6px;
+    }
+    .pipeline-log-stage {
+      font-weight: 700;
+      color: #93c5fd;
+    }
+    .pipeline-log-status {
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .pipeline-log-status.ok {
+      color: #86efac;
+    }
+    .pipeline-log-status.warning {
+      color: #fde68a;
+    }
+    .pipeline-log-status.error {
+      color: #fca5a5;
+    }
+    .pipeline-log-status.running {
+      color: #c4b5fd;
+    }
+    .pipeline-log-message {
+      font-size: 14px;
+      line-height: 1.5;
+      margin-bottom: 6px;
+    }
+    .pipeline-log-details {
+      font-size: 13px;
+      line-height: 1.5;
+      color: #cbd5e1;
+      white-space: pre-wrap;
+    }
+    .pipeline-log-recommendation {
+      margin-top: 6px;
+      color: #fcd34d;
+      font-size: 13px;
+    }
   </style>
 </head>
 <body>
@@ -279,6 +345,8 @@ def upload_invoice_page():
     const googleAuthRefreshBtn = document.getElementById('googleAuthRefreshBtn');
 
     let previewUrl = null;
+    let activeTraceId = null;
+    let tracePollTimer = null;
 
     const methodLabels = {
       openai: 'OpenAI structured parser',
@@ -291,6 +359,69 @@ def upload_invoice_page():
       return String(value ?? '').replace(/[&<>'"]/g, ch => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
       }[ch]));
+    }
+
+    function renderPipelineLogs(logs) {
+      if (!Array.isArray(logs) || !logs.length) {
+        return '';
+      }
+      const entries = logs.map(log => {
+        const details = log && log.details ? Object.entries(log.details)
+          .filter(([, value]) => value !== null && value !== undefined && value !== '')
+          .map(([key, value]) => `${key}: ${typeof value === 'object' ? JSON.stringify(value, null, 2) : value}`)
+          .join('\\n') : '';
+        return `
+          <div class="pipeline-log-entry">
+            <div class="pipeline-log-head">
+              <span class="pipeline-log-stage">${escapeHtml(log.stage || 'unknown')}</span>
+              <span class="pipeline-log-status ${escapeHtml(log.status || 'warning')}">${escapeHtml(log.status || 'warning')}</span>
+            </div>
+            <div class="pipeline-log-message">${escapeHtml(log.message || '')}</div>
+            ${details ? `<div class="pipeline-log-details">${escapeHtml(details)}</div>` : ''}
+            ${log.recommendation ? `<div class="pipeline-log-recommendation">Рекомендация: ${escapeHtml(log.recommendation)}</div>` : ''}
+          </div>
+        `;
+      }).join('');
+      return `<div class="pipeline-log-box"><div class="pipeline-log-title">Логи обработки документа</div>${entries}</div>`;
+    }
+
+    function stopTracePolling() {
+      if (tracePollTimer) {
+        window.clearInterval(tracePollTimer);
+        tracePollTimer = null;
+      }
+    }
+
+    async function pollTrace(traceId) {
+      try {
+        const response = await fetch('/api/v1/invoice-review/upload-trace/' + encodeURIComponent(traceId));
+        if (!response.ok) {
+          return;
+        }
+        const data = await response.json();
+        if (activeTraceId !== traceId) {
+          return;
+        }
+        const existingLogBox = renderPipelineLogs(data.logs || []);
+        const loadingMessage = data.completed
+          ? ''
+          : '<div class="loading">Документ обрабатывается. Логи обновляются автоматически...</div>';
+        output.innerHTML = loadingMessage + existingLogBox;
+        if (data.completed) {
+          stopTracePolling();
+        }
+      } catch (error) {
+        // Ignore transient polling errors; final upload response remains source of truth.
+      }
+    }
+
+    function startTracePolling(traceId) {
+      activeTraceId = traceId;
+      stopTracePolling();
+      pollTrace(traceId);
+      tracePollTimer = window.setInterval(() => {
+        pollTrace(traceId);
+      }, 1200);
     }
 
     function formatFileSize(size) {
@@ -392,6 +523,10 @@ def upload_invoice_page():
       event.preventDefault();
       const selectedMethod = extractionMethodInput.value || 'hybrid';
       const selectedMethodLabel = methodLabels[selectedMethod] || selectedMethod;
+      const traceId = (window.crypto && window.crypto.randomUUID)
+        ? window.crypto.randomUUID()
+        : ('trace-' + Date.now() + '-' + Math.random().toString(16).slice(2));
+      startTracePolling(traceId);
       output.innerHTML = '<div class="loading">Файл загружается. Метод распознавания: <b>' + escapeHtml(selectedMethodLabel) + '</b>. Подождите...</div>';
       button.disabled = true;
 
@@ -404,6 +539,7 @@ def upload_invoice_page():
       formData.append('file', fileInput.files[0]);
       formData.append('create_google_sheet', 'true');
       formData.append('extraction_method', selectedMethod);
+      formData.append('upload_trace_id', traceId);
 
       try {
         const response = await fetch('/api/v1/invoice-review/upload-photo', {
@@ -418,8 +554,10 @@ def upload_invoice_page():
           throw new Error(responseText || 'Сервер вернул не JSON-ответ.');
         }
         if (!response.ok) {
-          throw new Error(data.detail || JSON.stringify(data, null, 2));
+          const detail = typeof data.detail === 'object' ? JSON.stringify(data.detail) : (data.detail || JSON.stringify(data, null, 2));
+          throw new Error(detail);
         }
+        stopTracePolling();
 
         const hasGoogleSheet = Boolean(data.google_spreadsheet_url);
         const methodInfo = data.ocr && data.ocr.selected_method_label
@@ -435,6 +573,7 @@ def upload_invoice_page():
               ${ocrError}
               <div class="result-actions"><a class="secondary-btn" href="${escapeHtml(data.google_spreadsheet_url)}" target="_blank" rel="noopener">Открыть таблицу заведения</a></div>
             </div>
+            ${renderPipelineLogs(data.pipeline_logs)}
           `;
         } else {
           const sheetError = data.google_spreadsheet_error ? `<div>Ошибка Google Таблицы: ${escapeHtml(data.google_spreadsheet_error)}</div>` : '';
@@ -446,10 +585,35 @@ def upload_invoice_page():
               ${ocrError}
               ${sheetError}
             </div>
+            ${renderPipelineLogs(data.pipeline_logs)}
           `;
         }
       } catch (error) {
-        output.innerHTML = `<div class="error"><b>Ошибка загрузки:</b> ${escapeHtml(error.message)}</div>`;
+        stopTracePolling();
+        let detail = null;
+        try {
+          detail = JSON.parse(error.message);
+        } catch (parseError) {
+          detail = null;
+        }
+        if (detail && typeof detail === 'object') {
+          const retryButton = detail.retry_recommended_method
+            ? `<div class="button-row compact"><button id="retryRecommendedBtn" type="button">Выбрать режим: ${escapeHtml(detail.retry_recommended_label || detail.retry_recommended_method)}</button></div>`
+            : '';
+          output.innerHTML = `
+            <div class="error"><b>Ошибка загрузки:</b> ${escapeHtml(detail.error_message || 'Процесс остановлен из-за пустого или некорректного ответа.')}</div>
+            ${retryButton}
+            ${renderPipelineLogs(detail.pipeline_logs)}
+          `;
+          const retryButtonNode = document.getElementById('retryRecommendedBtn');
+          if (retryButtonNode) {
+            retryButtonNode.addEventListener('click', () => {
+              extractionMethodInput.value = detail.retry_recommended_method;
+            });
+          }
+        } else {
+          output.innerHTML = `<div class="error"><b>Ошибка загрузки:</b> ${escapeHtml(error.message)}</div>`;
+        }
       } finally {
         button.disabled = false;
       }
@@ -481,9 +645,17 @@ async def upload_invoice_photo_real_ocr(
     user_id: str | None = Form(default=None),
     create_google_sheet: bool = Form(default=True),
     extraction_method: str | None = Form(default=None),
+    upload_trace_id: str | None = Form(default=None),
     public_api_base_url: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ):
+    if upload_trace_id:
+        initialize_trace(upload_trace_id)
+
+    def trace_log(log: dict) -> None:
+        if upload_trace_id:
+            append_trace_log(upload_trace_id, log)
+
     target_dir = Path(settings.uploaded_invoices_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     safe_name = Path(file.filename or "invoice_upload").name
@@ -495,9 +667,32 @@ async def upload_invoice_photo_real_ocr(
         str(file_path),
         safe_name,
         extraction_method=extraction_method,
+        on_log=trace_log,
     )
     parsed = extraction["payload"]
+    pipeline_logs = extraction.get("pipeline_logs", [])
+    if extraction.get("stop_recommended"):
+        if upload_trace_id:
+            finalize_trace(upload_trace_id, error_message=extraction.get("error"))
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error_message": extraction.get("error")
+                or "Процесс остановлен: получен пустой или невалидный результат на одном из этапов.",
+                "pipeline_logs": pipeline_logs,
+                "retry_recommended_method": extraction.get("retry_recommended_method"),
+                "retry_recommended_label": extraction.get("retry_recommended_label"),
+            },
+        )
     if settings.google_sheets_enabled and settings.google_target_spreadsheet_id:
+        mapping_log = {
+            "stage": "reference_mapping_start",
+            "status": "running",
+            "message": "Запускаю deterministic сопоставление со справочниками Google Sheets.",
+            "details": {},
+        }
+        pipeline_logs.append(mapping_log)
+        trace_log(mapping_log)
         try:
             references = load_invoice_reference_catalogs()
             parsed = apply_reference_mapping_to_payload(
@@ -505,10 +700,26 @@ async def upload_invoice_photo_real_ocr(
                 products=references["products"],
                 packages=references["packages"],
             )
+            mapping_complete_log = {
+                "stage": "reference_mapping_complete",
+                "status": "ok",
+                "message": "Сопоставление со справочниками Google Sheets завершено.",
+                "details": {"items_count": len(parsed.get("items") or [])},
+            }
+            pipeline_logs.append(mapping_complete_log)
+            trace_log(mapping_complete_log)
         except Exception as exc:  # noqa: BLE001 - reference outage must remain visible but not destroy OCR output
             parsed.setdefault("parser_notes", []).append(
                 f"Не удалось выполнить сопоставление со справочниками Google Sheets: {exc}"
             )
+            mapping_error_log = {
+                "stage": "reference_mapping_failed",
+                "status": "error",
+                "message": "Не удалось выполнить сопоставление со справочниками Google Sheets.",
+                "details": {"error": str(exc)},
+            }
+            pipeline_logs.append(mapping_error_log)
+            trace_log(mapping_error_log)
     _apply_duplicate_status(db, parsed)
     payload = InvoiceReviewCreateRequest(
         file_id=safe_name,
@@ -552,14 +763,49 @@ async def upload_invoice_photo_real_ocr(
         response["ocr"]["error"] = extraction["error"]
     response["parser_notes"] = parsed.get("parser_notes", [])
     response["parser_provider"] = parsed.get("parser_provider")
+    response["pipeline_logs"] = [PipelineLogEntry(**log).model_dump(mode="json") for log in pipeline_logs]
     if create_google_sheet:
+        google_log = {
+            "stage": "google_sheet_start",
+            "status": "running",
+            "message": "Пишу результат в Google Sheets.",
+            "details": {},
+        }
+        response["pipeline_logs"].append(google_log)
+        trace_log(google_log)
         try:
             spreadsheet = create_real_google_sheet_for_review(db, receiving, public_api_base_url or settings.public_api_base_url)
             response["google_spreadsheet_id"] = spreadsheet["spreadsheet_id"]
             response["google_spreadsheet_url"] = spreadsheet["spreadsheet_url"]
+            google_ok_log = {
+                "stage": "google_sheet_complete",
+                "status": "ok",
+                "message": "Google Sheets успешно обновлен.",
+                "details": {"spreadsheet_id": spreadsheet["spreadsheet_id"]},
+            }
+            response["pipeline_logs"].append(google_ok_log)
+            trace_log(google_ok_log)
         except Exception as exc:  # noqa: BLE001 - external provider errors must be surfaced to user
             response["google_spreadsheet_error"] = str(exc)
+            google_error_log = {
+                "stage": "google_sheet_failed",
+                "status": "error",
+                "message": "Не удалось записать результат в Google Sheets.",
+                "details": {"error": str(exc)},
+            }
+            response["pipeline_logs"].append(google_error_log)
+            trace_log(google_error_log)
+    if upload_trace_id:
+        finalize_trace(upload_trace_id, error_message=response.get("google_spreadsheet_error"))
     return response
+
+
+@router.get("/upload-trace/{trace_id}")
+def get_upload_trace(trace_id: str):
+    trace = get_trace(trace_id)
+    if trace is None:
+        raise HTTPException(status_code=404, detail="Трассировка загрузки не найдена")
+    return trace
 
 
 def _extraction_method_label(value: str | None) -> str | None:

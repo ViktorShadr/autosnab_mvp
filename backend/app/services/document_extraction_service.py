@@ -27,14 +27,104 @@ def extract_invoice_document(
     file_path: str,
     fallback_filename: str | None = None,
     extraction_method: str | None = None,
+    on_log: Any | None = None,
 ) -> dict[str, Any]:
     """Extract evidence and return a normalized invoice payload."""
     backend = _resolve_extraction_method(extraction_method)
+    pipeline_logs: list[dict[str, Any]] = []
+    _append_pipeline_log(
+        pipeline_logs,
+        _pipeline_log(
+            "document_received",
+            "ok",
+            "Документ получен backend-сервисом.",
+            selected_method=backend,
+            filename=fallback_filename or Path(file_path).name,
+            source_type=_source_type(file_path, fallback_filename),
+        ),
+        on_log=on_log,
+    )
     if backend == "openai":
+        _append_pipeline_log(
+            pipeline_logs,
+            _pipeline_log("collect_evidence_start", "running", "Начат сбор evidence для OpenAI parser."),
+            on_log=on_log,
+        )
         evidence = _collect_openai_evidence(file_path, fallback_filename)
+        _append_pipeline_log(
+            pipeline_logs,
+            _pipeline_log(
+                "collect_evidence_complete",
+                "ok" if _evidence_has_content(evidence) else "warning",
+                "Evidence собран для OpenAI parser."
+                if _evidence_has_content(evidence)
+                else "Evidence для OpenAI parser пустой.",
+                extraction_method=evidence.get("extraction_method"),
+                ocr_used=bool(evidence.get("ocr_used")),
+                raw_text_length=len(evidence.get("raw_text") or ""),
+                pages=evidence.get("pages"),
+                source_type=evidence.get("source_type"),
+            ),
+            on_log=on_log,
+        )
+        if not _evidence_has_content(evidence):
+            error_message = (
+                "Перед OpenAI parser не удалось получить текст или структурированный evidence. "
+                "Процесс остановлен."
+            )
+            _append_pipeline_log(
+                pipeline_logs,
+                _pipeline_log(
+                    "openai_skipped_empty_evidence",
+                    "error",
+                    error_message,
+                    recommendation=(
+                        "Попробуйте прогнать документ полностью через ИИ после устранения проблем "
+                        "с OCR/MinerU или загрузите более качественный файл."
+                    ),
+                ),
+                on_log=on_log,
+            )
+            manual_result = _manual_review_result(error_message, fallback_filename)
+            manual_result.update(
+                {
+                    "provider": "openai_empty_evidence",
+                    "raw_text": evidence.get("raw_text") or "",
+                    "pages": evidence.get("pages"),
+                    "selected_method": backend,
+                    "evidence": evidence,
+                    "pipeline_logs": pipeline_logs,
+                    "stop_recommended": True,
+                    "error": evidence.get("error") or error_message,
+                    "retry_recommended_method": "openai",
+                    "retry_recommended_label": "OpenAI structured parser",
+                }
+            )
+            return manual_result
+        _append_pipeline_log(
+            pipeline_logs,
+            _pipeline_log(
+                "openai_request_start",
+                "running",
+                "Отправляю evidence в OpenAI parser.",
+                model=settings.openai_invoice_model,
+                raw_text_length=len(evidence.get("raw_text") or ""),
+            ),
+            on_log=on_log,
+        )
         try:
             payload = parse_invoice_with_openai(evidence)
         except OpenAIInvoiceParserError as exc:
+            _append_pipeline_log(
+                pipeline_logs,
+                _pipeline_log(
+                    "openai_request_failed",
+                    "error",
+                    "OpenAI parser завершился ошибкой.",
+                    error=str(exc),
+                ),
+                on_log=on_log,
+            )
             manual_result = _manual_review_result(str(exc), fallback_filename)
             manual_result.update(
                 {
@@ -43,9 +133,29 @@ def extract_invoice_document(
                     "pages": evidence.get("pages"),
                     "selected_method": backend,
                     "evidence": evidence,
+                    "pipeline_logs": pipeline_logs,
+                    "stop_recommended": True,
+                    "retry_recommended_method": "openai",
+                    "retry_recommended_label": "OpenAI structured parser",
                 }
             )
             return manual_result
+        has_useful_payload = _payload_has_useful_data(payload)
+        _append_pipeline_log(
+            pipeline_logs,
+            _pipeline_log(
+                "openai_request_complete",
+                "ok" if has_useful_payload else "error",
+                "OpenAI parser вернул структурированный результат."
+                if has_useful_payload
+                else "OpenAI parser вернул пустой структурированный JSON.",
+                parser_provider=payload.get("parser_provider"),
+                items_count=len(payload.get("items") or []),
+                supplier=payload.get("supplier"),
+                invoice_number=payload.get("invoice_number"),
+            ),
+            on_log=on_log,
+        )
         return {
             "provider": "openai",
             "raw_text": evidence.get("raw_text") or "",
@@ -56,25 +166,91 @@ def extract_invoice_document(
             "parser_notes": payload.get("parser_notes", []),
             "selected_method": backend,
             "evidence": evidence,
+            "pipeline_logs": pipeline_logs,
+            "stop_recommended": not has_useful_payload,
+            "retry_recommended_method": None,
+            "retry_recommended_label": None,
+            "error": "OpenAI parser вернул пустой структурированный JSON."
+            if not has_useful_payload
+            else None,
         }
 
     if backend in {"mineru", "hybrid"}:
+        _append_pipeline_log(
+            pipeline_logs,
+            _pipeline_log("mineru_start", "running", "Запускаю извлечение через MinerU."),
+            on_log=on_log,
+        )
         try:
             mineru_result = _extract_with_mineru(file_path, fallback_filename)
             if _payload_has_useful_data(mineru_result["payload"]):
                 mineru_result["selected_method"] = backend
+                _append_pipeline_log(
+                    pipeline_logs,
+                    _pipeline_log(
+                        "mineru_complete",
+                        "ok",
+                        "MinerU вернул полезные данные.",
+                        items_count=len(mineru_result["payload"].get("items") or []),
+                        supplier=mineru_result["payload"].get("supplier"),
+                    ),
+                    on_log=on_log,
+                )
+                mineru_result["pipeline_logs"] = pipeline_logs
                 return mineru_result
+            _append_pipeline_log(
+                pipeline_logs,
+                _pipeline_log(
+                    "mineru_empty",
+                    "warning",
+                    "MinerU вернул пустой JSON или неполный результат.",
+                    recommendation="Попробуйте полный прогон через OpenAI structured parser.",
+                ),
+                on_log=on_log,
+            )
         except Exception as exc:  # noqa: BLE001 - fallback is intentional
             mineru_error = str(exc)
+            _append_pipeline_log(
+                pipeline_logs,
+                _pipeline_log(
+                    "mineru_failed",
+                    "error",
+                    "MinerU завершился ошибкой.",
+                    error=mineru_error,
+                ),
+                on_log=on_log,
+            )
         else:
             mineru_error = None
 
         if backend == "hybrid":
+            _append_pipeline_log(
+                pipeline_logs,
+                _pipeline_log("ocr_fallback_start", "running", "Запускаю OCR fallback после MinerU."),
+                on_log=on_log,
+            )
             ocr_result = _extract_with_ocr(file_path, fallback_filename)
             if mineru_error:
                 ocr_result["error"] = mineru_error
                 ocr_result["parser_notes"] = [*ocr_result.get("parser_notes", []), f"MinerU fallback: {mineru_error}"]
             ocr_result["selected_method"] = backend
+            _append_pipeline_log(
+                pipeline_logs,
+                _pipeline_log(
+                    "ocr_fallback_complete",
+                    "ok" if _payload_has_useful_data(ocr_result.get("payload") or {}) else "warning",
+                    "OCR fallback завершен.",
+                    provider=ocr_result.get("provider"),
+                    raw_text_length=len(ocr_result.get("raw_text") or ""),
+                    items_count=len((ocr_result.get("payload") or {}).get("items") or []),
+                ),
+                on_log=on_log,
+            )
+            ocr_result["pipeline_logs"] = pipeline_logs
+            if not _payload_has_useful_data(ocr_result.get("payload") or {}):
+                ocr_result["stop_recommended"] = True
+                ocr_result["retry_recommended_method"] = "openai"
+                ocr_result["retry_recommended_label"] = "OpenAI structured parser"
             return ocr_result
 
         manual_result = _manual_review_result(
@@ -82,10 +258,36 @@ def extract_invoice_document(
             fallback_filename,
         )
         manual_result["selected_method"] = backend
+        manual_result["pipeline_logs"] = pipeline_logs
+        manual_result["stop_recommended"] = True
+        manual_result["retry_recommended_method"] = "openai"
+        manual_result["retry_recommended_label"] = "OpenAI structured parser"
         return manual_result
 
+    _append_pipeline_log(
+        pipeline_logs,
+        _pipeline_log("ocr_start", "running", "Запускаю OCR extraction."),
+        on_log=on_log,
+    )
     ocr_result = _extract_with_ocr(file_path, fallback_filename)
     ocr_result["selected_method"] = backend
+    _append_pipeline_log(
+        pipeline_logs,
+        _pipeline_log(
+            "ocr_complete",
+            "ok" if _payload_has_useful_data(ocr_result.get("payload") or {}) else "warning",
+            "OCR extraction завершен.",
+            provider=ocr_result.get("provider"),
+            raw_text_length=len(ocr_result.get("raw_text") or ""),
+            items_count=len((ocr_result.get("payload") or {}).get("items") or []),
+        ),
+        on_log=on_log,
+    )
+    ocr_result["pipeline_logs"] = pipeline_logs
+    if not _payload_has_useful_data(ocr_result.get("payload") or {}):
+        ocr_result["stop_recommended"] = True
+        ocr_result["retry_recommended_method"] = "openai"
+        ocr_result["retry_recommended_label"] = "OpenAI structured parser"
     return ocr_result
 
 
@@ -618,3 +820,44 @@ def _payload_has_useful_data(payload: dict[str, Any]) -> bool:
         if payload.get(field) not in (None, ""):
             return True
     return False
+
+
+def _evidence_has_content(evidence: dict[str, Any]) -> bool:
+    if (evidence.get("raw_text") or "").strip():
+        return True
+    structured_document = evidence.get("structured_document")
+    if isinstance(structured_document, dict):
+        return any(value not in (None, "", [], {}) for value in structured_document.values())
+    if isinstance(structured_document, list):
+        return bool(structured_document)
+    return False
+
+
+def _pipeline_log(
+    stage: str,
+    status: str,
+    message: str,
+    *,
+    recommendation: str | None = None,
+    **details: Any,
+) -> dict[str, Any]:
+    log = {
+        "stage": stage,
+        "status": status,
+        "message": message,
+        "details": details,
+    }
+    if recommendation:
+        log["recommendation"] = recommendation
+    return log
+
+
+def _append_pipeline_log(
+    pipeline_logs: list[dict[str, Any]],
+    log: dict[str, Any],
+    *,
+    on_log: Any | None = None,
+) -> None:
+    pipeline_logs.append(log)
+    if on_log is not None:
+        on_log(log)
