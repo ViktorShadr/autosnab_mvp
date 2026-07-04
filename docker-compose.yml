@@ -7,9 +7,9 @@ services:
     env_file:
       - .env
     environment:
-      # В контейнере путь к JSON отличается от локального запуска.
-      GOOGLE_SERVICE_ACCOUNT_FILE: /app/secrets/service-account.json
+      SECRETS_ENV_FILE: /app/.env
       UPLOADED_INVOICES_DIR: /app/uploads/invoices
     volumes:
-      - ./backend/secrets:/app/secrets:ro
+      # OAuth callback обновляет access/refresh token непосредственно в .env.
+      - ./.env:/app/.env
       - ./backend/uploads:/app/uploads

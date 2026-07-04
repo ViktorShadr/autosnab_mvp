@@ -2,7 +2,7 @@
 title: Runbook
 source: session
 created: 2026-07-03
-updated: 2026-07-03
+updated: 2026-07-04
 tags: [runbook, dev, qa, operations]
 status: current
 ---
@@ -26,16 +26,19 @@ This runbook covers the shortest practical path to:
 - Google Cloud OAuth client for Drive + Sheets
 - edit access to the target Google Spreadsheet if shared-sheet mode is used
 
-## Required files
-
-OAuth files expected by the app:
+## Required secrets
 
 ```text
-backend/secrets/oauth-client.json
-backend/secrets/oauth-token.json
+GOOGLE_OAUTH_CLIENT_ID
+GOOGLE_OAUTH_CLIENT_SECRET
+GOOGLE_OAUTH_ACCESS_TOKEN
+GOOGLE_OAUTH_REFRESH_TOKEN
+GOOGLE_OAUTH_TOKEN_EXPIRY
 ```
 
-The token file is created after the OAuth flow and does not need to exist before first launch.
+All OAuth secrets live in `.env`. Access token, refresh token, and expiry are
+written there after the OAuth callback; the token fields may be empty before
+the first authorization.
 
 ## Minimal `.env`
 
@@ -45,9 +48,15 @@ For local SQLite + OCR + Google Sheets:
 DATABASE_URL=sqlite:///./autosnab_mvp.db
 
 GOOGLE_AUTH_MODE=oauth
-GOOGLE_OAUTH_CLIENT_SECRETS_FILE=backend/secrets/oauth-client.json
-GOOGLE_OAUTH_TOKEN_FILE=backend/secrets/oauth-token.json
+GOOGLE_OAUTH_CLIENT_ID=
+GOOGLE_OAUTH_CLIENT_SECRET=
+GOOGLE_OAUTH_ACCESS_TOKEN=
+GOOGLE_OAUTH_REFRESH_TOKEN=
+GOOGLE_OAUTH_TOKEN_EXPIRY=
+GOOGLE_OAUTH_AUTH_URI=https://accounts.google.com/o/oauth2/auth
+GOOGLE_OAUTH_TOKEN_URI=https://oauth2.googleapis.com/token
 GOOGLE_OAUTH_REDIRECT_URI=http://localhost:8000/api/v1/google-oauth/callback
+SECRETS_ENV_FILE=.env
 
 GOOGLE_DRIVE_OCR_ENABLED=true
 GOOGLE_DRIVE_OCR_LANGUAGE=ru
@@ -122,9 +131,10 @@ docker compose up
 
 Notes:
 
-- `docker-compose.yml` mounts `backend/secrets` and `backend/uploads`
+- `docker-compose.yml` mounts `.env` and `backend/uploads`
 - `.env` is loaded into the backend container
-- current Docker setup still points one env override at `GOOGLE_SERVICE_ACCOUNT_FILE`, but the active Google flow in code is OAuth-user based
+- `.env` is mounted at `/app/.env` so the OAuth callback can persist refreshed tokens
+- no OAuth or service-account JSON is read by the active Google flow
 - `backend/requirements.txt` now installs `mineru[all]`, so the image can run the local MinerU backend when `DOCUMENT_EXTRACTION_BACKEND=mineru`
 - if you want the Docker container to stay on OCR-only mode, keep `DOCUMENT_EXTRACTION_BACKEND=ocr`
 
@@ -141,10 +151,11 @@ In Google Cloud:
 http://localhost:8000/api/v1/google-oauth/callback
 ```
 
-Save the OAuth client JSON to:
+Copy the client credentials from the downloaded JSON into `.env`:
 
-```text
-backend/secrets/oauth-client.json
+```env
+GOOGLE_OAUTH_CLIENT_ID=...
+GOOGLE_OAUTH_CLIENT_SECRET=...
 ```
 
 Then open:
@@ -153,10 +164,12 @@ Then open:
 http://localhost:8000/api/v1/google-oauth/authorize
 ```
 
-After successful login, the app should create:
+After successful login, the app fills these `.env` values:
 
 ```text
-backend/secrets/oauth-token.json
+GOOGLE_OAUTH_ACCESS_TOKEN
+GOOGLE_OAUTH_REFRESH_TOKEN
+GOOGLE_OAUTH_TOKEN_EXPIRY
 ```
 
 Quick status check:

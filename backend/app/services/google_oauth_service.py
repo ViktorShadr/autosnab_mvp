@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -24,8 +24,8 @@ class GoogleOAuthAuthorizationError(RuntimeError):
 def get_google_user_credentials():
     """Return OAuth user credentials for Google Drive and Google Sheets APIs.
 
-    The token is stored locally in GOOGLE_OAUTH_TOKEN_FILE. If it is expired and
-    contains a refresh token, the function refreshes it automatically.
+    OAuth secrets are loaded from .env. Expired access tokens are refreshed and
+    persisted back to the configured env file.
     """
     try:
         from google.auth.exceptions import RefreshError
@@ -36,17 +36,34 @@ def get_google_user_credentials():
             "Не установлены зависимости Google OAuth. Выполните pip install -r backend/requirements.txt."
         ) from exc
 
-    token_path = _token_path()
-    if not token_path.exists():
+    if not settings.google_oauth_refresh_token:
         raise GoogleOAuthAuthorizationError(
             "Google OAuth не выполнен. Откройте /api/v1/google-oauth/authorize и войдите в Google-аккаунт."
         )
 
-    credentials = Credentials.from_authorized_user_file(str(token_path), GOOGLE_OAUTH_SCOPES)
+    credentials = Credentials(
+        token=(
+            settings.google_oauth_access_token
+            if settings.google_oauth_token_expiry
+            else None
+        ),
+        refresh_token=settings.google_oauth_refresh_token,
+        token_uri=settings.google_oauth_token_uri,
+        client_id=_required_setting(
+            settings.google_oauth_client_id,
+            "GOOGLE_OAUTH_CLIENT_ID",
+        ),
+        client_secret=_required_setting(
+            settings.google_oauth_client_secret,
+            "GOOGLE_OAUTH_CLIENT_SECRET",
+        ),
+        scopes=GOOGLE_OAUTH_SCOPES,
+        expiry=_parse_expiry(settings.google_oauth_token_expiry),
+    )
     if credentials.valid:
         return credentials
 
-    if credentials.expired and credentials.refresh_token:
+    if credentials.refresh_token:
         try:
             credentials.refresh(Request())
         except RefreshError as exc:
@@ -63,12 +80,6 @@ def get_google_user_credentials():
 
 def build_authorization_url() -> str:
     _allow_local_http_redirect()
-    client_secret_path = _client_secrets_path()
-    if not client_secret_path.exists():
-        raise GoogleOAuthConfigurationError(
-            f"Файл OAuth client secrets не найден: {client_secret_path}. "
-            "Создайте OAuth Client ID в Google Cloud и сохраните JSON в backend/secrets/oauth-client.json."
-        )
 
     try:
         from google_auth_oauthlib.flow import Flow
@@ -77,8 +88,8 @@ def build_authorization_url() -> str:
             "Не установлена зависимость google-auth-oauthlib. Выполните pip install -r backend/requirements.txt."
         ) from exc
 
-    flow = Flow.from_client_secrets_file(
-        str(client_secret_path),
+    flow = Flow.from_client_config(
+        _client_config(),
         scopes=GOOGLE_OAUTH_SCOPES,
         redirect_uri=settings.google_oauth_redirect_uri,
     )
@@ -92,11 +103,6 @@ def build_authorization_url() -> str:
 
 def save_token_from_callback_url(callback_url: str) -> dict[str, Any]:
     _allow_local_http_redirect()
-    client_secret_path = _client_secrets_path()
-    if not client_secret_path.exists():
-        raise GoogleOAuthConfigurationError(
-            f"Файл OAuth client secrets не найден: {client_secret_path}."
-        )
 
     try:
         from google_auth_oauthlib.flow import Flow
@@ -105,8 +111,8 @@ def save_token_from_callback_url(callback_url: str) -> dict[str, Any]:
             "Не установлена зависимость google-auth-oauthlib. Выполните pip install -r backend/requirements.txt."
         ) from exc
 
-    flow = Flow.from_client_secrets_file(
-        str(client_secret_path),
+    flow = Flow.from_client_config(
+        _client_config(),
         scopes=GOOGLE_OAUTH_SCOPES,
         redirect_uri=settings.google_oauth_redirect_uri,
     )
@@ -116,19 +122,17 @@ def save_token_from_callback_url(callback_url: str) -> dict[str, Any]:
 
 
 def get_oauth_status() -> dict[str, Any]:
-    token_path = _token_path()
-    client_secret_path = _client_secrets_path()
     result: dict[str, Any] = {
         "auth_mode": settings.google_auth_mode,
-        "client_secrets_file": str(client_secret_path),
-        "client_secrets_exists": client_secret_path.exists(),
-        "token_file": str(token_path),
-        "token_exists": token_path.exists(),
+        "client_configured": bool(
+            settings.google_oauth_client_id and settings.google_oauth_client_secret
+        ),
+        "token_configured": bool(settings.google_oauth_refresh_token),
         "redirect_uri": settings.google_oauth_redirect_uri,
         "scopes": GOOGLE_OAUTH_SCOPES,
         "authorized": False,
     }
-    if not token_path.exists():
+    if not settings.google_oauth_refresh_token:
         return result
 
     try:
@@ -136,39 +140,91 @@ def get_oauth_status() -> dict[str, Any]:
         result["authorized"] = credentials.valid
         result["expired"] = credentials.expired
         result["has_refresh_token"] = bool(credentials.refresh_token)
-        result["account"] = _extract_account_hint(token_path)
     except Exception as exc:  # noqa: BLE001 - status endpoint should show diagnostics
         result["error"] = str(exc)
     return result
 
 
 def revoke_local_token() -> dict[str, Any]:
-    token_path = _token_path()
-    if token_path.exists():
-        token_path.unlink()
+    _persist_env_values(
+        {
+            "GOOGLE_OAUTH_ACCESS_TOKEN": "",
+            "GOOGLE_OAUTH_REFRESH_TOKEN": "",
+            "GOOGLE_OAUTH_TOKEN_EXPIRY": "",
+        }
+    )
+    settings.google_oauth_access_token = None
+    settings.google_oauth_refresh_token = None
+    settings.google_oauth_token_expiry = None
     return get_oauth_status()
 
 
 def _save_credentials(credentials) -> None:
-    token_path = _token_path()
-    token_path.parent.mkdir(parents=True, exist_ok=True)
-    token_path.write_text(credentials.to_json(), encoding="utf-8")
+    expiry = credentials.expiry.isoformat() if credentials.expiry else ""
+    values = {
+        "GOOGLE_OAUTH_ACCESS_TOKEN": credentials.token or "",
+        "GOOGLE_OAUTH_REFRESH_TOKEN": credentials.refresh_token or "",
+        "GOOGLE_OAUTH_TOKEN_EXPIRY": expiry,
+    }
+    _persist_env_values(values)
+    settings.google_oauth_access_token = credentials.token
+    settings.google_oauth_refresh_token = credentials.refresh_token
+    settings.google_oauth_token_expiry = expiry or None
 
 
-def _extract_account_hint(token_path: Path) -> str | None:
+def _persist_env_values(values: dict[str, str]) -> None:
     try:
-        payload = json.loads(token_path.read_text(encoding="utf-8"))
-    except Exception:
+        from dotenv import set_key
+    except ImportError as exc:
+        raise GoogleOAuthConfigurationError(
+            "Не установлена зависимость python-dotenv. Выполните pip install -r backend/requirements.txt."
+        ) from exc
+
+    env_file = Path(settings.secrets_env_file)
+    env_file.touch(mode=0o600, exist_ok=True)
+    env_file.chmod(0o600)
+    for key, value in values.items():
+        set_key(str(env_file), key, value, quote_mode="always")
+
+
+def _client_config() -> dict[str, dict[str, Any]]:
+    return {
+        "web": {
+            "client_id": _required_setting(
+                settings.google_oauth_client_id,
+                "GOOGLE_OAUTH_CLIENT_ID",
+            ),
+            "client_secret": _required_setting(
+                settings.google_oauth_client_secret,
+                "GOOGLE_OAUTH_CLIENT_SECRET",
+            ),
+            "auth_uri": settings.google_oauth_auth_uri,
+            "token_uri": settings.google_oauth_token_uri,
+            "redirect_uris": [settings.google_oauth_redirect_uri],
+        }
+    }
+
+
+def _required_setting(value: str | None, env_name: str) -> str:
+    if not value:
+        raise GoogleOAuthConfigurationError(
+            f"Не задан {env_name}. Укажите его в .env."
+        )
+    return value
+
+
+def _parse_expiry(value: str | None) -> datetime | None:
+    if not value:
         return None
-    return payload.get("account") or payload.get("client_id")
-
-
-def _client_secrets_path() -> Path:
-    return Path(settings.google_oauth_client_secrets_file)
-
-
-def _token_path() -> Path:
-    return Path(settings.google_oauth_token_file)
+    try:
+        expiry = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise GoogleOAuthConfigurationError(
+            "GOOGLE_OAUTH_TOKEN_EXPIRY должен быть в ISO 8601 формате."
+        ) from exc
+    if expiry.tzinfo:
+        return expiry.astimezone(timezone.utc).replace(tzinfo=None)
+    return expiry
 
 
 def _allow_local_http_redirect() -> None:

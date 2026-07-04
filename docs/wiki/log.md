@@ -142,3 +142,10 @@
 - Captured today's outcome in wiki: MinerU is now the documented local extraction backend, with OCR remaining as fallback.
 - Kept the Google Sheets path aligned to the real `Накладная` column contract and documented the live write-range fix.
 - Left `.env`, secret OAuth files, the local database, exports, and uploads out of version control.
+
+## [2026-07-04] security | OAuth credentials moved fully into `.env`
+
+- Replaced OAuth client/token JSON reads with env-only client ID, client secret, access token, refresh token, and expiry settings.
+- OAuth callback and token refresh now persist updated token values back into `.env`.
+- Removed `.env` and legacy OAuth JSON files from Git tracking while preserving the local ignored files.
+- Recorded that the exposed Google credentials must be revoked and reissued because they already exist in Git history.

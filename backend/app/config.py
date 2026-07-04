@@ -8,15 +8,17 @@ class Settings(BaseSettings):
 
     # Google Drive OCR + Google Sheets integration.
     # Основной режим: OAuth обычного Google-пользователя.
-    # Service account поля оставлены только для обратной совместимости,
-    # но новые вызовы Drive OCR/Sheets используют OAuth credentials.
     google_auth_mode: str = "oauth"
-    google_oauth_client_secrets_file: str = "backend/secrets/oauth-client.json"
-    google_oauth_token_file: str = "backend/secrets/oauth-token.json"
+    google_oauth_client_id: str | None = None
+    google_oauth_client_secret: str | None = None
+    google_oauth_access_token: str | None = None
+    google_oauth_refresh_token: str | None = None
+    google_oauth_token_expiry: str | None = None
+    google_oauth_auth_uri: str = "https://accounts.google.com/o/oauth2/auth"
+    google_oauth_token_uri: str = "https://oauth2.googleapis.com/token"
     google_oauth_redirect_uri: str = "http://localhost:8000/api/v1/google-oauth/callback"
+    secrets_env_file: str = ".env"
 
-    google_application_credentials: str | None = None
-    google_service_account_file: str | None = None
     google_drive_folder_id: str | None = None
     google_target_spreadsheet_id: str | None = None
     google_target_sheet_name: str = "Накладная"

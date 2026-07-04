@@ -57,3 +57,5 @@ status: current
 - The remaining operational step is to verify the MinerU package installs cleanly in the target environment and then run one real invoice through the MinerU backend switch.
 - The remaining live task is to retest the Google write flow against the user-owned spreadsheet copy and verify that values now land in the correct business columns.
 - The 2026-07-04 wrap-up is now captured in wiki: the local extraction path is MinerU-ready, the Google Sheets writer is documented and fixed at the column-contract level, and only safe docs were prepared for commit.
+- Google OAuth now uses env-only credentials: client ID, client secret, access token, refresh token, and token expiry are read from `.env`; runtime no longer reads OAuth or service-account JSON files.
+- `.env` and the legacy OAuth JSON files were removed from Git tracking. Because credentials existed in repository history, they must be revoked and reissued.

@@ -118,17 +118,17 @@ ID документа
 ### 3. Google OAuth вместо service account
 
 Текущий основной режим работы с Google Drive OCR и Google Sheets — OAuth обычного Google-аккаунта.
-
-Используются файлы:
+Client credentials и пользовательские токены хранятся только в `.env`:
 
 ```text
-backend/secrets/oauth-client.json
-backend/secrets/oauth-token.json
+GOOGLE_OAUTH_CLIENT_ID
+GOOGLE_OAUTH_CLIENT_SECRET
+GOOGLE_OAUTH_ACCESS_TOKEN
+GOOGLE_OAUTH_REFRESH_TOKEN
+GOOGLE_OAUTH_TOKEN_EXPIRY
 ```
 
-`oauth-client.json` нужно скачать из Google Cloud Console как OAuth Client ID типа `Web application`.
-
-`oauth-token.json` создается автоматически после авторизации через endpoint:
+Access token, refresh token и expiry обновляются автоматически после авторизации через endpoint:
 
 ```text
 GET /api/v1/google-oauth/authorize
@@ -346,9 +346,15 @@ cp .env.example .env
 DATABASE_URL=sqlite:///./autosnab_mvp.db
 
 GOOGLE_AUTH_MODE=oauth
-GOOGLE_OAUTH_CLIENT_SECRETS_FILE=backend/secrets/oauth-client.json
-GOOGLE_OAUTH_TOKEN_FILE=backend/secrets/oauth-token.json
+GOOGLE_OAUTH_CLIENT_ID=
+GOOGLE_OAUTH_CLIENT_SECRET=
+GOOGLE_OAUTH_ACCESS_TOKEN=
+GOOGLE_OAUTH_REFRESH_TOKEN=
+GOOGLE_OAUTH_TOKEN_EXPIRY=
+GOOGLE_OAUTH_AUTH_URI=https://accounts.google.com/o/oauth2/auth
+GOOGLE_OAUTH_TOKEN_URI=https://oauth2.googleapis.com/token
 GOOGLE_OAUTH_REDIRECT_URI=http://localhost:8000/api/v1/google-oauth/callback
+SECRETS_ENV_FILE=.env
 
 GOOGLE_DRIVE_OCR_ENABLED=true
 GOOGLE_DRIVE_OCR_LANGUAGE=ru
@@ -397,10 +403,11 @@ Web application
 http://localhost:8000/api/v1/google-oauth/callback
 ```
 
-4. Скачать JSON и сохранить его сюда:
+4. Скопировать `client_id` и `client_secret` из скачанного JSON в `.env`:
 
-```text
-backend/secrets/oauth-client.json
+```env
+GOOGLE_OAUTH_CLIENT_ID=...
+GOOGLE_OAUTH_CLIENT_SECRET=...
 ```
 
 5. Запустить backend и открыть:
@@ -409,10 +416,12 @@ backend/secrets/oauth-client.json
 http://localhost:8000/api/v1/google-oauth/authorize
 ```
 
-6. После успешного входа появится файл:
+6. После успешного входа backend заполнит в `.env`:
 
 ```text
-backend/secrets/oauth-token.json
+GOOGLE_OAUTH_ACCESS_TOKEN
+GOOGLE_OAUTH_REFRESH_TOKEN
+GOOGLE_OAUTH_TOKEN_EXPIRY
 ```
 
 ## Локальный запуск
@@ -455,7 +464,7 @@ docker compose build --no-cache
 docker compose up
 ```
 
-При Docker-запуске нужно убедиться, что папка `backend/secrets` содержит OAuth-файлы, а `.env` указывает корректные пути.
+При Docker-запуске `.env` подключается в контейнер как `/app/.env`, чтобы OAuth callback мог обновлять токены без отдельных JSON-файлов.
 В Docker-образе также устанавливается `mineru[all]`, поэтому локальный MinerU-backend можно включить через `DOCUMENT_EXTRACTION_BACKEND=mineru`.
 
 ## Пример загрузки накладной через curl

@@ -218,6 +218,7 @@ __marimo__/
 .streamlit/secrets.toml
 
 # АвтоСнаб local secrets and uploaded invoice files
+.env
 service-account.json
 
 # IDE and local vault state
