@@ -252,6 +252,8 @@ def build_review_sheet(receiving: Receiving) -> dict:
     header_meta = meta.get("header", {})
     item_meta = meta.get("items", [])
     header_meta, item_meta = _backfill_invoice_reference_mapping_if_needed(header_meta, item_meta)
+    parser_metadata = header_meta.get("parser_metadata") if isinstance(header_meta.get("parser_metadata"), dict) else {}
+    parser_items = parser_metadata.get("items") if isinstance(parser_metadata.get("items"), list) else []
     items = list(receiving.items)
     calculated_total_sum = _calculate_review_total_sum(items, item_meta)
     total_sum = header_meta.get("total_sum") if header_meta.get("total_sum") not in (None, "") else calculated_total_sum
@@ -261,7 +263,11 @@ def build_review_sheet(receiving: Receiving) -> dict:
     register_rows = [INVOICE_REGISTER_HEADERS]
     if items:
         for index, item in enumerate(items, start=1):
-            row_meta = item_meta[index - 1] if index - 1 < len(item_meta) else {}
+            row_meta = _hydrate_review_sheet_item_meta(
+                item_meta[index - 1] if index - 1 < len(item_meta) else {},
+                parser_items,
+                index,
+            )
             register_rows.append(_invoice_register_item_row(header_values, item, row_meta, index))
     else:
         register_rows.append(_invoice_register_item_row(header_values, None, {}, 1))
@@ -338,6 +344,17 @@ def _needs_invoice_reference_backfill(item: dict[str, Any]) -> bool:
     return bool(item.get("name") or item.get("raw_name") or item.get("clean_name") or item.get("normalized_name_candidate"))
 
 
+def _hydrate_review_sheet_item_meta(
+    item: dict[str, Any],
+    parser_items: list[dict[str, Any]],
+    index: int,
+) -> dict[str, Any]:
+    result = _merge_item_with_parser_metadata(item, parser_items, index)
+    if result.get("us_product_name") in (None, ""):
+        result["us_product_name"] = _review_sheet_fallback_us_product_name(result)
+    return result
+
+
 def _merge_item_with_parser_metadata(
     item: dict[str, Any],
     parser_items: list[dict[str, Any]],
@@ -381,6 +398,14 @@ def _merge_item_with_parser_metadata(
     if result.get("raw_name") in (None, "") and result.get("name"):
         result["raw_name"] = result["name"]
     return result
+
+
+def _review_sheet_fallback_us_product_name(item: dict[str, Any]) -> str:
+    for key in ("normalized_name_candidate", "clean_name", "name", "raw_name"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return re.sub(r"\s+", " ", value)
+    return ""
 
 
 def _invoice_register_header_values(

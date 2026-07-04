@@ -336,6 +336,62 @@ def test_collect_openai_evidence_records_mineru_failure_and_ocr_success(monkeypa
     assert evidence["raw_text"] == "recognized invoice"
 
 
+def test_collect_openai_evidence_skips_unhealthy_mineru_and_uses_ocr(monkeypatch, tmp_path):
+    source = tmp_path / "invoice.jpg"
+    source.write_bytes(b"image")
+    attempts = []
+    mineru_calls = []
+    monkeypatch.setattr(
+        document_extraction_service,
+        "prepare_document_page",
+        lambda _path: {
+            "prepared_path": None,
+            "transformations": [],
+            "quality": {},
+        },
+    )
+    monkeypatch.setattr(
+        document_extraction_service,
+        "mineru_health",
+        lambda: {
+            "ready": False,
+            "reason": "MinerU model cache is incomplete: missing models/TabRec/UnetStructure/unet.onnx",
+        },
+    )
+    monkeypatch.setattr(
+        document_extraction_service,
+        "_extract_with_mineru",
+        lambda *_args: mineru_calls.append(_args),
+    )
+    monkeypatch.setattr(
+        document_extraction_service,
+        "_extract_with_ocr",
+        lambda *_args: {
+            "provider": "google_drive_ocr",
+            "raw_text": "recognized invoice",
+            "pages": 1,
+        },
+    )
+
+    evidence = document_extraction_service._collect_openai_evidence(
+        str(source),
+        source.name,
+        on_attempt=attempts.append,
+    )
+
+    completed_attempts = [attempt for attempt in attempts if attempt["status"] != "running"]
+    assert [attempt["provider"] for attempt in completed_attempts] == [
+        "image_preparation",
+        "mineru",
+        "google_drive_ocr",
+    ]
+    assert completed_attempts[1]["status"] == "skipped"
+    assert "model cache is incomplete" in completed_attempts[1]["error_message"]
+    assert mineru_calls == []
+    assert evidence["raw_text"] == "recognized invoice"
+    assert any("model cache is incomplete" in error for error in evidence["errors"])
+
+
 def test_collect_openai_evidence_surfaces_image_quality_warnings(monkeypatch, tmp_path):
     source = tmp_path / "invoice.jpg"
     source.write_bytes(b"image")
@@ -485,6 +541,11 @@ def test_source_image_counts_as_evidence_when_ocr_is_empty(tmp_path):
 def test_extract_invoice_document_hybrid_falls_back_to_ocr(monkeypatch):
     monkeypatch.setattr(
         document_extraction_service,
+        "mineru_health",
+        lambda: {"ready": True, "reason": None},
+    )
+    monkeypatch.setattr(
+        document_extraction_service,
         "_extract_with_mineru",
         lambda _file_path, _filename: {
             "provider": "mineru",
@@ -513,6 +574,11 @@ def test_extract_invoice_document_hybrid_falls_back_to_ocr(monkeypatch):
 def test_extract_invoice_document_mineru_returns_manual_review_instead_of_500(monkeypatch):
     monkeypatch.setattr(
         document_extraction_service,
+        "mineru_health",
+        lambda: {"ready": True, "reason": None},
+    )
+    monkeypatch.setattr(
+        document_extraction_service,
         "_extract_with_mineru",
         lambda _file_path, _filename: {
             "provider": "mineru",
@@ -530,3 +596,39 @@ def test_extract_invoice_document_mineru_returns_manual_review_instead_of_500(mo
     assert result["selected_method"] == "mineru"
     assert result["error"]
     assert result["payload"]["parser_provider"] == "manual_review_empty_sheet"
+
+
+def test_extract_invoice_document_hybrid_skips_unhealthy_mineru_before_fallback(monkeypatch):
+    monkeypatch.setattr(
+        document_extraction_service,
+        "mineru_health",
+        lambda: {"ready": False, "reason": "MinerU model cache is incomplete"},
+    )
+    mineru_calls = []
+    monkeypatch.setattr(
+        document_extraction_service,
+        "_extract_with_mineru",
+        lambda *_args: mineru_calls.append(_args),
+    )
+    monkeypatch.setattr(
+        document_extraction_service,
+        "_extract_with_ocr",
+        lambda _file_path, _filename: {
+            "provider": "google_drive_ocr",
+            "raw_text": "ocr text",
+            "payload": {"supplier": "OCR Supplier", "items": [{"name": "Item"}]},
+            "parser_notes": [],
+        },
+    )
+
+    result = document_extraction_service.extract_invoice_document(
+        "invoice.jpg",
+        "invoice.jpg",
+        extraction_method="hybrid",
+    )
+
+    assert result["provider"] == "google_drive_ocr"
+    assert result["selected_method"] == "hybrid"
+    assert result["error"] == "MinerU model cache is incomplete"
+    assert mineru_calls == []
+    assert any(log["stage"] == "mineru_skipped_unhealthy" for log in result["pipeline_logs"])

@@ -19,6 +19,7 @@ from app.services.document_image_preparation_service import prepare_document_pag
 from app.services.invoice_parser_service import extract_invoice_payload_with_fallback
 from app.services.openai_invoice_parser_service import OpenAIInvoiceParserError, parse_invoice_with_openai
 from app.services.ocr_service import OcrConfigurationError, OcrProviderError, recognize_invoice_image
+from app.services.provider_health_service import mineru_health
 
 
 class DocumentExtractionError(RuntimeError):
@@ -217,47 +218,16 @@ def extract_invoice_document(
             _pipeline_log("mineru_start", "running", "Запускаю извлечение через MinerU."),
             on_log=on_log,
         )
-        try:
-            mineru_result = _extract_with_mineru(file_path, fallback_filename)
-            if _payload_has_useful_data(mineru_result["payload"]):
-                mineru_result["selected_method"] = backend
-                _append_pipeline_log(
-                    pipeline_logs,
-                    _pipeline_log(
-                        "mineru_complete",
-                        "ok",
-                        "MinerU вернул полезные данные.",
-                        items_count=len(mineru_result["payload"].get("items") or []),
-                        supplier=mineru_result["payload"].get("supplier"),
-                    ),
-                    on_log=on_log,
-                )
-                mineru_result["pipeline_logs"] = pipeline_logs
-                return mineru_result
-            _append_pipeline_log(
-                pipeline_logs,
-                _pipeline_log(
-                    "mineru_empty",
-                    "warning",
-                    "MinerU вернул пустой JSON или неполный результат.",
-                    recommendation="Попробуйте полный прогон через OpenAI vision parser.",
-                ),
-                on_log=on_log,
-            )
-        except Exception as exc:  # noqa: BLE001 - fallback is intentional
-            mineru_error = str(exc)
-            _append_pipeline_log(
-                pipeline_logs,
-                _pipeline_log(
-                    "mineru_failed",
-                    "error",
-                    "MinerU завершился ошибкой.",
-                    error=mineru_error,
-                ),
-                on_log=on_log,
-            )
-        else:
-            mineru_error = None
+        mineru_result, mineru_error = _run_mineru_with_health_guard(
+            file_path,
+            fallback_filename,
+            pipeline_logs=pipeline_logs,
+            on_log=on_log,
+        )
+        if mineru_result and _payload_has_useful_data(mineru_result["payload"]):
+            mineru_result["selected_method"] = backend
+            mineru_result["pipeline_logs"] = pipeline_logs
+            return mineru_result
 
         if backend == "hybrid":
             _append_pipeline_log(
@@ -635,23 +605,39 @@ def _collect_openai_evidence(
 
     _notify_evidence_attempt_start("mineru", on_attempt)
     started = time.perf_counter()
-    try:
-        mineru_result = _extract_with_mineru(evidence_input_path, fallback_filename)
-    except Exception as exc:  # noqa: BLE001 - OCR remains the evidence fallback
+    health = mineru_health()
+    if not health["ready"]:
         mineru_result = None
-        error_message = str(exc)
-        evidence.errors.append(error_message)
+        error_message = str(health["reason"])
         _add_evidence_attempt(
             evidence,
             EvidenceProviderAttempt(
                 provider="mineru",
-                status="error",
+                status="skipped",
                 duration_ms=_duration_ms(started),
-                error_type=type(exc).__name__,
                 error_message=error_message,
             ),
             on_attempt,
         )
+        evidence.errors.append(error_message)
+    else:
+        try:
+            mineru_result = _extract_with_mineru(evidence_input_path, fallback_filename)
+        except Exception as exc:  # noqa: BLE001 - OCR remains the evidence fallback
+            mineru_result = None
+            error_message = str(exc)
+            evidence.errors.append(error_message)
+            _add_evidence_attempt(
+                evidence,
+                EvidenceProviderAttempt(
+                    provider="mineru",
+                    status="error",
+                    duration_ms=_duration_ms(started),
+                    error_type=type(exc).__name__,
+                    error_message=error_message,
+                ),
+                on_attempt,
+            )
     if mineru_result and (mineru_result.get("raw_text") or "").strip():
         raw_text = mineru_result.get("raw_text") or ""
         _add_evidence_attempt(
@@ -722,6 +708,65 @@ def _extract_pdf_text(file_path: str) -> str:
         return "\n\n".join((page.extract_text() or "").strip() for page in reader.pages).strip()
     except Exception:  # noqa: BLE001 - malformed/scanned PDFs continue to MinerU/OCR
         return ""
+
+
+def _run_mineru_with_health_guard(
+    file_path: str,
+    fallback_filename: str | None,
+    *,
+    pipeline_logs: list[dict[str, Any]] | None = None,
+    on_log: Any | None = None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    health = mineru_health()
+    if not health["ready"]:
+        error_message = str(health["reason"])
+        if pipeline_logs is not None:
+            _append_pipeline_log(
+                pipeline_logs,
+                _pipeline_log(
+                    "mineru_skipped_unhealthy",
+                    "warning",
+                    "MinerU пропущен: runtime не готов.",
+                    error=error_message,
+                ),
+                on_log=on_log,
+            )
+        return None, error_message
+
+    try:
+        mineru_result = _extract_with_mineru(file_path, fallback_filename)
+    except Exception as exc:  # noqa: BLE001 - OCR remains the fallback path
+        error_message = str(exc)
+        if pipeline_logs is not None:
+            _append_pipeline_log(
+                pipeline_logs,
+                _pipeline_log(
+                    "mineru_failed",
+                    "error",
+                    "MinerU extraction завершился ошибкой.",
+                    error=error_message,
+                ),
+                on_log=on_log,
+            )
+        return None, error_message
+
+    if pipeline_logs is not None:
+        _append_pipeline_log(
+            pipeline_logs,
+            _pipeline_log(
+                "mineru_complete" if _payload_has_useful_data(mineru_result.get("payload") or {}) else "mineru_empty",
+                "ok" if _payload_has_useful_data(mineru_result.get("payload") or {}) else "warning",
+                "MinerU extraction завершен."
+                if _payload_has_useful_data(mineru_result.get("payload") or {})
+                else "MinerU extraction не дал полезного payload.",
+                provider=mineru_result.get("provider"),
+                raw_text_length=len(mineru_result.get("raw_text") or ""),
+                items_count=len((mineru_result.get("payload") or {}).get("items") or []),
+                pages=mineru_result.get("pages"),
+            ),
+            on_log=on_log,
+        )
+    return mineru_result, None
 
 
 def _source_type(file_path: str, fallback_filename: str | None) -> str:

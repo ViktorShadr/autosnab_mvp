@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -627,6 +628,39 @@ def test_upload_photo_live_returns_trace_id_and_background_result(monkeypatch, t
     assert trace_data["result"]["trace_metadata"]["logical_document_id"] == "document-1"
 
 
+def test_upload_photo_live_surfaces_readonly_database_hint(monkeypatch, tmp_path):
+    from app.routers import invoice_review as invoice_review_router
+
+    monkeypatch.setattr(invoice_review_router.settings, "uploaded_invoices_dir", str(tmp_path))
+
+    def fake_process(**kwargs):
+        raise OperationalError(
+            "INSERT INTO receivings DEFAULT VALUES",
+            {},
+            Exception("attempt to write a readonly database"),
+        )
+
+    monkeypatch.setattr(invoice_review_router, "_process_invoice_upload", fake_process)
+
+    response = client.post(
+        "/api/v1/invoice-review/upload-photo-live",
+        files={"file": ("invoice.jpg", b"fake-image", "image/jpeg")},
+        data={
+            "create_google_sheet": "false",
+            "extraction_method": "openai",
+            "upload_trace_id": "readonly-db-trace-1",
+        },
+    )
+
+    assert response.status_code == 200
+
+    trace_data = _wait_for_trace("readonly-db-trace-1")
+    assert trace_data["completed"] is True
+    assert "SQLite database is read-only" in trace_data["error_message"]
+    assert trace_data["logs"][-1]["stage"] == "job_failed"
+    assert "SQLite database is read-only" in trace_data["logs"][-1]["details"]["error"]
+
+
 def test_upload_document_live_preserves_page_order(monkeypatch, tmp_path):
     from app.routers import invoice_review as invoice_review_router
 
@@ -722,6 +756,53 @@ def test_build_review_sheet_backfills_invoice_reference_mapping_for_old_items(mo
 
     assert rows[1][16] == "Кефир"
     assert rows[1][17] == "Да"
+
+
+def test_build_review_sheet_falls_back_to_normalized_name_when_mapping_fields_are_missing():
+    from app.services import invoice_review_service
+    from app.schemas.invoice_review import InvoiceReviewCreateRequest, RecognizedInvoiceItem
+
+    payload = InvoiceReviewCreateRequest(
+        supplier='ООО "ВИКТОРИЯ БАЛТИЯ"',
+        supplier_legal_name='ООО "ВИКТОРИЯ БАЛТИЯ"',
+        invoice_date="2026-07-04",
+        invoice_number="0245",
+        venue="Добрая столовая",
+        items=[
+            RecognizedInvoiceItem(
+                name='3 ТОВАР : ШТ. [N+13968 КЕФИР ФЕРМЕРСКИЙ 800Г',
+                quantity=1,
+                unit="ШТ",
+                price=72.9,
+            )
+        ],
+        parser_metadata={
+            "upload_status": "Требует проверки",
+            "row_status": "Распознано",
+            "items": [
+                {
+                    "line_number": 1,
+                    "raw_name": '3 ТОВАР : ШТ. [N+13968 КЕФИР ФЕРМЕРСКИЙ 800Г',
+                    "clean_name": "КЕФИР ФЕРМЕРСКИЙ",
+                    "normalized_name_candidate": "Кефир Фермерский",
+                    "document_unit": "ШТ",
+                    "quantity_document": 1,
+                    "accounting_quantity_candidate": 0.8,
+                    "accounting_unit_candidate": "кг",
+                }
+            ],
+        },
+    )
+    db = TestingSessionLocal()
+    try:
+        receiving = invoice_review_service.create_invoice_review(db, payload)
+        sheet = invoice_review_service.build_review_sheet(receiving)
+        rows = sheet["sheets"][sheet["primary_sheet_name"]]
+    finally:
+        db.close()
+
+    assert rows[1][16] == "Кефир Фермерский"
+    assert rows[1][17] == ""
 
 
 def test_invoice_register_header_uses_receiving_id_for_document_id():

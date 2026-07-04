@@ -258,6 +258,12 @@
 - Ran an isolated `openai` extraction test without database or Google Sheets writes. The request stopped before OpenAI because Docker MinerU cannot import OpenCV without `libxcb.so.1`, then Google Drive OCR timed out during TLS handshake.
 - Conclusion: `gpt-5-mini` remains appropriate as the structured parser, but the current end-to-end runtime is not yet reliable enough for quality production recognition. Required next work is Docker OCR repair, direct-image AI fallback, multi-page grouping, image preprocessing, and expected-JSON golden tests for these photos.
 
+## [2026-07-04] fix | SQLite runtime health and readonly diagnosis
+
+- Added a dedicated database health service so startup now performs a real SQLite write probe instead of relying on `/ping`.
+- Added `/health/runtime` and pointed Docker healthcheck at it, so a read-only `/data` mount stops being reported as healthy.
+- Background upload traces now rewrite `attempt to write a readonly database` into a direct operator hint to check permissions on `/data/autosnab_mvp.db` and its parent volume.
+
 ## [2026-07-04] planning | invoice recognition hardening plan fixed
 
 - Added `docs/wiki/invoice-recognition-hardening-plan.md` as the execution plan for the failures exposed by the five real photos.
@@ -282,9 +288,21 @@
 - Added OCR-based continuation-page marker checks during multi-page merge so missing pages are surfaced as consistency warnings before persistence or sheet writing.
 - Expanded the real-photo golden fixtures with expected shared-sheet rows, added replay evaluation plus compact provider/model reporting, and introduced a no-write live evaluation helper that always forces `create_google_sheet=False`.
 - Added `scripts/docker_runtime_smoke.py` for Docker/provider smoke runs and `scripts/run_invoice_golden_eval.py` for replay-driven golden reports.
-## [2026-07-04] fix | SQLite runtime health and readonly diagnosis
 
-- Added a dedicated database health service so startup now performs a real SQLite write probe instead of relying on `/ping`.
-- Added `/health/runtime` and pointed Docker healthcheck at it, so a read-only `/data` mount stops being reported as healthy.
-- Background upload traces now rewrite `attempt to write a readonly database` into a direct operator hint to check permissions on `/data/autosnab_mvp.db` and its parent volume.
+## [2026-07-04] fix | MinerU unhealthy runtime is skipped early
 
+- Tightened provider health so MinerU is marked unready when the HuggingFace model cache is incomplete, not only when Python imports fail.
+- Added an extraction-service guard: OpenAI evidence collection and `hybrid` mode now skip MinerU immediately when health is red and continue to OCR fallback without spending several minutes inside a doomed MinerU run.
+- Added regression tests covering incomplete MinerU cache reporting and unhealthy MinerU short-circuit before OCR fallback.
+
+## [2026-07-04] analysis | workbook export after two parsed invoices explained
+
+- Registered and analyzed `Копия АвтоСнаб Кафе Ромашка 2.xlsx`, a workbook export containing two newly parsed document blocks.
+- Confirmed that the kefir receipt block stores `normalized_name_candidate = Кефир Фермерский` for all six kefir rows, while `us_product_name` and `product_found` remain null in `recognized_items_json`; the blank `Наименование товара в УС` cells therefore come from stale unmapped stored payload, not from an inability of the current matcher to map `Кефир Фермерский` to catalog item `Кефир`.
+- Confirmed that duplicate indicators are driven by historical SQLite documents: the new UPD `1928` is marked `Да` because document `ID 9` already stores the same supplier and invoice number from the same source image, while the kefir receipt `0245` is marked `?` because older documents `ID 4` and `ID 10` share the same supplier/date/total but store the invoice number as `ЧЕК 0245` instead of `0245`.
+
+## [2026-07-04] fix | review sheet no longer leaves US product name blank on stale payloads
+
+- Updated review-sheet build so each row first rehydrates parser metadata and then falls back to `normalized_name_candidate`, `clean_name`, or raw item name when `us_product_name` is still absent in stored payload.
+- This keeps `Наименование товара в УС` visible for old documents even before a full deterministic remap runs; when Google reference catalogs are reachable, the normal exact mapped name still overrides the fallback.
+- Added regression coverage for both cases: exact backfill through Google reference catalogs and local fallback rendering without mapped fields.
