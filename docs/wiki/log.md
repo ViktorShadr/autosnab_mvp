@@ -243,3 +243,9 @@
 - Added a separate `upload-photo-live` endpoint that returns a `trace_id` immediately and runs the document processing in a background thread.
 - Kept the existing sync upload route for compatibility, but both paths now write to the same trace store so the upload page can show logs as they are produced.
 - Updated the upload page to poll the trace endpoint while the background job is still running, then render the final result once the trace is marked complete.
+
+## [2026-07-04] summary | day wrap-up
+
+- Captured the day’s end state in wiki: the upload flow is now live-trace driven, not just a final-result screen.
+- Preserved the deterministic rule that `Наименование товара в УС` should never stay blank when the parser can provide a normalized candidate.
+- Preserved the deterministic rule that supplier INN must be normalized again during review-sheet build so merged `ИНН/КПП` OCR values do not leak into the visible column.
