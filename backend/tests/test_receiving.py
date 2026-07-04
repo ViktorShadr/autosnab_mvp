@@ -546,10 +546,10 @@ def test_invoice_review_sheet_does_not_guess_supplier_inn_from_raw_text():
     assert rows[1][5] == ""
     assert rows[1][6] == ""
     assert rows[1][7] == ""
-    assert rows[1][13] == "Окорок \"По-тамбовски\" к/в в/у"
+    assert rows[1][15] == "Окорок \"По-тамбовски\" к/в в/у"
     assert rows[1][17] == "кг"
-    assert rows[1][21] == "7%"
-    assert rows[1][24] == 16351.45
+    assert rows[1][24] == "7%"
+    assert rows[1][27] == 16351.45
 
 def test_mvp4_auto_fills_iiko_fields_from_references(monkeypatch):
     from app.services import iiko_reference_mapping_service
@@ -588,29 +588,29 @@ def test_mvp4_auto_fills_iiko_fields_from_references(monkeypatch):
     assert sheet.status_code == 200
     rows = sheet.json()["sheets"]["Накладные"]
     assert "Служебные поля iiko" not in sheet.json()["sheets"]
-    assert rows[0][0] == "Время загрузки документа"
-    assert rows[0][1] == "ID документа"
-    assert rows[0][2] == "Индикатор дубля документа"
-    assert rows[0][6] == "Поставщик"
-    assert rows[0][13] == "Наименование товара из документа"
-    assert rows[0][14] == "Госсистемы"
+    assert rows[0][0] == "Статус строки"
+    assert rows[0][1] == "Корректировка"
+    assert rows[0][2] == "Дубль"
+    assert rows[0][7] == "Поставщик"
+    assert rows[0][15] == "Наименование товара из документа"
+    assert rows[0][30] == "Госсистемы"
     assert "ЕГАИС" not in rows[0]
     assert "Меркурий" not in rows[0]
     assert "Честный знак" not in rows[0]
-    assert rows[0][18] == "Кол-во из документа"
+    assert rows[0][19] == "Кол-во в документе"
     assert rows[0][28] == "Дата приема"
-    assert rows[0][36] == "Статус строки"
-    assert rows[1][0] != ""
-    assert rows[1][1] == 1
+    assert rows[0][36] == "Время загрузки документа"
+    assert rows[0][37] == "ID документа"
+    assert rows[1][36] != ""
+    assert rows[1][37] == 1
     assert rows[1][3] == "ТОРГ-12"
-    assert rows[1][5] == "780"
-    assert rows[1][4] == "2026-06-19"
-    assert rows[1][6] == "Питер Кельн"
-    assert rows[1][10] == "Добрая столовая"
+    assert rows[1][6] == "780"
+    assert rows[1][5] == "2026-06-19"
+    assert rows[1][7] == "Питер Кельн"
+    assert rows[1][11] == "Добрая столовая"
     assert rows[2][0] == ""
     assert rows[2][1] == ""
     assert rows[2][3] == ""
-    assert rows[2][4] == ""
     assert rows[2][5] == ""
     assert rows[2][6] == ""
     assert rows[2][7] == ""
@@ -619,18 +619,19 @@ def test_mvp4_auto_fills_iiko_fields_from_references(monkeypatch):
     assert rows[2][10] == ""
     assert rows[2][11] == ""
     assert rows[2][12] == ""
-    assert rows[1][24] != ""
-    assert rows[2][24] == ""
+    assert rows[2][13] == ""
+    assert rows[1][27] != ""
+    assert rows[2][27] == ""
     assert "Статус проверки" not in rows[0]
     assert "Что исправить" not in rows[0]
-    assert rows[1][13] == "Сахар ванильный"
-    assert rows[1][15] == ""
-    assert rows[1][26] == ""
-    assert rows[1][27] == ""
-    assert rows[1][34] == ""
+    assert rows[1][15] == "Сахар ванильный"
+    assert rows[1][16] == ""
+    assert rows[1][18] == ""
+    assert rows[1][20] == ""
+    assert rows[1][22] == ""
+    assert rows[1][30] == ""
     assert rows[1][35] == ""
-    assert rows[1][36] == ""
-    assert rows[1][37] == ""
+    assert rows[1][38] == ""
 
     preview = client.get(f"/api/v1/invoice-review/{review_id}/preview")
     assert preview.status_code == 200
@@ -727,15 +728,86 @@ def test_invoice_review_sheet_clears_non_visible_values_on_torg12_continuation_p
     data_row = rows[1]
 
     # На странице-продолжении шапки документа нет, поэтому эти поля не заполняем.
-    for column_index in [2, 4, 5, 6, 7, 8, 9, 10, 11, 12]:
+    for column_index in [2, 5, 6, 7, 8, 9, 10, 11, 12, 13]:
         assert data_row[column_index] == ""
 
     # Пользовательские/ручные/УС-поля не должны заполняться техническими значениями.
-    for column_index in [14, 15, 16, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37]:
+    for column_index in [0, 1, 4, 14, 16, 18, 20, 22, 28, 29, 30, 31, 32, 33, 34, 35, 38]:
         assert data_row[column_index] == ""
 
     assert data_row[3] == "ТОРГ-12"
-    assert data_row[13] == "Окорок \"По-тамбовски\" к/в в/у"
+    assert data_row[15] == "Окорок \"По-тамбовски\" к/в в/у"
     assert data_row[17] == "кг"
-    assert data_row[21] == "7%"
-    assert data_row[24] == 16351.45
+    assert data_row[24] == "7%"
+    assert data_row[27] == 16351.45
+
+
+def test_mvp4_upload_photo_multipage_appends_items_from_next_pages(monkeypatch):
+    from app.routers import invoice_review as invoice_review_router
+
+    def fake_ocr(file_path):
+        if "page1" in file_path:
+            raw_text = "PAGE_1"
+        else:
+            raw_text = "PAGE_2"
+        return {
+            "provider": "fake_google_drive_ocr",
+            "raw_text": raw_text,
+            "pages": 1,
+            "confidence": None,
+        }
+
+    def fake_parser(raw_text, fallback_filename=None):
+        if "PAGE_1" in raw_text:
+            return {
+                "parser_provider": "deterministic_parser",
+                "parser_notes": ["page 1 parsed"],
+                "supplier": "ООО Поставщик",
+                "supplier_legal_name": "ООО Поставщик",
+                "invoice_number": "777",
+                "invoice_date": "2026-06-19",
+                "venue": "Добрая столовая",
+                "delivery_address": "Добрая столовая",
+                "raw_text": raw_text,
+                "items": [
+                    {"name": "Товар первая страница", "quantity": 1, "unit": "шт", "price": 100, "sum": 100}
+                ],
+            }
+        return {
+            "parser_provider": "deterministic_parser",
+            "parser_notes": ["page 2 parsed"],
+            "supplier": None,
+            "supplier_legal_name": None,
+            "invoice_number": None,
+            "invoice_date": None,
+            "venue": None,
+            "delivery_address": None,
+            "raw_text": raw_text,
+            "items": [
+                {"name": "Товар вторая страница", "quantity": 2, "unit": "шт", "price": 150, "sum": 300}
+            ],
+        }
+
+    monkeypatch.setattr(invoice_review_router, "recognize_invoice_image", fake_ocr)
+    monkeypatch.setattr(invoice_review_router, "extract_invoice_payload_with_fallback", fake_parser)
+
+    response = client.post(
+        "/api/v1/invoice-review/upload-photo",
+        files=[
+            ("files", ("page1.jpg", b"page 1 bytes", "image/jpeg")),
+            ("files", ("page2.jpg", b"page 2 bytes", "image/jpeg")),
+        ],
+        data={"multipage_invoice": "true", "create_google_sheet": "false"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ocr"]["pages"] == 2
+    assert data["parser_notes"][0].startswith("Многостраничная накладная")
+
+    sheet = client.get(data["next_actions"]["open_sheet"]).json()
+    rows = sheet["sheets"]["Накладные"]
+    joined_rows = json.dumps(rows, ensure_ascii=False)
+    assert "Товар первая страница" in joined_rows
+    assert "Товар вторая страница" in joined_rows
+    assert "777" in joined_rows

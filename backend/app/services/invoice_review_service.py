@@ -2,7 +2,8 @@ import csv
 import io
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -26,44 +27,45 @@ REQUIRED_FIELDS = {
 INVOICE_REGISTER_SHEET_NAME = "Накладные"
 INVOICE_REGISTER_SPREADSHEET_NAME = "АвтоСнаб Накладные"
 INVOICE_REGISTER_HEADERS = [
-    "Время загрузки документа",
-    "ID документа",
-    "Индикатор дубля документа",
+    "Статус строки",
+    "Корректировка",
+    "Дубль",
     "Форма документа",
+    "Загрузка",
     "Дата документа",
     "№ Документа",
     "Поставщик",
     "ИНН Поставщика",
-    "Грузополучатель",
+    "Грузоотправитель",
     "Получатель",
     "Торговая точка",
     "Склад",
     "Основание",
-    "Наименование товара из документа",
-    "Госсистемы",
-    "Наименование товара в УС",
     "Товар найден в справочнике",
-    "Ед.изм.",
-    "Кол-во из документа",
-    "Цена за единицу",
+    "Наименование товара из документа",
+    "Наименование товара в УС",
+    "Ед.изм. в документе",
+    "Ед.изм. в УС",
+    "Кол-во в документе",
+    "Кол-во в УС",
+    "Цена за ед-цу",
+    "Цена в УС",
     "Стоимость без НДС",
-    "Ставка НДС %",
+    "Ставка НДС",
     "Сумма НДС",
     "Общая стоимость",
     "Сумма накладной",
-    "Ед.изм. в УС",
-    "Кол-во в УС",
-    "Цена в УС",
     "Дата приема",
     "Принял, Ф.И.О.",
+    "Госсистемы",
     "Кол-во в заявке",
     "Цена по прайсу",
-    "Последняя дата поставки",
-    "Последняя цена",
+    "Предыдущая дата поставки",
+    "Предыдущая цена",
     "Отклонение от цены прайса",
-    "Загрузить в УС",
-    "Статус строки",
-    "Причина ручной корректировки",
+    "Время загрузки документа",
+    "ID документа",
+    "Ссылка на исходный документ",
 ]
 
 
@@ -281,7 +283,11 @@ def _invoice_register_header_values(
     total_sum: Any,
 ) -> dict[str, Any]:
     raw_text = document.raw_text if document else ""
-    is_torg12_continuation = _looks_like_torg12_continuation_text(raw_text)
+    is_multipage_invoice = bool(header_meta.get("multipage_invoice"))
+    is_torg12_continuation = (
+        _looks_like_torg12_continuation_text(raw_text)
+        and not is_multipage_invoice
+    )
 
     if is_torg12_continuation:
         # На странице-продолжении ТОРГ-12 шапки документа нет.
@@ -291,6 +297,7 @@ def _invoice_register_header_values(
         document_date = ""
         supplier = ""
         supplier_inn = ""
+        consignor = ""
         consignee = ""
         recipient = ""
         trade_point = ""
@@ -302,6 +309,7 @@ def _invoice_register_header_values(
         document_date = document.invoice_date if document else None
         document_date = document_date or header_meta.get("invoice_date") or header_meta.get("incoming_date")
         supplier = _sheet_display_value(receiving.supplier or (document.supplier_legal_name if document else ""))
+        consignor = _sheet_display_value(header_meta.get("consignor") or header_meta.get("shipper") or supplier)
         consignee = _sheet_display_value(header_meta.get("consignee") or receiving.venue)
         recipient = _sheet_display_value(header_meta.get("recipient") or header_meta.get("buyer") or consignee)
         trade_point = _sheet_display_value(header_meta.get("trade_point") or receiving.venue)
@@ -325,7 +333,11 @@ def _invoice_register_header_values(
         duplicate_indicator = _sheet_display_value(header_meta.get("duplicate_indicator") or "")
 
     return {
-        "upload_time": _format_datetime_for_sheet((document.created_at if document else None) or receiving.created_at),
+        "upload_time": _format_datetime_for_sheet(
+            (document.created_at if document else None) or receiving.created_at,
+            header_meta.get("user_timezone"),
+            header_meta.get("user_utc_offset_minutes"),
+        ),
         "document_id": 1,
         "duplicate_indicator": duplicate_indicator,
         "document_form": _sheet_display_value(header_meta.get("document_form") or _detect_document_form_from_text(raw_text) or ""),
@@ -333,12 +345,14 @@ def _invoice_register_header_values(
         "document_number": _sheet_display_value(document_number),
         "supplier": supplier,
         "supplier_inn": supplier_inn,
+        "consignor": consignor,
         "consignee": consignee,
         "recipient": recipient,
         "trade_point": trade_point,
         "warehouse": warehouse,
         "basis": basis,
         "total_sum": total_sum,
+        "source_document_url": "",
     }
 
 
@@ -400,34 +414,35 @@ def _invoice_register_item_row(
         product_found = ""
 
     return [
-        _single_value_for_first_item_row(header_values, "upload_time", index),
-        _single_value_for_first_item_row(header_values, "document_id", index),
+        status,
+        manual_reason,
         header_values["duplicate_indicator"],
         _single_value_for_first_item_row(header_values, "document_form", index),
+        upload_to_us,
         _single_value_for_first_item_row(header_values, "document_date", index),
         _single_value_for_first_item_row(header_values, "document_number", index),
         _single_value_for_first_item_row(header_values, "supplier", index),
         _single_value_for_first_item_row(header_values, "supplier_inn", index),
-        _single_value_for_first_item_row(header_values, "consignee", index),
+        _single_value_for_first_item_row(header_values, "consignor", index),
         _single_value_for_first_item_row(header_values, "recipient", index),
         _single_value_for_first_item_row(header_values, "trade_point", index),
         _single_value_for_first_item_row(header_values, "warehouse", index),
         _single_value_for_first_item_row(header_values, "basis", index),
-        item_name,
-        "",
-        us_product_name,
         product_found,
+        item_name,
+        us_product_name,
         unit,
+        unit_in_us,
         quantity,
+        quantity_in_us,
         price,
+        price_in_us,
         line_sum,
         vat_percent,
         vat_sum,
         line_sum_with_vat,
         _single_value_for_first_item_row(header_values, "total_sum", index),
-        unit_in_us,
-        quantity_in_us,
-        price_in_us,
+        "",
         "",
         "",
         ordered_quantity,
@@ -435,9 +450,9 @@ def _invoice_register_item_row(
         "",
         "",
         deviation_from_pricelist,
-        upload_to_us,
-        status,
-        manual_reason,
+        _single_value_for_first_item_row(header_values, "upload_time", index),
+        _single_value_for_first_item_row(header_values, "document_id", index),
+        "",
     ]
 
 def build_review_csv(receiving: Receiving) -> str:
@@ -649,19 +664,20 @@ function readItems_() {{
   const items = [];
   rows.forEach((row, index) => {{
     const name = String(value_(row, 'Наименование товара из документа') || value_(row, 'Наименование товара') || '').trim();
-    if (!name || uploadDisabled_(value_(row, 'Загрузить в УС'))) return;
-    const vatPercent = value_(row, 'Ставка НДС %') === '' ? null : Number(value_(row, 'Ставка НДС %'));
+    if (!name || uploadDisabled_(value_(row, 'Загрузка') || value_(row, 'Загрузить в УС'))) return;
+    const vatValue = value_(row, 'Ставка НДС') || value_(row, 'Ставка НДС %');
+    const vatPercent = vatValue === '' ? null : Number(vatValue);
     items.push({{
       line_number: index + 1,
       name: name,
-      quantity: Number(value_(row, 'Кол-во из документа') || value_(row, 'Количество') || value_(row, 'Кол-во') || 0),
-      unit: String(value_(row, 'Ед.изм.') || 'шт'),
-      price: Number(value_(row, 'Цена за единицу') || value_(row, 'Цена') || 0),
+      quantity: Number(value_(row, 'Кол-во в документе') || value_(row, 'Кол-во из документа') || value_(row, 'Количество') || value_(row, 'Кол-во') || 0),
+      unit: String(value_(row, 'Ед.изм. в документе') || value_(row, 'Ед.изм.') || 'шт'),
+      price: Number(value_(row, 'Цена за ед-цу') || value_(row, 'Цена за единицу') || value_(row, 'Цена') || 0),
       sum: value_(row, 'Стоимость без НДС') === '' ? null : Number(value_(row, 'Стоимость без НДС')),
       vat_percent: vatPercent,
       vat: vatPercent === null ? null : String(vatPercent) + '%',
       vat_sum: value_(row, 'Сумма НДС') === '' ? null : Number(value_(row, 'Сумма НДС')),
-      comment: String(value_(row, 'Причина ручной корректировки') || '') || null
+      comment: String(value_(row, 'Корректировка') || value_(row, 'Причина ручной корректировки') || '') || null
     }});
   }});
   return items;
@@ -670,7 +686,7 @@ function readItems_() {{
 function buildPayload_() {{
   const rows = readInvoiceRows_();
   const summary = firstBusinessRow_(rows);
-  const venue = String(value_(summary, 'Торговая точка') || value_(summary, 'Грузополучатель') || value_(summary, 'Получатель') || '');
+  const venue = String(value_(summary, 'Торговая точка') || value_(summary, 'Получатель') || value_(summary, 'Грузополучатель') || '');
   const warehouse = String(value_(summary, 'Склад') || 'Основной склад');
   const invoiceNumber = String(value_(summary, '№ Документа') || '');
   const invoiceDate = String(value_(summary, 'Дата документа') || '');
@@ -693,12 +709,12 @@ function buildPayload_() {{
     invoice_date: invoiceDate,
     incoming_date: invoiceDate,
     venue: venue,
-    delivery_address: String(value_(summary, 'Грузополучатель') || venue),
+    delivery_address: String(value_(summary, 'Получатель') || value_(summary, 'Грузополучатель') || venue),
     display_store: warehouse,
     iiko_default_store_id: warehouse,
     document_form: String(value_(summary, 'Форма документа') || ''),
     supplier_inn: String(value_(summary, 'ИНН Поставщика') || ''),
-    consignee: String(value_(summary, 'Грузополучатель') || ''),
+    consignee: String(value_(summary, 'Получатель') || value_(summary, 'Грузополучатель') || ''),
     recipient: String(value_(summary, 'Получатель') || ''),
     trade_point: String(value_(summary, 'Торговая точка') || ''),
     warehouse: warehouse,
@@ -753,19 +769,38 @@ def create_real_google_sheet_for_review(db: Session, receiving: Receiving, publi
         sheet,
         None,
         public_api_base_url=public_api_base_url or "https://YOUR_API_HOST",
+        existing_spreadsheet_id=_get_reusable_invoice_register_spreadsheet_id(db),
     )
     export = AccountingExport(
         receiving_id=receiving.id,
         request_id=receiving.request_id,
         order_number=receiving.order_number,
         target_system="google_sheets",
-        status="spreadsheet_created",
+        status="spreadsheet_created" if result.get("mode") == "created" else "spreadsheet_updated",
         payload_json=serialize_sheet_result(result),
     )
     db.add(export)
     db.commit()
     return result
 
+
+def _get_reusable_invoice_register_spreadsheet_id(db: Session) -> str | None:
+    exports = (
+        db.query(AccountingExport)
+        .filter(AccountingExport.target_system == "google_sheets")
+        .order_by(AccountingExport.id.desc())
+        .limit(20)
+        .all()
+    )
+    for export in exports:
+        try:
+            payload = json.loads(export.payload_json or "{}")
+        except json.JSONDecodeError:
+            continue
+        spreadsheet_id = payload.get("spreadsheet_id")
+        if spreadsheet_id:
+            return spreadsheet_id
+    return None
 
 
 def get_latest_google_spreadsheet_info(db: Session, receiving_id: int) -> dict[str, Any]:
@@ -788,6 +823,10 @@ def get_latest_google_spreadsheet_info(db: Session, receiving_id: int) -> dict[s
         "spreadsheet_id": spreadsheet_id,
         "spreadsheet_url": payload.get("spreadsheet_url"),
         "spreadsheet_name": payload.get("spreadsheet_name"),
+        "sheet_name": payload.get("sheet_name"),
+        "data_start_row": payload.get("data_start_row"),
+        "data_end_row": payload.get("data_end_row"),
+        "data_range": payload.get("data_range"),
     }
 
 
@@ -798,12 +837,22 @@ def send_google_sheet_and_confirm_to_iiko(
     dry_run: bool = False,
 ) -> AccountingExport:
     spreadsheet = get_latest_google_spreadsheet_info(db, receiving_id)
-    sheet_values = _read_google_sheet_values(spreadsheet["spreadsheet_id"])
+    sheet_values = _read_google_sheet_values(
+        spreadsheet["spreadsheet_id"],
+        sheet_name=spreadsheet.get("sheet_name"),
+        data_start_row=spreadsheet.get("data_start_row"),
+        data_end_row=spreadsheet.get("data_end_row"),
+    )
     payload = _build_sync_payload_from_sheet(sheet_values, allow_with_warnings=allow_with_warnings, dry_run=dry_run)
     return sync_sheet_and_confirm_to_iiko(db, receiving_id, payload)
 
 
-def _read_google_sheet_values(spreadsheet_id: str) -> dict[str, list[list[Any]]]:
+def _read_google_sheet_values(
+    spreadsheet_id: str,
+    sheet_name: str | None = None,
+    data_start_row: int | None = None,
+    data_end_row: int | None = None,
+) -> dict[str, list[list[Any]]]:
     try:
         from googleapiclient.discovery import build
     except ImportError as exc:
@@ -816,9 +865,16 @@ def _read_google_sheet_values(spreadsheet_id: str) -> dict[str, list[list[Any]]]
     titles = {sheet["properties"]["title"] for sheet in spreadsheet.get("sheets", [])}
     requested_ranges = []
     range_keys = []
-    if INVOICE_REGISTER_SHEET_NAME in titles:
-        requested_ranges.append(f"{INVOICE_REGISTER_SHEET_NAME}!A1:AL500")
-        range_keys.append("invoices")
+    register_sheet_name = sheet_name or INVOICE_REGISTER_SHEET_NAME
+    if register_sheet_name in titles:
+        if data_start_row and data_end_row and data_end_row >= data_start_row:
+            requested_ranges.append(f"{register_sheet_name}!A1:AM1")
+            range_keys.append("invoices_header")
+            requested_ranges.append(f"{register_sheet_name}!A{data_start_row}:AM{data_end_row}")
+            range_keys.append("invoices_rows")
+        else:
+            requested_ranges.append(f"{register_sheet_name}!A1:AM500")
+            range_keys.append("invoices")
     if "Накладная" in titles:
         requested_ranges.append("Накладная!A1:H30")
         range_keys.append("summary")
@@ -834,8 +890,18 @@ def _read_google_sheet_values(spreadsheet_id: str) -> dict[str, list[list[Any]]]
     ).execute()
     value_ranges = result.get("valueRanges", [])
     sheet_values = {"invoices": [], "summary": [], "items": []}
+    invoices_header: list[list[Any]] = []
+    invoices_rows: list[list[Any]] = []
     for key, value_range in zip(range_keys, value_ranges, strict=False):
-        sheet_values[key] = value_range.get("values", [])
+        values = value_range.get("values", [])
+        if key == "invoices_header":
+            invoices_header = values
+        elif key == "invoices_rows":
+            invoices_rows = values
+        else:
+            sheet_values[key] = values
+    if invoices_header or invoices_rows:
+        sheet_values["invoices"] = invoices_header + invoices_rows
     return sheet_values
 
 
@@ -848,7 +914,7 @@ def _build_sync_payload_from_sheet(sheet_values: dict[str, list[list[Any]]], all
         items = _register_items_from_sheet_rows(invoice_rows)
         invoice_number = summary.get("№ Документа") or ""
         invoice_date = summary.get("Дата документа") or ""
-        venue = summary.get("Торговая точка") or summary.get("Грузополучатель") or summary.get("Получатель") or ""
+        venue = summary.get("Торговая точка") or summary.get("Получатель") or summary.get("Грузополучатель") or ""
         warehouse = summary.get("Склад") or "Основной склад"
         supplier = summary.get("Поставщик") or ""
         return SyncSheetAndConfirmRequest(
@@ -869,12 +935,12 @@ def _build_sync_payload_from_sheet(sheet_values: dict[str, list[list[Any]]], all
             invoice_date=invoice_date,
             incoming_date=invoice_date,
             venue=venue,
-            delivery_address=summary.get("Грузополучатель") or venue,
+            delivery_address=summary.get("Получатель") or summary.get("Грузополучатель") or venue,
             display_store=warehouse,
             iiko_default_store_id=warehouse or None,
             document_form=summary.get("Форма документа") or None,
             supplier_inn=summary.get("ИНН Поставщика") or None,
-            consignee=summary.get("Грузополучатель") or None,
+            consignee=summary.get("Получатель") or summary.get("Грузополучатель") or None,
             recipient=summary.get("Получатель") or None,
             trade_point=summary.get("Торговая точка") or None,
             warehouse=warehouse or None,
@@ -920,20 +986,24 @@ def _register_items_from_sheet_rows(rows: list[list[Any]]) -> list[dict[str, Any
     items = []
     for index, row in enumerate(_sheet_dict_rows(rows), start=1):
         name = str(row.get("Наименование товара из документа") or row.get("Наименование товара") or "").strip()
-        if not name or _is_upload_disabled(row.get("Загрузить в УС")):
+        if not name or _is_upload_disabled(row.get("Загрузка") or row.get("Загрузить в УС")):
             continue
-        vat_percent = _float_from_sheet(row.get("Ставка НДС %"))
+        vat_percent = _float_from_sheet(row.get("Ставка НДС") if row.get("Ставка НДС") not in (None, "") else row.get("Ставка НДС %"))
         vat_sum = _float_from_sheet(row.get("Сумма НДС"))
         line_sum = _float_from_sheet(row.get("Стоимость без НДС"))
         total_with_vat = _float_from_sheet(row.get("Общая стоимость"))
         if line_sum is None and total_with_vat is not None and vat_sum is not None:
             line_sum = round(total_with_vat - vat_sum, 2)
-        quantity = _float_from_sheet(row.get("Кол-во из документа"))
+        quantity = _float_from_sheet(row.get("Кол-во в документе"))
+        if quantity is None:
+            quantity = _float_from_sheet(row.get("Кол-во из документа"))
         if quantity is None:
             quantity = _float_from_sheet(row.get("Количество"))
         if quantity is None:
             quantity = _float_from_sheet(row.get("Кол-во"))
-        price = _float_from_sheet(row.get("Цена за единицу"))
+        price = _float_from_sheet(row.get("Цена за ед-цу"))
+        if price is None:
+            price = _float_from_sheet(row.get("Цена за единицу"))
         if price is None:
             price = _float_from_sheet(row.get("Цена"))
         items.append(
@@ -941,13 +1011,13 @@ def _register_items_from_sheet_rows(rows: list[list[Any]]) -> list[dict[str, Any
                 "line_number": index,
                 "name": name,
                 "quantity": quantity or 0,
-                "unit": str(row.get("Ед.изм.") or "шт"),
+                "unit": str(row.get("Ед.изм. в документе") or row.get("Ед.изм.") or "шт"),
                 "price": price or 0,
                 "sum": line_sum,
                 "vat_percent": vat_percent,
                 "vat": f"{vat_percent:g}%" if vat_percent is not None else None,
                 "vat_sum": vat_sum,
-                "comment": str(row.get("Причина ручной корректировки") or "") or None,
+                "comment": str(row.get("Корректировка") or row.get("Причина ручной корректировки") or "") or None,
                 "mapping_status": "ready",
                 "mapping_error": None,
             }
@@ -1249,10 +1319,54 @@ _SERVICE_PLACEHOLDER_VALUES = {
 }
 
 
-def _format_datetime_for_sheet(value: Any) -> str:
+def _format_datetime_for_sheet(value: Any, user_timezone: Any = None, user_utc_offset_minutes: Any = None) -> str:
     if isinstance(value, datetime):
-        return value.strftime("%Y-%m-%d %H:%M:%S")
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        moment = value
+    else:
+        moment = datetime.now(timezone.utc)
+
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+
+    local_timezone = _get_timezone(user_timezone)
+    if local_timezone is not None:
+        moment = moment.astimezone(local_timezone)
+    else:
+        utc_offset_minutes = _normalize_utc_offset_minutes(user_utc_offset_minutes)
+        if utc_offset_minutes is not None:
+            moment = moment.astimezone(timezone.utc) + timedelta(minutes=utc_offset_minutes)
+
+    return moment.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _normalize_utc_offset_minutes(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        minutes = int(value)
+    except (TypeError, ValueError):
+        return None
+    if -14 * 60 <= minutes <= 14 * 60:
+        return minutes
+    return None
+
+
+def _normalize_timezone_name(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        ZoneInfo(text)
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
+    return text
+
+
+def _get_timezone(value: Any):
+    timezone_name = _normalize_timezone_name(value)
+    if timezone_name is None:
+        return None
+    return ZoneInfo(timezone_name)
 
 
 def _extract_first_inn(value: Any) -> str | None:
@@ -1369,6 +1483,9 @@ def _header_payload(payload) -> dict[str, Any]:
         "iiko_default_store_id": iiko_default_store_id,
         "iiko_organization": getattr(payload, "iiko_organization", None),
         "iiko_organization_id": getattr(payload, "iiko_organization_id", None),
+        "user_timezone": _normalize_timezone_name(getattr(payload, "user_timezone", None)),
+        "user_utc_offset_minutes": _normalize_utc_offset_minutes(getattr(payload, "user_utc_offset_minutes", None)),
+        "multipage_invoice": bool(getattr(payload, "multipage_invoice", False)),
     }
 
 def _item_payload(item, index: int | None = None) -> dict:

@@ -55,6 +55,9 @@ class InvoiceReviewCreateRequest(BaseModel):
     iiko_organization_id: str | None = None
     chat_id: str | None = None
     user_id: str | None = None
+    user_timezone: str | None = None
+    user_utc_offset_minutes: int | None = None
+    multipage_invoice: bool = False
     items: list[RecognizedInvoiceItem] = Field(default_factory=list)
 
 
@@ -82,6 +85,9 @@ class InvoiceReviewUpdateRequest(BaseModel):
     iiko_default_store_id: str | None = None
     iiko_organization: str | None = None
     iiko_organization_id: str | None = None
+    user_timezone: str | None = None
+    user_utc_offset_minutes: int | None = None
+    multipage_invoice: bool = False
     items: list[RecognizedInvoiceItem]
 
 
@@ -141,6 +147,9 @@ class SyncSheetAndConfirmRequest(ConfirmSendToIikoRequest):
     iiko_default_store_id: str | None = None
     iiko_organization: str | None = None
     iiko_organization_id: str | None = None
+    user_timezone: str | None = None
+    user_utc_offset_minutes: int | None = None
+    multipage_invoice: bool = False
     items: list[SheetConfirmedItem] = Field(default_factory=list)
 
 

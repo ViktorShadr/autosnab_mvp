@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     google_application_credentials: str | None = None
     google_service_account_file: str | None = None
     google_drive_folder_id: str | None = None
+    google_invoice_register_spreadsheet_id: str | None = None
+    google_invoice_register_spreadsheet_url: str | None = None
     google_sheets_enabled: bool = False
     google_apps_script_enabled: bool = False
     google_drive_ocr_enabled: bool = True

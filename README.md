@@ -15,7 +15,7 @@ Google Drive OCR распознает текст документа
 ↓
 если данные не найдены — создается пустая таблица для ручной проверки
 ↓
-backend формирует Google Таблицу «АвтоСнаб Накладные»
+backend формирует или дописывает строки в Google Таблицу «АвтоСнаб Накладные»
 ↓
 пользователь проверяет и исправляет строки в Google Таблице
 ↓
@@ -43,7 +43,7 @@ GET /api/v1/invoice-review/upload-page
 - передает распознанный текст во встроенный regex parser;
 - создает запись проверки накладной в базе;
 - создает CSV-копию в `exports/invoice_review_{review_id}.csv`;
-- при включенном `GOOGLE_SHEETS_ENABLED=true` создает Google Таблицу для проверки.
+- при включенном `GOOGLE_SHEETS_ENABLED=true` создает или обновляет единую Google Таблицу для проверки.
 
 ### 2. Google Таблица для проверки накладных
 
@@ -64,6 +64,8 @@ GET /api/v1/invoice-review/upload-page
 ```text
 A1:AL500
 ```
+
+Если в `.env` указан `GOOGLE_INVOICE_REGISTER_SPREADSHEET_ID` или `GOOGLE_INVOICE_REGISTER_SPREADSHEET_URL`, новые накладные не создают новые Google Таблицы. Строки добавляются в указанную единую таблицу, а кнопка `Открыть таблицу заведения` всегда ведет на одну и ту же ссылку. Если эти настройки пустые, первая созданная таблица сохраняется в истории БД и переиспользуется для следующих загрузок.
 
 В таблице сейчас 38 колонок. Актуальная структура заголовков:
 
@@ -338,6 +340,8 @@ GOOGLE_DRIVE_OCR_FOLDER_ID=
 GOOGLE_SHEETS_ENABLED=true
 GOOGLE_APPS_SCRIPT_ENABLED=false
 GOOGLE_DRIVE_FOLDER_ID=
+GOOGLE_INVOICE_REGISTER_SPREADSHEET_ID=
+GOOGLE_INVOICE_REGISTER_SPREADSHEET_URL=
 PUBLIC_API_BASE_URL=http://localhost:8000
 UPLOADED_INVOICES_DIR=uploads/invoices
 
@@ -391,16 +395,6 @@ backend/secrets/oauth-token.json
 ```
 
 ## Локальный запуск
-
-```bash
-cd autosnab_mvp
-python -m venv .venv
-source .venv/bin/activate
-pip install -r backend/requirements.txt
-python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 --app-dir backend
-```
-
-Для Windows:
 
 ```bash
 cd autosnab_mvp
@@ -466,7 +460,7 @@ curl -X POST "http://localhost:8000/api/v1/invoice-review/upload-photo" \
 ## Проверка и отправка
 
 1. Загрузить накладную через `/api/v1/invoice-review/upload-page`.
-2. Открыть созданную Google Таблицу.
+2. Нажать `Открыть таблицу заведения` и открыть единую Google Таблицу.
 3. Проверить и исправить лист `Накладные`.
 4. При необходимости заполнить поля УС, статус строки и причину ручной корректировки.
 5. Открыть `/api/v1/invoice-review/{review_id}/send-page`.
