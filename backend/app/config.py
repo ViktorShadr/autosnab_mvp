@@ -23,12 +23,15 @@ class Settings(BaseSettings):
     google_target_spreadsheet_id: str | None = None
     google_target_sheet_name: str = "Накладная"
     google_target_header_row_count: int = 2
+    google_conversion_exceptions_sheet_name: str | None = None
     google_sheets_enabled: bool = False
     google_apps_script_enabled: bool = False
     google_drive_ocr_enabled: bool = True
     google_drive_ocr_language: str = "ru"
     google_drive_ocr_folder_id: str | None = None
     google_drive_ocr_delete_temp_files: bool = True
+    google_api_retry_attempts: int = 3
+    google_api_retry_backoff_seconds: float = 0.5
     public_api_base_url: str = "https://YOUR_API_HOST"
     uploaded_invoices_dir: str = "uploads/invoices"
 
@@ -57,8 +60,13 @@ class Settings(BaseSettings):
     openai_invoice_model: str = "gpt-5-mini"
     openai_timeout_seconds: float = 120.0
     openai_max_evidence_chars: int = 120_000
+    openai_max_image_pages: int = 12
+    openai_max_image_bytes: int = 12_000_000
+    openai_image_detail: str = "high"
     openai_debug_log_enabled: bool = True
     openai_debug_log_dir: str = "exports/openai_debug"
+    invoice_allow_header_only_documents: bool = False
+    conversion_amount_tolerance: float = 0.01
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

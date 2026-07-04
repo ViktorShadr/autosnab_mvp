@@ -249,3 +249,36 @@
 - Captured the day’s end state in wiki: the upload flow is now live-trace driven, not just a final-result screen.
 - Preserved the deterministic rule that `Наименование товара в УС` should never stay blank when the parser can provide a normalized candidate.
 - Preserved the deterministic rule that supplier INN must be normalized again during review-sheet build so merged `ИНН/КПП` OCR values do not leak into the visible column.
+
+## [2026-07-04] analysis | five real invoice photos assessed
+
+- Registered and reviewed five root JPEGs representing four documents: UPD `1928`, UPD `УТ-35634`, both pages of товарная накладная `УПМК003248`, and one retail receipt.
+- Confirmed that the model contract covers the visible document headers, amounts, VAT, item rows, package candidates, and normalized product names, but the current OpenAI service receives text evidence only and never sees the source image.
+- Confirmed a multi-page gap: the upload UI and API accept one file, so the two pages of `УПМК003248` cannot currently be parsed as one document.
+- Ran an isolated `openai` extraction test without database or Google Sheets writes. The request stopped before OpenAI because Docker MinerU cannot import OpenCV without `libxcb.so.1`, then Google Drive OCR timed out during TLS handshake.
+- Conclusion: `gpt-5-mini` remains appropriate as the structured parser, but the current end-to-end runtime is not yet reliable enough for quality production recognition. Required next work is Docker OCR repair, direct-image AI fallback, multi-page grouping, image preprocessing, and expected-JSON golden tests for these photos.
+
+## [2026-07-04] planning | invoice recognition hardening plan fixed
+
+- Added `docs/wiki/invoice-recognition-hardening-plan.md` as the execution plan for the failures exposed by the five real photos.
+- Ordered work into observable contracts, runtime evidence repair, multi-page intake, deterministic image preparation, multimodal OpenAI parsing, deterministic validation, executable golden tests, and final live Google Sheets verification.
+- Kept the current strict Pydantic and deterministic writer boundaries. Model replacement is explicitly gated by golden-set accuracy, latency, and cost rather than assumed to be necessary.
+- Defined the final release gate: five photos become four logical documents, critical fields and numeric rows match expected fixtures, normalized product names are always present, and stopped pipelines cannot write to Google Sheets.
+
+## [2026-07-04] analysis | deterministic conversion rules compiled
+
+- Registered and analyzed `Расчет коэфф.md`.
+- Fixed one coefficient definition: accounting units contained in one document unit.
+- Added formulas for accounting quantity and price plus the line-amount preservation invariant.
+- Confirmed the current implementation gap: quantity conversion exists partially, but `Цена в УС` is always empty and no product exception reference exists.
+- Added `docs/wiki/unit-conversion-rules.md` and integrated its implementation and acceptance gates into the recognition hardening plan.
+- Recorded that piece-to-weight values for eggs, citrus, and avocado are deterministic reference data, not model knowledge; ambiguous active values must require `Сопоставление`.
+
+## [2026-07-04] implementation | hardening plan phases 0-6 closed in code
+
+- Extended live upload tracing with a versioned trace contract and explicit metadata fields for `logical_document_id`, `evidence_version`, selected method, and source files.
+- Upgraded the upload UI into a logical multi-page editor: operators can reorder selected pages, remove mistakes before submit, and the wording now consistently describes the OpenAI mode as a vision parser receiving text plus images.
+- Strengthened deterministic image preparation with deskew, clipping/text-coverage quality metrics, and page-level review/stop warnings that are carried into the evidence contract.
+- Added OCR-based continuation-page marker checks during multi-page merge so missing pages are surfaced as consistency warnings before persistence or sheet writing.
+- Expanded the real-photo golden fixtures with expected shared-sheet rows, added replay evaluation plus compact provider/model reporting, and introduced a no-write live evaluation helper that always forces `create_google_sheet=False`.
+- Added `scripts/docker_runtime_smoke.py` for Docker/provider smoke runs and `scripts/run_invoice_golden_eval.py` for replay-driven golden reports.

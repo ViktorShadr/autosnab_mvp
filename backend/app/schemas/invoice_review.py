@@ -51,6 +51,11 @@ class RecognizedInvoiceItem(BaseModel):
     product_found: str | None = None
     us_unit: str | None = None
     quantity_us: float | None = None
+    price_us: float | None = None
+    conversion_factor: float | None = None
+    conversion_method: str | None = None
+    conversion_source_id: str | None = None
+    conversion_review_reason: str | None = None
     package_reference_id: str | None = None
 
 
@@ -189,4 +194,5 @@ class InvoiceReviewResponse(BaseModel):
     parser_provider: str | None = None
     parser_notes: list[str] = Field(default_factory=list)
     pipeline_logs: list[PipelineLogEntry] = Field(default_factory=list)
+    trace_metadata: dict = Field(default_factory=dict)
     next_actions: dict

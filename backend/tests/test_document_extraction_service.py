@@ -134,7 +134,7 @@ def test_extract_invoice_document_google_ocr_forces_ocr(monkeypatch):
     monkeypatch.setattr(
         document_extraction_service,
         "_extract_with_ocr",
-        lambda _file_path, _filename: {
+        lambda _file_path, _filename, **_kwargs: {
             "provider": "google_drive_ocr",
             "payload": {"supplier": "OCR Supplier"},
         },
@@ -142,7 +142,7 @@ def test_extract_invoice_document_google_ocr_forces_ocr(monkeypatch):
     monkeypatch.setattr(
         document_extraction_service,
         "_extract_with_mineru",
-        lambda _file_path, _filename: {
+        lambda _file_path, _filename, **_kwargs: {
             "provider": "mineru",
             "payload": {"supplier": "MinerU Supplier"},
         },
@@ -162,7 +162,7 @@ def test_extract_invoice_document_openai_collects_evidence_then_parses(monkeypat
     monkeypatch.setattr(
         document_extraction_service,
         "_collect_openai_evidence",
-        lambda _file_path, _filename: {
+        lambda _file_path, _filename, **_kwargs: {
             "raw_text": "evidence",
             "source_type": "image",
             "ocr_used": True,
@@ -196,7 +196,7 @@ def test_extract_invoice_document_openai_stops_on_empty_evidence(monkeypatch):
     monkeypatch.setattr(
         document_extraction_service,
         "_collect_openai_evidence",
-        lambda _file_path, _filename: {
+        lambda _file_path, _filename, **_kwargs: {
             "raw_text": "",
             "source_type": "image",
             "ocr_used": True,
@@ -223,7 +223,7 @@ def test_extract_invoice_document_openai_stops_on_empty_model_payload(monkeypatc
     monkeypatch.setattr(
         document_extraction_service,
         "_collect_openai_evidence",
-        lambda _file_path, _filename: {
+        lambda _file_path, _filename, **_kwargs: {
             "raw_text": "evidence",
             "source_type": "image",
             "ocr_used": True,
@@ -252,6 +252,234 @@ def test_extract_invoice_document_openai_stops_on_empty_model_payload(monkeypatc
     assert result["stop_recommended"] is True
     assert result["error"] == "OpenAI parser вернул пустой структурированный JSON."
     assert any(log["stage"] == "openai_request_complete" and log["status"] == "error" for log in result["pipeline_logs"])
+
+
+def test_extract_invoice_document_openai_stops_on_header_only_payload(monkeypatch):
+    monkeypatch.setattr(
+        document_extraction_service,
+        "_collect_openai_evidence",
+        lambda _file_path, _filename, **_kwargs: {
+            "raw_text": "evidence",
+            "source_type": "image",
+            "ocr_used": True,
+            "extraction_method": "google_drive_ocr",
+            "pages": 1,
+            "structured_document": None,
+        },
+    )
+    monkeypatch.setattr(
+        document_extraction_service,
+        "parse_invoice_with_openai",
+        lambda evidence: {
+            "supplier": "ООО Поставщик",
+            "invoice_number": "123",
+            "items": [],
+            "parser_provider": "openai",
+        },
+    )
+
+    result = document_extraction_service.extract_invoice_document(
+        "invoice.jpg",
+        "invoice.jpg",
+        extraction_method="openai",
+    )
+
+    assert result["stop_recommended"] is True
+    assert result["validation_errors"] == ["товарные строки отсутствуют"]
+    assert "неполный результат" in result["error"]
+
+
+def test_collect_openai_evidence_records_mineru_failure_and_ocr_success(monkeypatch, tmp_path):
+    source = tmp_path / "invoice.jpg"
+    source.write_bytes(b"image")
+    attempts = []
+    monkeypatch.setattr(
+        document_extraction_service,
+        "prepare_document_page",
+        lambda _path: {
+            "prepared_path": None,
+            "transformations": [],
+            "quality": {},
+        },
+    )
+    monkeypatch.setattr(
+        document_extraction_service,
+        "_extract_with_mineru",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("cv2 import failed")),
+    )
+    monkeypatch.setattr(
+        document_extraction_service,
+        "_extract_with_ocr",
+        lambda *_args: {
+            "provider": "google_drive_ocr",
+            "raw_text": "recognized invoice",
+            "pages": 1,
+        },
+    )
+
+    evidence = document_extraction_service._collect_openai_evidence(
+        str(source),
+        source.name,
+        on_attempt=attempts.append,
+    )
+
+    assert evidence["evidence_version"] == "1.0"
+    assert evidence["logical_document_id"].startswith("document-")
+    completed_attempts = [attempt for attempt in attempts if attempt["status"] != "running"]
+    assert [attempt["provider"] for attempt in completed_attempts] == [
+        "image_preparation",
+        "mineru",
+        "google_drive_ocr",
+    ]
+    assert completed_attempts[1]["status"] == "error"
+    assert completed_attempts[2]["status"] == "success"
+    assert evidence["raw_text"] == "recognized invoice"
+
+
+def test_collect_openai_evidence_surfaces_image_quality_warnings(monkeypatch, tmp_path):
+    source = tmp_path / "invoice.jpg"
+    source.write_bytes(b"image")
+    monkeypatch.setattr(
+        document_extraction_service,
+        "prepare_document_page",
+        lambda *_args, **_kwargs: {
+            "prepared_path": None,
+            "transformations": ["autocontrast"],
+            "quality": {
+                "review_reasons": ["На изображении мало текстовых областей после подготовки."],
+                "stop_reasons": ["Качество страницы слишком низкое для надежного извлечения."],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        document_extraction_service,
+        "_extract_with_mineru",
+        lambda *_args: {
+            "raw_text": "mineru text",
+            "pages": 1,
+            "structured_document": None,
+            "payload": {"items": [{"name": "x"}]},
+        },
+    )
+
+    evidence = document_extraction_service._collect_openai_evidence(str(source), source.name)
+
+    assert evidence["consistency_warnings"] == [
+        "Страница 1: На изображении мало текстовых областей после подготовки.",
+        "Страница 1: Качество страницы слишком низкое для надежного извлечения.",
+    ]
+
+
+def test_multipage_openai_merges_pages_before_single_parse(monkeypatch, tmp_path):
+    first = tmp_path / "page-1.jpg"
+    second = tmp_path / "page-2.jpg"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    parsed_evidence = []
+
+    def fake_collect(path, filename, **_kwargs):
+        page = 1 if filename == "page-1.jpg" else 2
+        return {
+            "evidence_version": "1.0",
+            "logical_document_id": f"page-{page}",
+            "filename": filename,
+            "source_type": "image",
+            "ocr_used": True,
+            "extraction_method": "google_drive_ocr",
+            "raw_text": f"text page {page}",
+            "structured_document": {"page": page},
+            "pages": 1,
+            "page_sources": [
+                {
+                    "page_number": 1,
+                    "filename": filename,
+                    "source_type": "image",
+                    "original_path": path,
+                    "prepared_path": None,
+                    "transformations": [],
+                    "quality": {},
+                }
+            ],
+            "provider_attempts": [],
+            "errors": [],
+            "consistency_warnings": [],
+            "error": None,
+        }
+
+    def fake_parse(evidence):
+        parsed_evidence.append(evidence)
+        return {
+            "supplier": "Supplier",
+            "invoice_number": "42",
+            "items": [{"name": "First"}, {"name": "Second"}],
+            "parser_provider": "openai",
+        }
+
+    monkeypatch.setattr(document_extraction_service, "_collect_openai_evidence", fake_collect)
+    monkeypatch.setattr(document_extraction_service, "parse_invoice_with_openai", fake_parse)
+
+    result = document_extraction_service.extract_invoice_document_set(
+        [str(first), str(second)],
+        [first.name, second.name],
+        extraction_method="openai",
+    )
+
+    assert result["stop_recommended"] is False
+    assert len(parsed_evidence) == 1
+    evidence = parsed_evidence[0]
+    assert evidence["pages"] == 2
+    assert "text page 1" in evidence["raw_text"]
+    assert "text page 2" in evidence["raw_text"]
+    assert [page["page_number"] for page in evidence["page_sources"]] == [1, 2]
+
+
+def test_page_consistency_warnings_ignore_empty_continuation_headers():
+    assert document_extraction_service._page_consistency_warnings(
+        [
+            {"page_number": 1, "invoice_number": "42", "supplier_inn": "3900040690"},
+            {"page_number": 2, "invoice_number": None, "supplier_inn": None},
+        ]
+    ) == []
+
+    warnings = document_extraction_service._page_consistency_warnings(
+        [
+            {"page_number": 1, "invoice_number": "42", "supplier_inn": "3900040690"},
+            {"page_number": 2, "invoice_number": "43", "supplier_inn": "3900040690"},
+        ]
+    )
+    assert warnings == ["На страницах найдены разные значения номера документа: 42, 43."]
+
+
+def test_page_consistency_warnings_detect_missing_page_markers():
+    warnings = document_extraction_service._page_consistency_warnings(
+        [
+            {"page_number": 1, "invoice_number": "42", "supplier_inn": "3900040690", "page_marker_current": 1, "page_marker_total": 3},
+            {"page_number": 2, "invoice_number": "42", "supplier_inn": "3900040690", "page_marker_current": 3, "page_marker_total": 3},
+        ]
+    )
+
+    assert warnings == [
+        "Маркер страниц документа указывает минимум на 3 стр., но загружено только 2.",
+        "В маркерах страниц пропущены страницы: 2.",
+    ]
+
+
+def test_source_image_counts_as_evidence_when_ocr_is_empty(tmp_path):
+    source = tmp_path / "invoice.jpg"
+    source.write_bytes(b"image")
+
+    assert document_extraction_service._evidence_has_content(
+        {
+            "raw_text": "",
+            "structured_document": None,
+            "page_sources": [
+                {
+                    "source_type": "image",
+                    "original_path": str(source),
+                }
+            ],
+        }
+    )
 
 
 def test_extract_invoice_document_hybrid_falls_back_to_ocr(monkeypatch):

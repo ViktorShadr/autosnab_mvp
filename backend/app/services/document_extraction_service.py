@@ -4,13 +4,21 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from app.config import settings
+from app.schemas.document_evidence import (
+    DocumentEvidence,
+    EvidencePageSource,
+    EvidenceProviderAttempt,
+)
+from app.services.document_image_preparation_service import prepare_document_page
 from app.services.invoice_parser_service import extract_invoice_payload_with_fallback
 from app.services.openai_invoice_parser_service import OpenAIInvoiceParserError, parse_invoice_with_openai
-from app.services.ocr_service import OcrConfigurationError, recognize_invoice_image
+from app.services.ocr_service import OcrConfigurationError, OcrProviderError, recognize_invoice_image
 
 
 class DocumentExtractionError(RuntimeError):
@@ -28,6 +36,8 @@ def extract_invoice_document(
     fallback_filename: str | None = None,
     extraction_method: str | None = None,
     on_log: Any | None = None,
+    *,
+    _evidence_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Extract evidence and return a normalized invoice payload."""
     backend = _resolve_extraction_method(extraction_method)
@@ -50,7 +60,24 @@ def extract_invoice_document(
             _pipeline_log("collect_evidence_start", "running", "Начат сбор evidence для OpenAI parser."),
             on_log=on_log,
         )
-        evidence = _collect_openai_evidence(file_path, fallback_filename)
+        if _evidence_override is None:
+            evidence = _collect_openai_evidence(
+                file_path,
+                fallback_filename,
+                on_attempt=lambda attempt: _append_pipeline_log(
+                    pipeline_logs,
+                    _provider_attempt_log(attempt),
+                    on_log=on_log,
+                ),
+            )
+        else:
+            evidence = _evidence_override
+            for attempt in evidence.get("provider_attempts") or []:
+                _append_pipeline_log(
+                    pipeline_logs,
+                    _provider_attempt_log(attempt),
+                    on_log=None,
+                )
         _append_pipeline_log(
             pipeline_logs,
             _pipeline_log(
@@ -64,6 +91,8 @@ def extract_invoice_document(
                 raw_text_length=len(evidence.get("raw_text") or ""),
                 pages=evidence.get("pages"),
                 source_type=evidence.get("source_type"),
+                evidence_version=evidence.get("evidence_version"),
+                provider_attempts=len(evidence.get("provider_attempts") or []),
             ),
             on_log=on_log,
         )
@@ -97,7 +126,7 @@ def extract_invoice_document(
                     "stop_recommended": True,
                     "error": evidence.get("error") or error_message,
                     "retry_recommended_method": "openai",
-                    "retry_recommended_label": "OpenAI structured parser",
+                    "retry_recommended_label": "OpenAI vision parser",
                 }
             )
             return manual_result
@@ -136,11 +165,18 @@ def extract_invoice_document(
                     "pipeline_logs": pipeline_logs,
                     "stop_recommended": True,
                     "retry_recommended_method": "openai",
-                    "retry_recommended_label": "OpenAI structured parser",
+                    "retry_recommended_label": "OpenAI vision parser",
                 }
             )
             return manual_result
-        has_useful_payload = _payload_has_useful_data(payload)
+        validation_errors = _payload_validation_errors(payload)
+        has_useful_payload = not validation_errors
+        empty_payload = not _payload_has_useful_data(payload)
+        result_error = None
+        if empty_payload:
+            result_error = "OpenAI parser вернул пустой структурированный JSON."
+        elif validation_errors:
+            result_error = "OpenAI parser вернул неполный результат: " + "; ".join(validation_errors)
         _append_pipeline_log(
             pipeline_logs,
             _pipeline_log(
@@ -153,6 +189,7 @@ def extract_invoice_document(
                 items_count=len(payload.get("items") or []),
                 supplier=payload.get("supplier"),
                 invoice_number=payload.get("invoice_number"),
+                validation_errors=validation_errors,
             ),
             on_log=on_log,
         )
@@ -168,11 +205,10 @@ def extract_invoice_document(
             "evidence": evidence,
             "pipeline_logs": pipeline_logs,
             "stop_recommended": not has_useful_payload,
+            "validation_errors": validation_errors,
             "retry_recommended_method": None,
             "retry_recommended_label": None,
-            "error": "OpenAI parser вернул пустой структурированный JSON."
-            if not has_useful_payload
-            else None,
+            "error": result_error,
         }
 
     if backend in {"mineru", "hybrid"}:
@@ -204,7 +240,7 @@ def extract_invoice_document(
                     "mineru_empty",
                     "warning",
                     "MinerU вернул пустой JSON или неполный результат.",
-                    recommendation="Попробуйте полный прогон через OpenAI structured parser.",
+                    recommendation="Попробуйте полный прогон через OpenAI vision parser.",
                 ),
                 on_log=on_log,
             )
@@ -250,7 +286,7 @@ def extract_invoice_document(
             if not _payload_has_useful_data(ocr_result.get("payload") or {}):
                 ocr_result["stop_recommended"] = True
                 ocr_result["retry_recommended_method"] = "openai"
-                ocr_result["retry_recommended_label"] = "OpenAI structured parser"
+                ocr_result["retry_recommended_label"] = "OpenAI vision parser"
             return ocr_result
 
         manual_result = _manual_review_result(
@@ -261,7 +297,7 @@ def extract_invoice_document(
         manual_result["pipeline_logs"] = pipeline_logs
         manual_result["stop_recommended"] = True
         manual_result["retry_recommended_method"] = "openai"
-        manual_result["retry_recommended_label"] = "OpenAI structured parser"
+        manual_result["retry_recommended_label"] = "OpenAI vision parser"
         return manual_result
 
     _append_pipeline_log(
@@ -284,11 +320,221 @@ def extract_invoice_document(
         on_log=on_log,
     )
     ocr_result["pipeline_logs"] = pipeline_logs
-    if not _payload_has_useful_data(ocr_result.get("payload") or {}):
+    validation_errors = _payload_validation_errors(ocr_result.get("payload") or {})
+    if validation_errors:
         ocr_result["stop_recommended"] = True
+        ocr_result["validation_errors"] = validation_errors
+        ocr_result["error"] = ocr_result.get("error") or "; ".join(validation_errors)
         ocr_result["retry_recommended_method"] = "openai"
-        ocr_result["retry_recommended_label"] = "OpenAI structured parser"
+        ocr_result["retry_recommended_label"] = "OpenAI vision parser"
     return ocr_result
+
+
+def extract_invoice_document_set(
+    file_paths: list[str],
+    fallback_filenames: list[str] | None = None,
+    extraction_method: str | None = None,
+    on_log: Any | None = None,
+) -> dict[str, Any]:
+    if not file_paths:
+        raise DocumentExtractionError("At least one document page is required.")
+    filenames = fallback_filenames or [Path(path).name for path in file_paths]
+    if len(filenames) != len(file_paths):
+        raise DocumentExtractionError("file_paths and fallback_filenames must have equal length.")
+    if len(file_paths) == 1:
+        return extract_invoice_document(
+            file_paths[0],
+            filenames[0],
+            extraction_method=extraction_method,
+            on_log=on_log,
+        )
+    backend = _resolve_extraction_method(extraction_method)
+    if backend != "openai":
+        message = "Многостраничный документ поддерживается только в режиме OpenAI vision parser."
+        return {
+            **_manual_review_result(message, filenames[0]),
+            "selected_method": backend,
+            "stop_recommended": True,
+            "error": message,
+            "pipeline_logs": [
+                _pipeline_log(
+                    "multipage_method_rejected",
+                    "error",
+                    message,
+                    pages=len(file_paths),
+                    selected_method=backend,
+                )
+            ],
+        }
+
+    page_evidence = []
+    for page_number, (path, filename) in enumerate(zip(file_paths, filenames, strict=True), start=1):
+        if on_log is not None:
+            on_log(
+                _pipeline_log(
+                    "document_page_start",
+                    "running",
+                    f"Начата подготовка страницы {page_number}.",
+                    page_number=page_number,
+                    filename=filename,
+                )
+            )
+        evidence = _collect_openai_evidence(
+            path,
+            filename,
+            on_attempt=lambda attempt, current_page=page_number: on_log(
+                _provider_attempt_log({**attempt, "page_number": current_page})
+            )
+            if on_log is not None
+            else None,
+        )
+        page_evidence.append(evidence)
+        if on_log is not None:
+            on_log(
+                _pipeline_log(
+                    "document_page_complete",
+                    "ok" if _evidence_has_content(evidence) else "warning",
+                    f"Страница {page_number} подготовлена.",
+                    page_number=page_number,
+                    raw_text_length=len(evidence.get("raw_text") or ""),
+                )
+            )
+
+    combined = _merge_page_evidence(page_evidence, filenames)
+    return extract_invoice_document(
+        file_paths[0],
+        f"{len(file_paths)} pages: {filenames[0]}",
+        extraction_method="openai",
+        on_log=on_log,
+        _evidence_override=combined,
+    )
+
+
+def _merge_page_evidence(
+    page_evidence: list[dict[str, Any]],
+    filenames: list[str],
+) -> dict[str, Any]:
+    logical_document_id = f"document-{uuid4().hex}"
+    page_sources = []
+    attempts = []
+    errors = []
+    raw_parts = []
+    structured_parts = []
+    methods = []
+    page_header_hints = []
+    for page_number, evidence in enumerate(page_evidence, start=1):
+        raw_text = evidence.get("raw_text") or ""
+        if raw_text.strip():
+            raw_parts.append(f"--- Страница {page_number}: {filenames[page_number - 1]} ---\n{raw_text}")
+        structured = evidence.get("structured_document")
+        if structured not in (None, "", [], {}):
+            structured_parts.append({"page_number": page_number, "content": structured})
+        for source in evidence.get("page_sources") or []:
+            if isinstance(source, dict):
+                page_sources.append({**source, "page_number": page_number})
+        for attempt in evidence.get("provider_attempts") or []:
+            if isinstance(attempt, dict):
+                attempts.append({**attempt, "page_number": page_number})
+        errors.extend(str(error) for error in (evidence.get("errors") or []) if error)
+        method = evidence.get("extraction_method")
+        if method and method not in methods:
+            methods.append(method)
+        if raw_text.strip():
+            hint = extract_invoice_payload_with_fallback(
+                raw_text,
+                filenames[page_number - 1],
+            )
+            page_marker = _extract_page_marker_hint(raw_text)
+            page_header_hints.append(
+                {
+                    "page_number": page_number,
+                    "invoice_number": hint.get("invoice_number"),
+                    "supplier_inn": hint.get("supplier_inn"),
+                    "page_marker_current": page_marker.get("current"),
+                    "page_marker_total": page_marker.get("total"),
+                }
+            )
+
+    source_types = {evidence.get("source_type") for evidence in page_evidence}
+    consistency_warnings = _page_consistency_warnings(page_header_hints)
+    merged = DocumentEvidence(
+        logical_document_id=logical_document_id,
+        filename=f"{len(page_evidence)} pages",
+        source_type=source_types.pop() if len(source_types) == 1 else "unknown",
+        ocr_used=any(bool(evidence.get("ocr_used")) for evidence in page_evidence),
+        extraction_method="+".join(methods) or "source_images",
+        raw_text="\n\n".join(raw_parts),
+        structured_document=structured_parts or None,
+        pages=len(page_evidence),
+        page_sources=page_sources,
+        provider_attempts=attempts,
+        errors=errors,
+        consistency_warnings=consistency_warnings,
+        error="; ".join(errors) if errors else None,
+    )
+    return merged.model_dump(mode="json")
+
+
+def _page_consistency_warnings(page_header_hints: list[dict[str, Any]]) -> list[str]:
+    warnings = []
+    for field, label in (
+        ("invoice_number", "номера документа"),
+        ("supplier_inn", "ИНН поставщика"),
+    ):
+        values = {
+            str(hint.get(field)).strip()
+            for hint in page_header_hints
+            if hint.get(field) not in (None, "")
+        }
+        if len(values) > 1:
+            warnings.append(
+                f"На страницах найдены разные значения {label}: {', '.join(sorted(values))}."
+            )
+    marker_currents = {
+        int(hint.get("page_marker_current"))
+        for hint in page_header_hints
+        if hint.get("page_marker_current") not in (None, "")
+    }
+    marker_totals = {
+        int(hint.get("page_marker_total"))
+        for hint in page_header_hints
+        if hint.get("page_marker_total") not in (None, "")
+    }
+    if marker_totals:
+        declared_total = max(marker_totals)
+        actual_total = len(page_header_hints)
+        if declared_total > actual_total:
+            warnings.append(
+                f"Маркер страниц документа указывает минимум на {declared_total} стр., но загружено только {actual_total}."
+            )
+    if marker_currents:
+        expected = set(range(1, max(marker_currents) + 1))
+        if expected - marker_currents:
+            missing = ", ".join(str(value) for value in sorted(expected - marker_currents))
+            warnings.append(f"В маркерах страниц пропущены страницы: {missing}.")
+    return warnings
+
+
+def _extract_page_marker_hint(raw_text: str) -> dict[str, int | None]:
+    normalized = str(raw_text or "")
+    numbered_total = re.search(
+        r"(?:страниц[аы]?|лист)\s*[№:]?\s*(\d{1,2})\s*(?:из|/)\s*(\d{1,2})",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if numbered_total:
+        return {
+            "current": int(numbered_total.group(1)),
+            "total": int(numbered_total.group(2)),
+        }
+    numbered = re.search(
+        r"(?:страниц[аы]?|лист)\s*[№:]?\s*(\d{1,2})\b",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if numbered:
+        return {"current": int(numbered.group(1)), "total": None}
+    return {"current": None, "total": None}
 
 
 def _resolve_extraction_method(extraction_method: str | None) -> str:
@@ -311,47 +557,159 @@ def _resolve_extraction_method(extraction_method: str | None) -> str:
     return "google_ocr"
 
 
-def _collect_openai_evidence(file_path: str, fallback_filename: str | None) -> dict[str, Any]:
+def _collect_openai_evidence(
+    file_path: str,
+    fallback_filename: str | None,
+    *,
+    on_attempt: Any | None = None,
+) -> dict[str, Any]:
     source_type = _source_type(file_path, fallback_filename)
-    evidence: dict[str, Any] = {
-        "filename": fallback_filename or Path(file_path).name,
-        "source_type": source_type,
-        "ocr_used": False,
-        "extraction_method": "",
-        "raw_text": "",
-        "structured_document": None,
-        "pages": None,
-    }
+    filename = fallback_filename or Path(file_path).name
+    evidence = DocumentEvidence(
+        logical_document_id=f"document-{uuid4().hex}",
+        filename=filename,
+        source_type=source_type,
+        page_sources=[
+            EvidencePageSource(
+                page_number=1,
+                filename=filename,
+                source_type=source_type,
+                original_path=file_path,
+            )
+        ],
+    )
+    evidence_input_path = file_path
+    if source_type == "image":
+        _notify_evidence_attempt_start("image_preparation", on_attempt)
+        started = time.perf_counter()
+        try:
+            prepared = prepare_document_page(file_path)
+            page = evidence.page_sources[0]
+            page.prepared_path = prepared.get("prepared_path")
+            page.transformations = prepared.get("transformations") or []
+            page.quality = prepared.get("quality") or {}
+            for reason in page.quality.get("review_reasons") or []:
+                evidence.consistency_warnings.append(f"Страница {page.page_number}: {reason}")
+            for reason in page.quality.get("stop_reasons") or []:
+                evidence.consistency_warnings.append(f"Страница {page.page_number}: {reason}")
+            evidence_input_path = page.prepared_path or file_path
+            _add_evidence_attempt(
+                evidence,
+                EvidenceProviderAttempt(
+                    provider="image_preparation",
+                    status="success",
+                    duration_ms=_duration_ms(started),
+                ),
+                on_attempt,
+            )
+        except Exception as exc:  # noqa: BLE001 - original image remains a safe fallback
+            message = f"Image preparation failed: {exc}"
+            evidence.errors.append(message)
+            _add_evidence_attempt(
+                evidence,
+                EvidenceProviderAttempt(
+                    provider="image_preparation",
+                    status="error",
+                    duration_ms=_duration_ms(started),
+                    error_type=type(exc).__name__,
+                    error_message=message,
+                ),
+                on_attempt,
+            )
 
     if source_type == "pdf":
+        _notify_evidence_attempt_start("pdf_text", on_attempt)
+        started = time.perf_counter()
         pdf_text = _extract_pdf_text(file_path)
-        if pdf_text.strip():
-            evidence.update(raw_text=pdf_text, extraction_method="pdf_text")
-            return evidence
-
-    try:
-        mineru_result = _extract_with_mineru(file_path, fallback_filename)
-    except Exception:  # noqa: BLE001 - OCR remains the evidence fallback
-        mineru_result = None
-    if mineru_result and (mineru_result.get("raw_text") or "").strip():
-        evidence.update(
-            raw_text=mineru_result.get("raw_text") or "",
-            extraction_method="mineru",
-            structured_document=mineru_result.get("structured_document"),
-            pages=mineru_result.get("pages"),
+        attempt = EvidenceProviderAttempt(
+            provider="pdf_text",
+            status="success" if pdf_text.strip() else "skipped",
+            duration_ms=_duration_ms(started),
+            raw_text_length=len(pdf_text),
         )
-        return evidence
+        _add_evidence_attempt(evidence, attempt, on_attempt)
+        if pdf_text.strip():
+            evidence.raw_text = pdf_text
+            evidence.extraction_method = "pdf_text"
+            return evidence.model_dump(mode="json")
 
-    ocr_result = _extract_with_ocr(file_path, fallback_filename)
-    evidence.update(
-        raw_text=ocr_result.get("raw_text") or "",
-        extraction_method=ocr_result.get("provider") or "google_drive_ocr",
-        ocr_used=True,
-        pages=ocr_result.get("pages"),
+    _notify_evidence_attempt_start("mineru", on_attempt)
+    started = time.perf_counter()
+    try:
+        mineru_result = _extract_with_mineru(evidence_input_path, fallback_filename)
+    except Exception as exc:  # noqa: BLE001 - OCR remains the evidence fallback
+        mineru_result = None
+        error_message = str(exc)
+        evidence.errors.append(error_message)
+        _add_evidence_attempt(
+            evidence,
+            EvidenceProviderAttempt(
+                provider="mineru",
+                status="error",
+                duration_ms=_duration_ms(started),
+                error_type=type(exc).__name__,
+                error_message=error_message,
+            ),
+            on_attempt,
+        )
+    if mineru_result and (mineru_result.get("raw_text") or "").strip():
+        raw_text = mineru_result.get("raw_text") or ""
+        _add_evidence_attempt(
+            evidence,
+            EvidenceProviderAttempt(
+                provider="mineru",
+                status="success",
+                duration_ms=_duration_ms(started),
+                raw_text_length=len(raw_text),
+                pages=mineru_result.get("pages"),
+            ),
+            on_attempt,
+        )
+        evidence.raw_text = raw_text
+        evidence.extraction_method = "mineru"
+        evidence.structured_document = mineru_result.get("structured_document")
+        evidence.pages = mineru_result.get("pages")
+        return evidence.model_dump(mode="json")
+    if mineru_result:
+        _add_evidence_attempt(
+            evidence,
+            EvidenceProviderAttempt(
+                provider="mineru",
+                status="skipped",
+                duration_ms=_duration_ms(started),
+                error_message="MinerU returned no text evidence.",
+            ),
+            on_attempt,
+        )
+
+    _notify_evidence_attempt_start("google_drive_ocr", on_attempt)
+    started = time.perf_counter()
+    ocr_result = _extract_with_ocr(evidence_input_path, fallback_filename)
+    raw_text = ocr_result.get("raw_text") or ""
+    ocr_error = ocr_result.get("error")
+    _add_evidence_attempt(
+        evidence,
+        EvidenceProviderAttempt(
+            provider=ocr_result.get("provider") or "google_drive_ocr",
+            status="error" if ocr_error else ("success" if raw_text.strip() else "skipped"),
+            duration_ms=_duration_ms(started),
+            attempts=int(ocr_result.get("provider_attempts") or 1),
+            retryable=bool(ocr_result.get("provider_retryable")),
+            raw_text_length=len(raw_text),
+            pages=ocr_result.get("pages"),
+            error_type=ocr_result.get("error_type"),
+            error_message=ocr_error,
+        ),
+        on_attempt,
     )
-    if ocr_result.get("error"):
-        evidence["error"] = ocr_result["error"]
-    return evidence
+    evidence.raw_text = raw_text
+    evidence.extraction_method = ocr_result.get("provider") or "google_drive_ocr"
+    evidence.ocr_used = True
+    evidence.pages = ocr_result.get("pages")
+    if ocr_error:
+        evidence.error = ocr_error
+        evidence.errors.append(ocr_error)
+    return evidence.model_dump(mode="json")
 
 
 def _extract_pdf_text(file_path: str) -> str:
@@ -389,6 +747,19 @@ def _extract_with_ocr(file_path: str, fallback_filename: str | None) -> dict[str
             "confidence": None,
             "pages": 0,
             "error": str(exc),
+            "payload": extract_invoice_payload_with_fallback("", fallback_filename),
+        }
+    except OcrProviderError as exc:
+        return {
+            "provider": exc.provider,
+            "raw_text": "",
+            "confidence": None,
+            "pages": 0,
+            "error": str(exc),
+            "error_type": type(exc).__name__,
+            "provider_operation": exc.operation,
+            "provider_attempts": exc.attempts,
+            "provider_retryable": exc.retryable,
             "payload": extract_invoice_payload_with_fallback("", fallback_filename),
         }
     except Exception as exc:  # noqa: BLE001 - external OCR failures must not break upload
@@ -822,6 +1193,23 @@ def _payload_has_useful_data(payload: dict[str, Any]) -> bool:
     return False
 
 
+def _payload_validation_errors(payload: dict[str, Any]) -> list[str]:
+    if not _payload_has_useful_data(payload):
+        return ["structured payload is empty"]
+    items = payload.get("items")
+    if settings.invoice_allow_header_only_documents:
+        return []
+    if not isinstance(items, list) or not items:
+        return ["товарные строки отсутствуют"]
+    if not any(
+        str(item.get("name") or item.get("raw_name") or "").strip()
+        for item in items
+        if isinstance(item, dict)
+    ):
+        return ["товарные строки не содержат наименований"]
+    return []
+
+
 def _evidence_has_content(evidence: dict[str, Any]) -> bool:
     if (evidence.get("raw_text") or "").strip():
         return True
@@ -830,7 +1218,48 @@ def _evidence_has_content(evidence: dict[str, Any]) -> bool:
         return any(value not in (None, "", [], {}) for value in structured_document.values())
     if isinstance(structured_document, list):
         return bool(structured_document)
+    for page in evidence.get("page_sources") or []:
+        if not isinstance(page, dict):
+            continue
+        candidate = Path(page.get("prepared_path") or page.get("original_path") or "")
+        if candidate.is_file():
+            return True
     return False
+
+
+def _duration_ms(started: float) -> int:
+    return max(0, round((time.perf_counter() - started) * 1000))
+
+
+def _add_evidence_attempt(
+    evidence: DocumentEvidence,
+    attempt: EvidenceProviderAttempt,
+    on_attempt: Any | None,
+) -> None:
+    evidence.provider_attempts.append(attempt)
+    if on_attempt is not None:
+        on_attempt(attempt.model_dump(mode="json"))
+
+
+def _provider_attempt_log(attempt: dict[str, Any]) -> dict[str, Any]:
+    provider = attempt["provider"]
+    status = attempt["status"]
+    details = {key: value for key, value in attempt.items() if key != "status"}
+    return _pipeline_log(
+        f"evidence_provider_{provider}_{'start' if status == 'running' else 'complete'}",
+        (
+            "running"
+            if status == "running"
+            else ("ok" if status == "success" else ("warning" if status == "skipped" else "error"))
+        ),
+        f"Evidence provider {provider}: {status}.",
+        **details,
+    )
+
+
+def _notify_evidence_attempt_start(provider: str, on_attempt: Any | None) -> None:
+    if on_attempt is not None:
+        on_attempt({"provider": provider, "status": "running"})
 
 
 def _pipeline_log(

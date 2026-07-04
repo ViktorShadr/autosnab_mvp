@@ -510,6 +510,11 @@ def test_upload_trace_endpoint_returns_live_trace(monkeypatch, tmp_path):
             "selected_method": "openai",
             "raw_text": "evidence",
             "pages": 1,
+            "evidence": {
+                "logical_document_id": "document-1",
+                "evidence_version": "1.0",
+                "pages": 1,
+            },
             "pipeline_logs": [
                 {
                     "stage": "openai_request_start",
@@ -546,6 +551,8 @@ def test_upload_trace_endpoint_returns_live_trace(monkeypatch, tmp_path):
     assert response.status_code == 200
     trace_data = _wait_for_trace(trace_id)
     assert trace_data["completed"] is True
+    assert trace_data["trace_version"] == "1.0"
+    assert trace_data["metadata"]["logical_document_id"] == "document-1"
     assert trace_data["logs"][0]["stage"] == "openai_request_start"
 
 
@@ -569,6 +576,11 @@ def test_upload_photo_live_returns_trace_id_and_background_result(monkeypatch, t
             "selected_method": "openai",
             "raw_text": "evidence",
             "pages": 1,
+            "evidence": {
+                "logical_document_id": "document-1",
+                "evidence_version": "1.0",
+                "pages": 1,
+            },
             "pipeline_logs": [
                 {
                     "stage": "document_received",
@@ -610,7 +622,47 @@ def test_upload_photo_live_returns_trace_id_and_background_result(monkeypatch, t
 
     trace_data = _wait_for_trace("live-trace-1")
     assert trace_data["completed"] is True
+    assert trace_data["metadata"]["evidence_version"] == "1.0"
     assert trace_data["result"]["google_spreadsheet_url"] == "https://example.test/sheet-1"
+    assert trace_data["result"]["trace_metadata"]["logical_document_id"] == "document-1"
+
+
+def test_upload_document_live_preserves_page_order(monkeypatch, tmp_path):
+    from app.routers import invoice_review as invoice_review_router
+
+    captured = {}
+    monkeypatch.setattr(invoice_review_router.settings, "uploaded_invoices_dir", str(tmp_path))
+
+    def fake_background(**kwargs):
+        captured.update(kwargs)
+        invoice_review_router.finalize_trace(kwargs["trace_id"])
+
+    monkeypatch.setattr(
+        invoice_review_router,
+        "_process_invoice_upload_background",
+        fake_background,
+    )
+
+    response = client.post(
+        "/api/v1/invoice-review/upload-document-live",
+        files=[
+            ("files", ("page-1.jpg", b"first", "image/jpeg")),
+            ("files", ("page-2.jpg", b"second", "image/jpeg")),
+        ],
+        data={
+            "create_google_sheet": "false",
+            "extraction_method": "openai",
+            "upload_trace_id": "multipage-trace-1",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["pages"] == 2
+    trace = _wait_for_trace("multipage-trace-1")
+    assert trace["completed"] is True
+    assert captured["file_names"] == ["page-1.jpg", "page-2.jpg"]
+    assert [Path(path).read_bytes() for path in captured["file_paths"]] == [b"first", b"second"]
+    assert captured["file_type"] == "multipage"
 
 
 def test_build_review_sheet_backfills_invoice_reference_mapping_for_old_items(monkeypatch):
@@ -670,6 +722,44 @@ def test_build_review_sheet_backfills_invoice_reference_mapping_for_old_items(mo
 
     assert rows[1][16] == "Кефир"
     assert rows[1][17] == "Да"
+
+
+def test_invoice_register_header_uses_receiving_id_for_document_id():
+    from app.services import invoice_review_service
+    from app.schemas.invoice_review import InvoiceReviewCreateRequest, RecognizedInvoiceItem
+
+    payload = InvoiceReviewCreateRequest(
+        supplier="ООО Поставщик",
+        supplier_legal_name="ООО Поставщик",
+        invoice_date="2026-07-04",
+        invoice_number="A-42",
+        venue="Добрая столовая",
+        items=[
+            RecognizedInvoiceItem(
+                name="Молоко",
+                quantity=1,
+                unit="шт",
+                price=100,
+            )
+        ],
+        parser_metadata={},
+    )
+    db = TestingSessionLocal()
+    try:
+        receiving = invoice_review_service.create_invoice_review(db, payload)
+        document = receiving.documents[-1] if receiving.documents else None
+        header_meta = {"document_id": 1}
+
+        header_values = invoice_review_service._invoice_register_header_values(
+            receiving,
+            document,
+            header_meta,
+            total_sum=100,
+        )
+    finally:
+        db.close()
+
+    assert header_values["document_id"] == receiving.id
 
 
 def test_mvp4_requires_manual_approval_before_send():
@@ -872,13 +962,14 @@ def test_invoice_review_sheet_does_not_guess_supplier_inn_from_raw_text():
 
     assert sheet.status_code == 200
     rows = sheet.json()["sheets"]["Накладные"]
-    assert rows[1][5] == ""
-    assert rows[1][6] == ""
-    assert rows[1][7] == ""
-    assert rows[1][13] == "Окорок \"По-тамбовски\" к/в в/у"
-    assert rows[1][17] == "кг"
-    assert rows[1][21] == "7%"
-    assert rows[1][24] == 16351.45
+    values = dict(zip(rows[0], rows[1], strict=True))
+    assert values["Дата документа"] == ""
+    assert values["№ Документа"] == ""
+    assert values["Поставщик"] == ""
+    assert values["Наименование товара из документа"] == "Окорок \"По-тамбовски\" к/в в/у"
+    assert values["Ед.изм."] == "кг"
+    assert values["Ставка НДС %"] == "7%"
+    assert values["Сумма накладной"] == 16351.45
 
 def test_mvp4_auto_fills_iiko_fields_from_references(monkeypatch):
     from app.services import iiko_reference_mapping_service
@@ -917,49 +1008,61 @@ def test_mvp4_auto_fills_iiko_fields_from_references(monkeypatch):
     assert sheet.status_code == 200
     rows = sheet.json()["sheets"]["Накладные"]
     assert "Служебные поля iiko" not in sheet.json()["sheets"]
-    assert rows[0][0] == "Время загрузки документа"
-    assert rows[0][1] == "ID документа"
-    assert rows[0][2] == "Индикатор дубля документа"
-    assert rows[0][6] == "Поставщик"
-    assert rows[0][13] == "Наименование товара из документа"
-    assert rows[0][14] == "Госсистемы"
+    assert rows[0][0] == "Статус загрузки"
+    assert "Время загрузки документа" in rows[0]
+    assert "ID документа" in rows[0]
+    assert "Индикатор дубля документа" in rows[0]
+    assert "Поставщик" in rows[0]
+    assert "Наименование товара из документа" in rows[0]
+    assert "Госсистемы" in rows[0]
     assert "ЕГАИС" not in rows[0]
     assert "Меркурий" not in rows[0]
     assert "Честный знак" not in rows[0]
-    assert rows[0][18] == "Кол-во из документа"
-    assert rows[0][28] == "Дата приема"
-    assert rows[0][36] == "Статус строки"
-    assert rows[1][0] != ""
-    assert rows[1][1] == 1
-    assert rows[1][3] == "ТОРГ-12"
-    assert rows[1][5] == "780"
-    assert rows[1][4] == "2026-06-19"
-    assert rows[1][6] == "Питер Кельн"
-    assert rows[1][10] == "Добрая столовая"
-    assert rows[2][0] == ""
-    assert rows[2][1] == ""
-    assert rows[2][3] == ""
-    assert rows[2][4] == ""
-    assert rows[2][5] == ""
-    assert rows[2][6] == ""
-    assert rows[2][7] == ""
-    assert rows[2][8] == ""
-    assert rows[2][9] == ""
-    assert rows[2][10] == ""
-    assert rows[2][11] == ""
-    assert rows[2][12] == ""
-    assert rows[1][24] != ""
-    assert rows[2][24] == ""
+    assert "Кол-во из документа" in rows[0]
+    assert "Дата приема" in rows[0]
+    assert "Статус строки" in rows[0]
+    first = dict(zip(rows[0], rows[1], strict=True))
+    second = dict(zip(rows[0], rows[2], strict=True))
+    assert first["Время загрузки документа"] != ""
+    assert first["ID документа"] == review_id
+    assert first["Форма документа"] == "ТОРГ-12"
+    assert first["№ Документа"] == "780"
+    assert first["Дата документа"] == "2026-06-19"
+    assert first["Поставщик"] == "Питер Кельн"
+    assert first["Торговая точка"] == "Добрая столовая"
+    for field in (
+        "Статус загрузки",
+        "Время загрузки документа",
+        "ID документа",
+        "Индикатор дубля документа",
+        "Форма документа",
+        "Дата документа",
+        "№ Документа",
+        "Поставщик",
+        "ИНН Поставщика",
+        "Грузополучатель",
+        "Получатель",
+        "Торговая точка",
+        "Склад",
+        "Основание",
+        "Сумма накладной",
+    ):
+        assert second[field] == ""
+    assert first["Общая стоимость"] != ""
+    assert second["Общая стоимость"] != ""
     assert "Статус проверки" not in rows[0]
     assert "Что исправить" not in rows[0]
-    assert rows[1][13] == "Сахар ванильный"
-    assert rows[1][15] == ""
-    assert rows[1][26] == ""
-    assert rows[1][27] == ""
-    assert rows[1][34] == ""
-    assert rows[1][35] == ""
-    assert rows[1][36] == ""
-    assert rows[1][37] == ""
+    assert first["Наименование товара из документа"] == "Сахар ванильный"
+    assert first["Госсистемы"] == ""
+    assert first["Наименование товара в УС"] == "Сахар ванильный"
+    assert first["Ед.изм. в УС"] == "шт"
+    assert first["Кол-во в УС"] == 2
+    assert first["Цена в УС"] == 110
+    assert first["Последняя цена"] == ""
+    assert first["Отклонение от цены прайса"] == ""
+    assert first["Загрузить в УС"] == ""
+    assert first["Статус строки"] in {"Распознано", "Правка вручную", ""}
+    assert first["Причина ручной корректировки"] != "41"
 
     preview = client.get(f"/api/v1/invoice-review/{review_id}/preview")
     assert preview.status_code == 200
@@ -1053,18 +1156,47 @@ def test_invoice_review_sheet_clears_non_visible_values_on_torg12_continuation_p
     sheet = client.get(f"/api/v1/invoice-review/{review_id}/sheet")
     assert sheet.status_code == 200
     rows = sheet.json()["sheets"]["Накладные"]
-    data_row = rows[1]
+    data_row = dict(zip(rows[0], rows[1], strict=True))
 
     # На странице-продолжении шапки документа нет, поэтому эти поля не заполняем.
-    for column_index in [2, 4, 5, 6, 7, 8, 9, 10, 11, 12]:
-        assert data_row[column_index] == ""
+    for field in (
+        "Индикатор дубля документа",
+        "Дата документа",
+        "№ Документа",
+        "Поставщик",
+        "ИНН Поставщика",
+        "Грузополучатель",
+        "Получатель",
+        "Торговая точка",
+        "Склад",
+        "Основание",
+    ):
+        assert data_row[field] == ""
 
     # Пользовательские/ручные/УС-поля не должны заполняться техническими значениями.
-    for column_index in [14, 15, 16, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37]:
-        assert data_row[column_index] == ""
+    for field in (
+        "Госсистемы",
+        "Дата приема",
+        "Принял, Ф.И.О.",
+        "Кол-во в заявке",
+        "Цена по прайсу",
+        "Последняя дата поставки",
+        "Последняя цена",
+        "Отклонение от цены прайса",
+        "Загрузить в УС",
+    ):
+        assert data_row[field] == ""
+    assert data_row["Товар найден в справочнике"] != "41"
+    assert data_row["Статус строки"] != "41"
+    assert data_row["Причина ручной корректировки"] != "41"
 
-    assert data_row[3] == "ТОРГ-12"
-    assert data_row[13] == "Окорок \"По-тамбовски\" к/в в/у"
-    assert data_row[17] == "кг"
-    assert data_row[21] == "7%"
-    assert data_row[24] == 16351.45
+    assert data_row["ID документа"] == review_id
+    assert data_row["Форма документа"] == "ТОРГ-12"
+    assert data_row["Наименование товара из документа"] == "Окорок \"По-тамбовски\" к/в в/у"
+    assert data_row["Наименование товара в УС"] == "Окорок По-тамбовски"
+    assert data_row["Ед.изм."] == "кг"
+    assert data_row["Ед.изм. в УС"] == "кг"
+    assert data_row["Кол-во в УС"] == 4.058
+    assert data_row["Цена в УС"] == 702
+    assert data_row["Ставка НДС %"] == "7%"
+    assert data_row["Сумма накладной"] == 16351.45
