@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -23,7 +24,7 @@ def _parsed_invoice(**overrides):
             "document_date": "04.07.2026",
             "document_number": "A-42",
             "supplier_name": 'ООО "Поставщик"',
-            "supplier_inn": "77 0123 4567",
+            "supplier_inn": "39 0004 0690",
             "shipper": "",
             "receiver": 'ООО "Кафе"',
             "basis": "Договор 1",
@@ -101,13 +102,66 @@ def test_openai_parser_uses_structured_response_and_returns_legacy_payload(tmp_p
     )
 
     assert responses.kwargs["text_format"] is InvoiceParserResult
+    assert responses.kwargs["input"][0]["content"][0]["type"] == "input_text"
     assert result["parser_provider"] == "openai"
     assert result["invoice_date"] == "2026-07-04"
-    assert result["supplier_inn"] == "7701234567"
+    assert result["supplier_inn"] == "3900040690"
     assert result["items"][0]["sum"] == 100.0
     assert result["parser_metadata"]["upload_status"] == "Проверить"
     assert "Справочник фасовок" in SYSTEM_PROMPT
     assert "quantity_multiplier" in SYSTEM_PROMPT
+
+
+def test_openai_parser_sends_prepared_pages_as_ordered_image_inputs(tmp_path: Path, monkeypatch):
+    parsed = InvoiceParserResult.model_validate(_parsed_invoice())
+    first = tmp_path / "page-1.jpg"
+    second = tmp_path / "page-2.jpg"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+
+    class FakeResponses:
+        def __init__(self):
+            self.kwargs = None
+
+        def parse(self, **kwargs):
+            self.kwargs = kwargs
+            return SimpleNamespace(output_parsed=parsed)
+
+    responses = FakeResponses()
+    monkeypatch.setattr("app.services.openai_invoice_parser_service.settings.openai_debug_log_enabled", False)
+    parse_invoice_with_openai(
+        {
+            "filename": "invoice",
+            "source_type": "image",
+            "raw_text": "OCR evidence",
+            "page_sources": [
+                {
+                    "page_number": 1,
+                    "filename": "page-1.jpg",
+                    "source_type": "image",
+                    "original_path": str(first),
+                },
+                {
+                    "page_number": 2,
+                    "filename": "page-2.jpg",
+                    "source_type": "image",
+                    "original_path": str(second),
+                },
+            ],
+        },
+        client=SimpleNamespace(responses=responses),
+    )
+
+    content = responses.kwargs["input"][0]["content"]
+    assert [entry["type"] for entry in content] == [
+        "input_text",
+        "input_text",
+        "input_image",
+        "input_text",
+        "input_image",
+    ]
+    assert "Страница 1" in content[1]["text"]
+    assert content[2]["image_url"].startswith("data:image/jpeg;base64,")
 
 
 def test_item_normalization_extracts_code_package_and_accounting_quantity():
@@ -129,6 +183,24 @@ def test_item_normalization_extracts_code_package_and_accounting_quantity():
     assert item.quantity_multiplier == 0.8
     assert item.accounting_quantity_candidate == 4.0
     assert item.accounting_unit_candidate == "кг"
+
+
+def test_item_normalization_fixes_common_latin_kg_ocr_alias():
+    item = InvoiceParsedItem(
+        raw_name="1Еноки вес",
+        document_unit="KT",
+        quantity_document=3.14,
+        price=650,
+        confidence=0.9,
+    )
+
+    issues = normalize_item_candidate(item)
+
+    assert issues == []
+    assert item.clean_name == "Еноки вес"
+    assert item.document_unit == "КГ"
+    assert item.accounting_unit_candidate == "кг"
+    assert item.quantity_multiplier == 1.0
 
 
 def test_item_normalization_multiplies_nested_liquid_package():
@@ -172,6 +244,7 @@ def test_reference_mapping_fills_us_fields_deterministically():
                 "package": {"value": 800, "unit": "г", "raw": "800Г"},
                 "quantity": 5,
                 "quantity_document": 5,
+                "price": 100,
                 "quantity_multiplier": 0.8,
                 "accounting_unit_candidate": "кг",
             }
@@ -187,7 +260,7 @@ def test_reference_mapping_fills_us_fields_deterministically():
 
     result = apply_reference_mapping_to_payload(
         payload,
-        products=[{"Наименование": "Кефир", "Код": "01-00017", "Ед. изм.": "л"}],
+        products=[{"Наименование": "Кефир", "Код": "01-00017", "Ед. изм.": "кг"}],
         packages=[
             {
                 "ID": "0-00800",
@@ -204,6 +277,10 @@ def test_reference_mapping_fills_us_fields_deterministically():
     assert item["us_product_name"] == "Кефир"
     assert item["us_unit"] == "кг"
     assert item["quantity_us"] == 4.0
+    assert item["price_us"] == 125.0
+    assert item["conversion_factor"] == 0.8
+    assert item["conversion_method"] == "standard"
+    assert item["conversion_amount_delta"] == 0.0
     assert item.get("correction", "") == ""
 
 
@@ -243,7 +320,152 @@ def test_reference_mapping_marks_missing_product_and_package():
     assert item["correction"] == "Нет в справочнике"
     assert result["parser_metadata"]["upload_status"] == "Требует проверки"
     assert result["parser_metadata"]["row_status"] == "Правка вручную"
-    assert len(result["parser_metadata"]["review_flags"]) == 2
+    assert len(result["parser_metadata"]["review_flags"]) == 1
+    assert item["quantity_us"] == 0.666
+
+
+def test_reference_mapping_uses_piece_weight_exception():
+    payload = {
+        "items": [
+            {
+                "line_number": 1,
+                "name": "ЯЙЦО КУРИНОЕ С1",
+                "normalized_name_candidate": "Яйцо С1",
+                "document_unit": "шт",
+                "unit": "шт",
+                "quantity": 30,
+                "quantity_document": 30,
+                "price": 10,
+                "package": {},
+            }
+        ],
+        "parser_metadata": {
+            "upload_status": "Проверить",
+            "row_status": "Распознано",
+            "review_flags": [],
+            "item_corrections": {},
+        },
+        "parser_notes": [],
+    }
+
+    result = apply_reference_mapping_to_payload(
+        payload,
+        products=[{"Наименование": "Яйцо С1", "Код": "EGG-C1", "Ед. изм.": "кг"}],
+        packages=[],
+        conversion_exceptions=[
+            {
+                "ID": "egg-c1",
+                "Наименование товара": "Яйцо С1",
+                "Ед.изм. в документе": "шт",
+                "Ед.изм. в УС": "кг",
+                "Вес 1 шт": "0,055",
+                "Активна": "да",
+            }
+        ],
+    )
+
+    item = result["items"][0]
+    assert item["conversion_method"] == "product_exception"
+    assert item["conversion_factor"] == 0.055
+    assert item["quantity_us"] == 1.65
+    assert item["price_us"] == pytest.approx(181.818182)
+    assert item["conversion_source_id"] == "egg-c1"
+
+
+def test_reference_mapping_rejects_ambiguous_product_exception():
+    payload = {
+        "items": [
+            {
+                "line_number": 1,
+                "name": "АВОКАДО",
+                "normalized_name_candidate": "Авокадо",
+                "document_unit": "шт",
+                "unit": "шт",
+                "quantity": 2,
+                "quantity_document": 2,
+                "price": 100,
+                "package": {},
+            }
+        ],
+        "parser_metadata": {
+            "upload_status": "Проверить",
+            "row_status": "Распознано",
+            "review_flags": [],
+            "item_corrections": {},
+        },
+        "parser_notes": [],
+    }
+    exceptions = [
+        {
+            "ID": "avocado-350",
+            "Товар": "Авокадо",
+            "Единица документа": "шт",
+            "Единица учета в УС": "кг",
+            "Коэффициент пересчета": 0.35,
+        },
+        {
+            "ID": "avocado-400",
+            "Товар": "Авокадо",
+            "Единица документа": "шт",
+            "Единица учета в УС": "кг",
+            "Коэффициент пересчета": 0.4,
+        },
+    ]
+
+    result = apply_reference_mapping_to_payload(
+        payload,
+        products=[{"Наименование": "Авокадо", "Ед. изм.": "кг"}],
+        packages=[],
+        conversion_exceptions=exceptions,
+    )
+
+    item = result["items"][0]
+    assert item["conversion_method"] == "unresolved"
+    assert item["quantity_us"] is None
+    assert item["price_us"] is None
+    assert item["correction"] == "Сопоставление"
+    assert "несколько" in item["review_reason"].lower()
+
+
+def test_reference_mapping_rejects_conflicting_stored_factor():
+    payload = {
+        "items": [
+            {
+                "line_number": 1,
+                "name": "ПЕРЕЦ 500Г",
+                "normalized_name_candidate": "Перец",
+                "document_unit": "шт",
+                "quantity": 2,
+                "price": 200,
+                "package": {"value": 500, "unit": "г", "raw": "500Г"},
+            }
+        ],
+        "parser_metadata": {
+            "upload_status": "Проверить",
+            "row_status": "Распознано",
+            "review_flags": [],
+            "item_corrections": {},
+        },
+        "parser_notes": [],
+    }
+
+    result = apply_reference_mapping_to_payload(
+        payload,
+        products=[{"Наименование": "Перец", "Ед. изм.": "кг"}],
+        packages=[
+            {
+                "ID": "pepper-500",
+                "Фасовка в документе": "500Г",
+                "Единица учета в УС": "кг",
+                "Коэффициент пересчета": 0.4,
+            }
+        ],
+    )
+
+    item = result["items"][0]
+    assert item["conversion_method"] == "unresolved"
+    assert item["stored_conversion_factor"] == 0.4
+    assert item["correction"] == "Сопоставление"
 
 
 @pytest.mark.parametrize(
@@ -257,6 +479,43 @@ def test_reference_mapping_marks_missing_product_and_package():
 )
 def test_supplier_inn_normalization_extracts_real_inn(raw_value, expected):
     assert normalize_supplier_inn_value(raw_value) == expected
+
+
+def test_invalid_inn_checksum_requires_review():
+    normalized = normalize_invoice_result(
+        InvoiceParserResult.model_validate(
+            _parsed_invoice(
+                document={
+                    **_parsed_invoice()["document"],
+                    "supplier_inn": "7701234567",
+                }
+            )
+        )
+    )
+
+    assert normalized.upload_status == "Требует проверки"
+    assert any(
+        flag.field == "supplier_inn" and "Контрольная сумма" in flag.reason
+        for flag in normalized.review_flags
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw_date", "expected"),
+    [
+        ("23 июня 2026 г.", "2026-06-23"),
+        ("23 июня 2026 года", "2026-06-23"),
+        ("23.06.26 18:03", "2026-06-23"),
+    ],
+)
+def test_russian_document_date_is_normalized(raw_date, expected):
+    payload = _parsed_invoice()
+    payload["document"]["document_date"] = raw_date
+
+    normalized = normalize_invoice_result(InvoiceParserResult.model_validate(payload))
+
+    assert normalized.document.document_date == expected
+    assert not any(flag.field == "document_date" for flag in normalized.review_flags)
 
 
 @pytest.mark.parametrize(

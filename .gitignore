@@ -228,6 +228,10 @@ service-account.json
 backend/secrets/*.json
 backend/uploads/invoices/*
 !backend/uploads/invoices/.gitkeep
+/uploads/
+/exports/openai_debug/
+/exports/golden/
+/exports/invoice_review_*.csv
 .env.local
 /.idea/.gitignore
 /.idea/autosnab_mvp.iml

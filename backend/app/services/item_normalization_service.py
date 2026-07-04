@@ -4,6 +4,7 @@ from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
 from typing import Any
 
+from app.config import settings
 from app.schemas.invoice_parser import InvoiceItemPackage, InvoiceParsedItem
 
 
@@ -29,6 +30,9 @@ _UNIT_ALIASES = {
     "ГР": "г",
     "ГР.": "г",
     "КГ": "кг",
+    "КГ.": "кг",
+    "KT": "кг",
+    "KR": "кг",
     "МЛ": "мл",
     "Л": "л",
     "ШТ": "шт",
@@ -106,6 +110,7 @@ def apply_reference_mapping_to_payload(
     *,
     products: list[dict[str, Any]],
     packages: list[dict[str, Any]],
+    conversion_exceptions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Map parser candidates to sheet references without model involvement."""
     result = copy.deepcopy(payload)
@@ -113,6 +118,7 @@ def apply_reference_mapping_to_payload(
     review_flags = metadata.setdefault("review_flags", [])
     corrections = metadata.setdefault("item_corrections", {})
     parser_notes = result.setdefault("parser_notes", [])
+    conversion_exceptions = conversion_exceptions or []
 
     for index, item in enumerate(result.get("items") or [], start=1):
         line_number = int(item.get("line_number") or index)
@@ -151,14 +157,45 @@ def apply_reference_mapping_to_payload(
                 parser_notes,
             )
 
-        multiplier = _number(item.get("quantity_multiplier"))
-        accounting_unit = _normalize_unit(item.get("accounting_unit_candidate"))
+        multiplier, accounting_unit, conversion_method = _calculate_conversion(item)
         package_raw = _package_raw(item)
         if package_match["status"] == "matched":
-            multiplier = package_match["multiplier"]
-            accounting_unit = package_match["accounting_unit"]
             item["package_reference_id"] = package_match.get("id")
-        elif package_raw:
+            package_unit = package_match["accounting_unit"]
+            stored_multiplier = package_match["multiplier"]
+            if accounting_unit and package_unit and accounting_unit != package_unit:
+                multiplier = None
+                _add_mapping_problem(
+                    item,
+                    line_number,
+                    "package",
+                    "Расчетная единица фасовки не совпадает с единицей в «Справочник фасовок».",
+                    "Сопоставление",
+                    review_flags,
+                    corrections,
+                    parser_notes,
+                )
+            elif stored_multiplier is not None and multiplier is not None and not _numbers_equal(
+                stored_multiplier,
+                multiplier,
+            ):
+                item["stored_conversion_factor"] = stored_multiplier
+                multiplier = None
+                _add_mapping_problem(
+                    item,
+                    line_number,
+                    "conversion_factor",
+                    "Расчетный коэффициент не совпадает с сохраненным коэффициентом фасовки.",
+                    "Сопоставление",
+                    review_flags,
+                    corrections,
+                    parser_notes,
+                )
+            elif multiplier is None and stored_multiplier is not None:
+                multiplier = stored_multiplier
+                accounting_unit = package_unit
+                conversion_method = "package_reference"
+        elif package_raw and multiplier is None:
             _add_mapping_problem(
                 item,
                 line_number,
@@ -169,27 +206,87 @@ def apply_reference_mapping_to_payload(
                 corrections,
                 parser_notes,
             )
-        elif product_unit:
-            if accounting_unit and accounting_unit != product_unit:
+        target_unit = product_unit or package_match.get("accounting_unit") or accounting_unit
+        if target_unit and accounting_unit and target_unit != accounting_unit:
+            exception_match = _match_conversion_exception(
+                item,
+                product_match,
+                conversion_exceptions,
+                target_unit=target_unit,
+            )
+            if exception_match["status"] == "matched":
+                multiplier = exception_match["factor"]
+                accounting_unit = exception_match["accounting_unit"]
+                conversion_method = "product_exception"
+                item["conversion_source_id"] = exception_match.get("id")
+            else:
                 multiplier = None
+                reason = (
+                    "Найдено несколько подходящих исключений пересчета."
+                    if exception_match["status"] == "ambiguous"
+                    else "Единица товара не совпадает с расчетной единицей и исключение пересчета не найдено."
+                )
                 _add_mapping_problem(
                     item,
                     line_number,
                     "accounting_unit_candidate",
-                    "Единица товара не совпадает с единицей в справочнике «Товары».",
+                    reason,
                     "Сопоставление",
                     review_flags,
                     corrections,
                     parser_notes,
                 )
-            accounting_unit = product_unit
+        elif target_unit:
+            accounting_unit = target_unit
+
+        if multiplier is not None and multiplier <= 0:
+            multiplier = None
+            _add_mapping_problem(
+                item,
+                line_number,
+                "conversion_factor",
+                "Коэффициент пересчета должен быть больше нуля.",
+                "Сопоставление",
+                review_flags,
+                corrections,
+                parser_notes,
+            )
 
         quantity = _number(item.get("quantity_document"))
         if quantity is None:
             quantity = _number(item.get("quantity"))
         item["quantity_multiplier"] = multiplier
+        item["conversion_factor"] = multiplier
+        item["conversion_method"] = conversion_method if multiplier is not None else "unresolved"
         item["us_unit"] = accounting_unit or ""
         item["quantity_us"] = _multiply(quantity, multiplier)
+        price = _number(item.get("price"))
+        item["price_us"] = _divide(price, multiplier)
+        item["conversion_amount_delta"] = _conversion_amount_delta(
+            quantity,
+            price,
+            item["quantity_us"],
+            item["price_us"],
+        )
+        if (
+            item["conversion_amount_delta"] is not None
+            and item["conversion_amount_delta"] > settings.conversion_amount_tolerance
+        ):
+            _add_mapping_problem(
+                item,
+                line_number,
+                "price_us",
+                "Пересчитанные количество и цена не сохраняют стоимость строки.",
+                "Сопоставление",
+                review_flags,
+                corrections,
+                parser_notes,
+            )
+        if multiplier is None or not accounting_unit:
+            item["conversion_review_reason"] = (
+                item.get("review_reason")
+                or "Не удалось детерминированно рассчитать количество и цену в УС."
+            )
         item["mapping_status"] = "needs_review" if item.get("correction") else "ready"
         item["mapping_error"] = item.get("review_reason") if item.get("correction") else ""
 
@@ -198,6 +295,28 @@ def apply_reference_mapping_to_payload(
         if metadata.get("duplicate") != "Да":
             metadata["row_status"] = "Правка вручную"
     return result
+
+
+def _calculate_conversion(item: dict[str, Any]) -> tuple[float | None, str, str]:
+    raw_name = str(item.get("raw_name") or item.get("name") or "")
+    package, multiplier, accounting_unit = _extract_package(raw_name)
+    if multiplier is not None:
+        method = "compound_package" if _COMPOUND_PACKAGE_RE.search(raw_name) else "standard"
+        return multiplier, accounting_unit, method
+
+    package_data = item.get("package") if isinstance(item.get("package"), dict) else {}
+    package_value = _number(package_data.get("value"))
+    package_unit = _normalize_unit(package_data.get("unit"))
+    multiplier, accounting_unit = _convert_package_value(package_value, package_unit)
+    if multiplier is not None:
+        return multiplier, accounting_unit, "standard"
+
+    document_unit = _normalize_unit(item.get("document_unit") or item.get("unit"))
+    if document_unit in {"кг", "л", "шт", "бут"}:
+        return 1.0, document_unit, "identity"
+    if package.raw:
+        return None, "", "unresolved"
+    return None, "", "unresolved"
 
 
 def _extract_package(raw_name: str) -> tuple[InvoiceItemPackage, float | None, str]:
@@ -275,6 +394,7 @@ def _clean_product_name(value: Any, package_raw: str = "") -> str:
         return ""
     text = _CODE_RE.sub(" ", text)
     text = re.sub(r"\[[^\]]*\]", " ", text)
+    text = re.sub(r"^\s*\d+(?=[A-ZА-ЯЁ])", "", text, flags=re.IGNORECASE)
     text = _TECHNICAL_PREFIX_RE.sub("", text)
     if package_raw:
         text = re.sub(re.escape(package_raw), " ", text, flags=re.IGNORECASE)
@@ -345,6 +465,93 @@ def _match_package(item: dict[str, Any], packages: list[dict[str, Any]]) -> dict
             ),
         }
     return {"status": "missing"}
+
+
+def _match_conversion_exception(
+    item: dict[str, Any],
+    product_match: dict[str, Any],
+    exceptions: list[dict[str, Any]],
+    *,
+    target_unit: str,
+) -> dict[str, Any]:
+    document_unit = _normalize_unit(item.get("document_unit") or item.get("unit"))
+    item_names = {
+        _normalize_name(item.get("normalized_name_candidate")),
+        _normalize_name(item.get("clean_name")),
+        _normalize_name(product_match.get("name")),
+    }
+    item_names.discard("")
+    raw_name = _normalize_name(item.get("raw_name") or item.get("name"))
+    matches = []
+    for exception in exceptions:
+        if str(_catalog_value(exception, "Активна", "active") or "да").strip().lower() in {
+            "нет",
+            "false",
+            "0",
+        }:
+            continue
+        exception_name = _normalize_name(
+            _catalog_value(
+                exception,
+                "Наименование товара",
+                "Товар",
+                "product_name",
+            )
+        )
+        if not exception_name or exception_name not in item_names:
+            continue
+        exception_document_unit = _normalize_unit(
+            _catalog_value(
+                exception,
+                "Ед.изм. в документе",
+                "Единица документа",
+                "document_unit",
+            )
+        )
+        exception_accounting_unit = _normalize_unit(
+            _catalog_value(
+                exception,
+                "Ед.изм. в УС",
+                "Единица учета в УС",
+                "accounting_unit",
+            )
+        )
+        if exception_document_unit and exception_document_unit != document_unit:
+            continue
+        if exception_accounting_unit and exception_accounting_unit != target_unit:
+            continue
+        qualifier = _normalize_name(
+            _catalog_value(exception, "Вариант", "Квалификатор", "qualifier")
+        )
+        if qualifier and qualifier not in raw_name:
+            continue
+        factor = _number(
+            _catalog_value(
+                exception,
+                "Коэффициент пересчета",
+                "Вес 1 шт",
+                "factor",
+            )
+        )
+        if factor is None or factor <= 0:
+            continue
+        matches.append(
+            {
+                "status": "matched",
+                "id": _catalog_value(exception, "ID", "id"),
+                "factor": factor,
+                "accounting_unit": exception_accounting_unit or target_unit,
+            }
+        )
+    if not matches:
+        return {"status": "missing"}
+    unique = {
+        (match["factor"], match["accounting_unit"], match.get("id"))
+        for match in matches
+    }
+    if len(unique) > 1:
+        return {"status": "ambiguous"}
+    return matches[0]
 
 
 def _add_mapping_problem(
@@ -442,11 +649,58 @@ def _number(value: Any) -> float | None:
 
 
 def _multiply(left: Any, right: Any) -> float | None:
-    left_number = _number(left)
-    right_number = _number(right)
+    left_number = _decimal(left)
+    right_number = _decimal(right)
     if left_number is None or right_number is None:
         return None
-    return round(left_number * right_number, 6)
+    return float(round(left_number * right_number, 6))
+
+
+def _divide(left: Any, right: Any) -> float | None:
+    left_number = _decimal(left)
+    right_number = _decimal(right)
+    if left_number is None or right_number is None or right_number <= 0:
+        return None
+    return float(round(left_number / right_number, 6))
+
+
+def _conversion_amount_delta(
+    quantity_document: Any,
+    price_document: Any,
+    quantity_us: Any,
+    price_us: Any,
+) -> float | None:
+    values = [
+        _decimal(quantity_document),
+        _decimal(price_document),
+        _decimal(quantity_us),
+        _decimal(price_us),
+    ]
+    if any(value is None for value in values):
+        return None
+    quantity_doc, price_doc, quantity_accounting, price_accounting = values
+    delta = abs(
+        (quantity_doc * price_doc)
+        - (quantity_accounting * price_accounting)
+    )
+    return float(round(delta, 6))
+
+
+def _numbers_equal(left: Any, right: Any, tolerance: str = "0.000001") -> bool:
+    left_number = _decimal(left)
+    right_number = _decimal(right)
+    if left_number is None or right_number is None:
+        return False
+    return abs(left_number - right_number) <= Decimal(tolerance)
+
+
+def _decimal(value: Any) -> Decimal | None:
+    if value in (None, ""):
+        return None
+    try:
+        return Decimal(str(value).replace(" ", "").replace(",", "."))
+    except (InvalidOperation, ValueError):
+        return None
 
 
 def _clean_spaces(value: Any) -> str:

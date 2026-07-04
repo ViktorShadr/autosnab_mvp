@@ -364,6 +364,11 @@ def _merge_item_with_parser_metadata(
         "quantity_multiplier",
         "accounting_quantity_candidate",
         "accounting_unit_candidate",
+        "conversion_factor",
+        "conversion_method",
+        "conversion_source_id",
+        "conversion_review_reason",
+        "price_us",
         "codes",
         "needs_review",
         "review_reason",
@@ -430,7 +435,7 @@ def _invoice_register_header_values(
 
     return {
         "upload_time": _format_datetime_for_sheet((document.created_at if document else None) or receiving.created_at),
-        "document_id": 1,
+        "document_id": receiving.id,
         "duplicate_indicator": duplicate_indicator,
         "document_form": _sheet_display_value(header_meta.get("document_form") or _detect_document_form_from_text(raw_text) or ""),
         "document_date": _sheet_display_value(document_date),
@@ -496,7 +501,7 @@ def _invoice_register_item_row(
             if row_meta.get("quantity_us") is not None
             else row_meta.get("accounting_quantity_candidate", "")
         )
-        price_in_us = ""
+        price_in_us = row_meta.get("price_us") if row_meta.get("price_us") is not None else ""
         ordered_quantity = ""
         price_by_pricelist = ""
         deviation_from_pricelist = ""
@@ -1554,6 +1559,11 @@ def _item_payload(item, index: int | None = None) -> dict:
         "product_found": item.product_found,
         "us_unit": item.us_unit,
         "quantity_us": item.quantity_us,
+        "price_us": item.price_us,
+        "conversion_factor": item.conversion_factor,
+        "conversion_method": item.conversion_method,
+        "conversion_source_id": item.conversion_source_id,
+        "conversion_review_reason": item.conversion_review_reason,
         "package_reference_id": item.package_reference_id,
         "iiko_product_id": item.iiko_product_id,
         "product_article": item.product_article,

@@ -1,12 +1,14 @@
+import base64
 import json
 import logging
+import mimetypes
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from app.config import settings
-from app.schemas.invoice_parser import InvoiceParserResult, InvoiceSourceTrace
+from app.schemas.invoice_parser import InvoiceParserResult, InvoiceReviewFlag, InvoiceSourceTrace
 from app.services.invoice_normalization_service import normalize_invoice_result, to_legacy_invoice_payload
 
 
@@ -18,6 +20,13 @@ SYSTEM_PROMPT = """Ты извлекаешь данные российских �
 товара в raw_name, а подтверждающий фрагмент документа в source_fragment.
 Добавляй review_flags для неоднозначных, нечитаемых или отсутствующих значений,
 расхождений итогов и неуверенных границ таблицы.
+
+Для фотографий анализируй каждую переданную страницу, даже если OCR-текст
+неполный или противоречит изображению. Учитывай возможный поворот страницы.
+Номер документа бери только из реквизита номера документа, не из артикула,
+штрихкода или внутреннего кода товарной строки. Не объединяй соседние товары в
+одну строку. Повторяющиеся строки чека сохраняй отдельными строками в исходном
+порядке; агрегацию backend выполнит отдельно, если она потребуется.
 
 Для каждой товарной строки дополнительно выполни структурный разбор:
 - clean_name: название без номера строки, служебных слов ТОВАР/ПОЗИЦИЯ/АРТИКУЛ,
@@ -70,11 +79,12 @@ def parse_invoice_with_openai(
 ) -> dict[str, Any]:
     api_client = client or _create_client()
     request_payload = _build_evidence_payload(evidence)
+    request_input = _build_openai_input(evidence, request_payload)
     try:
         response = api_client.responses.parse(
             model=settings.openai_invoice_model,
             instructions=SYSTEM_PROMPT,
-            input=json.dumps(request_payload, ensure_ascii=False),
+            input=request_input,
             text_format=InvoiceParserResult,
         )
     except Exception as exc:  # noqa: BLE001 - provider failures are pipeline errors
@@ -86,7 +96,19 @@ def parse_invoice_with_openai(
         raise OpenAIInvoiceParserError("OpenAI returned no structured invoice payload.")
     validated = parsed if isinstance(parsed, InvoiceParserResult) else InvoiceParserResult.model_validate(parsed)
     validated.source_trace = _source_trace(evidence, validated.source_trace)
-    normalized = normalize_invoice_result(validated, ocr_error=evidence.get("error"))
+    for warning in evidence.get("consistency_warnings") or []:
+        validated.review_flags.append(
+            InvoiceReviewFlag(
+                scope="document",
+                field="page_consistency",
+                reason=str(warning),
+                severity="warning",
+            )
+        )
+    normalized = normalize_invoice_result(
+        validated,
+        ocr_error=None if _evidence_has_image_pages(evidence) else evidence.get("error"),
+    )
     payload = to_legacy_invoice_payload(normalized)
     _write_debug_log(evidence, validated, normalized)
     return payload
@@ -104,10 +126,27 @@ def _create_client() -> Any:
 
 def _build_evidence_payload(evidence: dict[str, Any]) -> dict[str, Any]:
     return {
+        "evidence_version": evidence.get("evidence_version", "legacy"),
+        "logical_document_id": evidence.get("logical_document_id"),
         "filename": evidence.get("filename"),
         "source_type": evidence.get("source_type", "unknown"),
         "ocr_used": bool(evidence.get("ocr_used")),
         "extraction_method": evidence.get("extraction_method", ""),
+        "pages": evidence.get("pages"),
+        "page_sources": [
+            {
+                "page_number": page.get("page_number"),
+                "filename": page.get("filename"),
+                "source_type": page.get("source_type"),
+                "transformations": page.get("transformations") or [],
+                "quality": page.get("quality") or {},
+            }
+            for page in (evidence.get("page_sources") or [])
+            if isinstance(page, dict)
+        ],
+        "provider_attempts": evidence.get("provider_attempts") or [],
+        "evidence_errors": evidence.get("errors") or [],
+        "consistency_warnings": evidence.get("consistency_warnings") or [],
         "raw_text": (evidence.get("raw_text") or "")[: settings.openai_max_evidence_chars],
         "structured_document": evidence.get("structured_document"),
     }
@@ -120,6 +159,56 @@ def _source_trace(evidence: dict[str, Any], model_trace: InvoiceSourceTrace) -> 
         ocr_used=bool(evidence.get("ocr_used")),
         extraction_method=evidence.get("extraction_method") or model_trace.extraction_method,
         raw_text_sample=raw_text[:500],
+    )
+
+
+def _build_openai_input(
+    evidence: dict[str, Any],
+    request_payload: dict[str, Any],
+) -> list[dict[str, Any]]:
+    content: list[dict[str, Any]] = [
+        {
+            "type": "input_text",
+            "text": json.dumps(request_payload, ensure_ascii=False),
+        }
+    ]
+    image_count = 0
+    for page in evidence.get("page_sources") or []:
+        if not isinstance(page, dict) or page.get("source_type") != "image":
+            continue
+        if image_count >= max(0, settings.openai_max_image_pages):
+            break
+        image_path = Path(page.get("prepared_path") or page.get("original_path") or "")
+        if not image_path.is_file():
+            continue
+        size = image_path.stat().st_size
+        if size <= 0 or size > settings.openai_max_image_bytes:
+            continue
+        mime_type = mimetypes.guess_type(image_path.name)[0] or "image/jpeg"
+        encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+        content.append(
+            {
+                "type": "input_text",
+                "text": f"Страница {page.get('page_number') or image_count + 1}: {page.get('filename') or image_path.name}",
+            }
+        )
+        content.append(
+            {
+                "type": "input_image",
+                "image_url": f"data:{mime_type};base64,{encoded}",
+                "detail": settings.openai_image_detail,
+            }
+        )
+        image_count += 1
+    return [{"role": "user", "content": content}]
+
+
+def _evidence_has_image_pages(evidence: dict[str, Any]) -> bool:
+    return any(
+        isinstance(page, dict)
+        and page.get("source_type") == "image"
+        and Path(page.get("prepared_path") or page.get("original_path") or "").is_file()
+        for page in (evidence.get("page_sources") or [])
     )
 
 

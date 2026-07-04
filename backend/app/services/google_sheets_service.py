@@ -50,17 +50,23 @@ def load_invoice_reference_catalogs() -> dict[str, list[dict[str, Any]]]:
             "Для чтения справочников нужны GOOGLE_SHEETS_ENABLED=true и GOOGLE_TARGET_SPREADSHEET_ID."
         )
     sheets_service, _ = _build_google_services()
+    ranges = ["'Товары'!A1:D", "'Справочник фасовок'!A1:M"]
+    if settings.google_conversion_exceptions_sheet_name:
+        escaped_name = settings.google_conversion_exceptions_sheet_name.replace("'", "''")
+        ranges.append(f"'{escaped_name}'!A1:Z")
     response = sheets_service.spreadsheets().values().batchGet(
         spreadsheetId=spreadsheet_id,
-        ranges=["'Товары'!A1:D", "'Справочник фасовок'!A1:M"],
+        ranges=ranges,
         majorDimension="ROWS",
     ).execute()
     ranges = response.get("valueRanges") or []
     products_rows = ranges[0].get("values", []) if len(ranges) > 0 else []
     packages_rows = ranges[1].get("values", []) if len(ranges) > 1 else []
+    exceptions_rows = ranges[2].get("values", []) if len(ranges) > 2 else []
     return {
         "products": _table_rows_as_dicts(products_rows),
         "packages": _table_rows_as_dicts(packages_rows),
+        "conversion_exceptions": _table_rows_as_dicts(exceptions_rows),
     }
 
 

@@ -178,6 +178,21 @@ This affects:
 
 The workbook also hints at an exception dictionary for piece-based products like eggs, lemons, limes, avocado, etc. So a naive generic converter will not be enough for all rows later.
 
+The later source `Расчет коэфф.md` fixes the formula and implementation
+boundary more precisely:
+
+- coefficient means accounting units contained in one document unit;
+- `quantity_us = quantity_document * coefficient`;
+- `price_us = price_document / coefficient`;
+- the converted quantity and price must preserve the source line amount;
+- standard factors are computed from package value and units by backend code;
+- piece-to-weight relations use an explicit product exception reference;
+- ambiguous exception rows, such as two active avocado weights without a
+  qualifier, must produce `Сопоставление` instead of an automatic choice.
+
+The full conversion contract and unresolved business decisions are recorded in
+`unit-conversion-rules.md`.
+
 ### Current deterministic implementation
 
 OpenAI returns package and normalized-name candidates, but backend code

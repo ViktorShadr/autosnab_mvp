@@ -6,6 +6,8 @@
 - [current-status.md](./current-status.md)
 - [runbook.md](./runbook.md)
 - [invoice-table-mvp-checklist.md](./invoice-table-mvp-checklist.md)
+- [invoice-recognition-hardening-plan.md](./invoice-recognition-hardening-plan.md)
+- [unit-conversion-rules.md](./unit-conversion-rules.md)
 - [sources-and-data.md](./sources-and-data.md)
 - [supplier-catalog-roadmap.md](./supplier-catalog-roadmap.md)
 - [validation-table-behavior.md](./validation-table-behavior.md)

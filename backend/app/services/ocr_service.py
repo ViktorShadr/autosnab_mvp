@@ -1,7 +1,11 @@
 import json
 import mimetypes
 import re
+import socket
+import ssl
+import time
 from pathlib import Path
+from typing import Any, Callable
 
 from app.config import settings
 from app.services.google_oauth_service import get_google_user_credentials
@@ -9,6 +13,22 @@ from app.services.google_oauth_service import get_google_user_credentials
 
 class OcrConfigurationError(RuntimeError):
     pass
+
+
+class OcrProviderError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        operation: str,
+        attempts: int,
+        retryable: bool,
+    ) -> None:
+        super().__init__(message)
+        self.provider = "google_drive_ocr"
+        self.operation = operation
+        self.attempts = attempts
+        self.retryable = retryable
 
 
 DRIVE_OCR_SCOPES = ["https://www.googleapis.com/auth/drive"]
@@ -64,19 +84,25 @@ def recognize_invoice_with_google_drive_ocr(file_path: str) -> dict:
 
     document_id = None
     try:
-        document = drive_service.files().create(
-            body=body,
-            media_body=media,
-            fields="id,name",
-            ocrLanguage=settings.google_drive_ocr_language,
-            supportsAllDrives=True,
-        ).execute()
+        document = _execute_google_operation(
+            "create_ocr_document",
+            lambda: drive_service.files().create(
+                body=body,
+                media_body=media,
+                fields="id,name",
+                ocrLanguage=settings.google_drive_ocr_language,
+                supportsAllDrives=True,
+            ).execute(),
+        )
         document_id = document["id"]
 
-        exported = drive_service.files().export(
-            fileId=document_id,
-            mimeType=TEXT_EXPORT_MIME_TYPE,
-        ).execute()
+        exported = _execute_google_operation(
+            "export_ocr_text",
+            lambda: drive_service.files().export(
+                fileId=document_id,
+                mimeType=TEXT_EXPORT_MIME_TYPE,
+            ).execute(),
+        )
         raw_text = exported.decode("utf-8", errors="replace") if isinstance(exported, bytes) else str(exported)
     finally:
         if document_id and settings.google_drive_ocr_delete_temp_files:
@@ -89,6 +115,33 @@ def recognize_invoice_with_google_drive_ocr(file_path: str) -> dict:
         "pages": None,
         "temporary_document_id": None if settings.google_drive_ocr_delete_temp_files else document_id,
     }
+
+
+def _execute_google_operation(operation: str, call: Callable[[], Any]) -> Any:
+    attempts = max(1, settings.google_api_retry_attempts)
+    for attempt in range(1, attempts + 1):
+        try:
+            return call()
+        except Exception as exc:  # noqa: BLE001 - provider exceptions vary by transport
+            retryable = _is_retryable_google_error(exc)
+            if not retryable or attempt >= attempts:
+                raise OcrProviderError(
+                    f"Google Drive OCR operation {operation} failed after {attempt} attempt(s): {exc}",
+                    operation=operation,
+                    attempts=attempt,
+                    retryable=retryable,
+                ) from exc
+            delay = max(0.0, settings.google_api_retry_backoff_seconds) * (2 ** (attempt - 1))
+            if delay:
+                time.sleep(delay)
+    raise AssertionError("unreachable")
+
+
+def _is_retryable_google_error(exc: Exception) -> bool:
+    if isinstance(exc, (TimeoutError, socket.timeout, ssl.SSLError, ConnectionError)):
+        return True
+    status_code = getattr(getattr(exc, "resp", None), "status", None)
+    return status_code in {408, 429, 500, 502, 503, 504}
 
 
 def parse_invoice_text_to_payload(raw_text: str, fallback_filename: str | None = None) -> dict:

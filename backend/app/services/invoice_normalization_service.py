@@ -1,5 +1,5 @@
 import re
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Literal
 
@@ -191,7 +191,14 @@ def _normalize_date(
     if not cleaned:
         flags.append(InvoiceReviewFlag(scope="document", field="document_date", reason="Дата документа не распознана.", severity="error"))
         return ""
-    for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y", "%d-%m-%Y"):
+    for fmt in (
+        "%Y-%m-%d",
+        "%d.%m.%Y",
+        "%d/%m/%Y",
+        "%d-%m-%Y",
+        "%d.%m.%y",
+        "%d.%m.%y %H:%M",
+    ):
         try:
             normalized = datetime.strptime(cleaned, fmt).date().isoformat()
             if normalized != cleaned:
@@ -199,8 +206,42 @@ def _normalize_date(
             return normalized
         except ValueError:
             continue
+    russian_date = _normalize_russian_date(cleaned)
+    if russian_date:
+        changes.append("document.document_date normalized")
+        return russian_date
     flags.append(InvoiceReviewFlag(scope="document", field="document_date", reason="Дата документа имеет неизвестный формат.", severity="error"))
     return cleaned
+
+
+def _normalize_russian_date(value: str) -> str | None:
+    months = {
+        "января": 1,
+        "февраля": 2,
+        "марта": 3,
+        "апреля": 4,
+        "мая": 5,
+        "июня": 6,
+        "июля": 7,
+        "августа": 8,
+        "сентября": 9,
+        "октября": 10,
+        "ноября": 11,
+        "декабря": 12,
+    }
+    match = re.search(
+        r"\b(\d{1,2})\s+([а-яё]+)\s+(\d{4})(?:\s*(?:года|г\.?))?\b",
+        value.lower(),
+    )
+    if not match:
+        return None
+    month = months.get(match.group(2))
+    if month is None:
+        return None
+    try:
+        return date(int(match.group(3)), month, int(match.group(1))).isoformat()
+    except ValueError:
+        return None
 
 
 def _normalize_inn(
@@ -214,6 +255,15 @@ def _normalize_inn(
         changes.append("document.supplier_inn normalized")
     if len(cleaned) not in {10, 12}:
         flags.append(InvoiceReviewFlag(scope="document", field="supplier_inn", reason="ИНН поставщика должен содержать 10 или 12 цифр.", severity="warning"))
+    elif not _is_valid_inn_checksum(cleaned):
+        flags.append(
+            InvoiceReviewFlag(
+                scope="document",
+                field="supplier_inn",
+                reason="Контрольная сумма ИНН поставщика не совпадает.",
+                severity="warning",
+            )
+        )
     return cleaned
 
 
@@ -247,6 +297,37 @@ def normalize_supplier_inn_value(value: Any) -> str:
     if len(digits) >= 10:
         return digits[:10]
     return digits
+
+
+def _is_valid_inn_checksum(value: str) -> bool:
+    if not value.isdigit():
+        return False
+    digits = [int(digit) for digit in value]
+    if len(digits) == 10:
+        weights = [2, 4, 10, 3, 5, 9, 4, 6, 8]
+        checksum = sum(digit * weight for digit, weight in zip(digits[:9], weights, strict=True)) % 11 % 10
+        return checksum == digits[9]
+    if len(digits) == 12:
+        first_weights = [7, 2, 4, 10, 3, 5, 9, 4, 6, 8]
+        second_weights = [3, 7, 2, 4, 10, 3, 5, 9, 4, 6, 8]
+        first_checksum = (
+            sum(
+                digit * weight
+                for digit, weight in zip(digits[:10], first_weights, strict=True)
+            )
+            % 11
+            % 10
+        )
+        second_checksum = (
+            sum(
+                digit * weight
+                for digit, weight in zip(digits[:11], second_weights, strict=True)
+            )
+            % 11
+            % 10
+        )
+        return first_checksum == digits[10] and second_checksum == digits[11]
+    return False
 
 
 def _is_valid_inn(value: str) -> bool:

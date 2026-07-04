@@ -152,6 +152,7 @@ def test_review_row_uses_only_deterministic_us_mapping_fields():
             "product_found": "Да",
             "us_unit": "кг",
             "quantity_us": 4,
+            "price_us": 125,
             "correction": "",
         },
         1,
@@ -162,6 +163,7 @@ def test_review_row_uses_only_deterministic_us_mapping_fields():
     assert values["Товар найден в справочнике"] == "Да"
     assert values["Ед.изм. в УС"] == "кг"
     assert values["Кол-во в УС"] == 4
+    assert values["Цена в УС"] == 125
 
 
 def test_reference_sheet_rows_are_mapped_by_fixed_headers():
