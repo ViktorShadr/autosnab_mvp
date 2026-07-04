@@ -1,6 +1,7 @@
 import html
 import json
 import shutil
+from threading import Thread
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
@@ -8,7 +9,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.db.session import get_db
+from app.db.session import SessionLocal, get_db
 from app.models.accounting import AccountingExport
 from app.models.receiving import Receiving, ReceivingDocument
 from app.schemas.invoice_review import (
@@ -39,7 +40,7 @@ from app.services.invoice_review_service import (
 from app.services.document_extraction_service import extract_invoice_document
 from app.services.google_sheets_service import load_invoice_reference_catalogs
 from app.services.item_normalization_service import apply_reference_mapping_to_payload
-from app.services.upload_trace_service import append_trace_log, finalize_trace, get_trace, initialize_trace
+from app.services.upload_trace_service import append_trace_log, finalize_trace, get_trace, initialize_trace, set_trace_result
 
 router = APIRouter(prefix="/invoice-review", tags=["invoice-review"])
 
@@ -385,6 +386,40 @@ def upload_invoice_page():
       return `<div class="pipeline-log-box"><div class="pipeline-log-title">Логи обработки документа</div>${entries}</div>`;
     }
 
+    function renderTraceResult(result) {
+      if (!result) {
+        return '';
+      }
+      const hasGoogleSheet = Boolean(result.google_spreadsheet_url);
+      const methodInfo = result.ocr && result.ocr.selected_method_label
+        ? `<div>Метод распознавания: <b>${escapeHtml(result.ocr.selected_method_label)}</b></div>`
+        : '';
+      const ocrError = result.ocr && result.ocr.error ? `<div>⚠️ OCR не сработал: ${escapeHtml(result.ocr.error)}</div>` : '';
+      const sheetError = result.google_spreadsheet_error ? `<div>Ошибка Google Таблицы: ${escapeHtml(result.google_spreadsheet_error)}</div>` : '';
+      if (hasGoogleSheet) {
+        return `
+          <div class="status-box">
+            <div class="status-line">✅ Накладная обработана успешно.</div>
+            <div class="status-line">✅ Данные добавлены в таблицу заведения.</div>
+            ${methodInfo}
+            ${ocrError}
+            <div class="result-actions"><a class="secondary-btn" href="${escapeHtml(result.google_spreadsheet_url)}" target="_blank" rel="noopener">Открыть таблицу заведения</a></div>
+          </div>
+          ${renderPipelineLogs(result.pipeline_logs)}
+        `;
+      }
+      return `
+        <div class="status-box warning">
+          <div class="status-line">⚠️ Накладная сохранена для ручной проверки.</div>
+          <div>Google Таблица не создана.</div>
+          ${methodInfo}
+          ${ocrError}
+          ${sheetError}
+        </div>
+        ${renderPipelineLogs(result.pipeline_logs)}
+      `;
+    }
+
     function stopTracePolling() {
       if (tracePollTimer) {
         window.clearInterval(tracePollTimer);
@@ -402,11 +437,12 @@ def upload_invoice_page():
         if (activeTraceId !== traceId) {
           return;
         }
-        const existingLogBox = renderPipelineLogs(data.logs || []);
-        const loadingMessage = data.completed
-          ? ''
-          : '<div class="loading">Документ обрабатывается. Логи обновляются автоматически...</div>';
-        output.innerHTML = loadingMessage + existingLogBox;
+        if (data.completed && data.result) {
+          output.innerHTML = renderTraceResult(data.result);
+        } else {
+          const existingLogBox = renderPipelineLogs(data.logs || []);
+          output.innerHTML = '<div class="loading">Документ обрабатывается. Логи обновляются автоматически...</div>' + existingLogBox;
+        }
         if (data.completed) {
           stopTracePolling();
         }
@@ -542,7 +578,7 @@ def upload_invoice_page():
       formData.append('upload_trace_id', traceId);
 
       try {
-        const response = await fetch('/api/v1/invoice-review/upload-photo', {
+        const response = await fetch('/api/v1/invoice-review/upload-photo-live', {
           method: 'POST',
           body: formData
         });
@@ -557,37 +593,12 @@ def upload_invoice_page():
           const detail = typeof data.detail === 'object' ? JSON.stringify(data.detail) : (data.detail || JSON.stringify(data, null, 2));
           throw new Error(detail);
         }
-        stopTracePolling();
-
-        const hasGoogleSheet = Boolean(data.google_spreadsheet_url);
-        const methodInfo = data.ocr && data.ocr.selected_method_label
-          ? `<div>Метод распознавания: <b>${escapeHtml(data.ocr.selected_method_label)}</b></div>`
-          : '';
-        const ocrError = data.ocr && data.ocr.error ? `<div>⚠️ OCR не сработал: ${escapeHtml(data.ocr.error)}</div>` : '';
-        if (hasGoogleSheet) {
-          output.innerHTML = `
-            <div class="status-box">
-              <div class="status-line">✅ Накладная обработана успешно.</div>
-              <div class="status-line">✅ Данные добавлены в таблицу заведения.</div>
-              ${methodInfo}
-              ${ocrError}
-              <div class="result-actions"><a class="secondary-btn" href="${escapeHtml(data.google_spreadsheet_url)}" target="_blank" rel="noopener">Открыть таблицу заведения</a></div>
-            </div>
-            ${renderPipelineLogs(data.pipeline_logs)}
-          `;
-        } else {
-          const sheetError = data.google_spreadsheet_error ? `<div>Ошибка Google Таблицы: ${escapeHtml(data.google_spreadsheet_error)}</div>` : '';
-          output.innerHTML = `
-            <div class="status-box warning">
-              <div class="status-line">⚠️ Накладная сохранена для ручной проверки.</div>
-              <div>Google Таблица не создана.</div>
-              ${methodInfo}
-              ${ocrError}
-              ${sheetError}
-            </div>
-            ${renderPipelineLogs(data.pipeline_logs)}
-          `;
+        if (data && data.trace_id) {
+          output.innerHTML = '<div class="loading">Документ принят в обработку. Логи обновляются автоматически...</div>';
+          return;
         }
+        stopTracePolling();
+        output.innerHTML = renderTraceResult(data);
       } catch (error) {
         stopTracePolling();
         let detail = null;
@@ -649,13 +660,42 @@ async def upload_invoice_photo_real_ocr(
     public_api_base_url: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ):
-    if upload_trace_id:
-        initialize_trace(upload_trace_id)
+    target_dir = Path(settings.uploaded_invoices_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = Path(file.filename or "invoice_upload").name
+    file_path = target_dir / safe_name
+    with file_path.open("wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    return _process_invoice_upload(
+        file_path=str(file_path),
+        file_name=safe_name,
+        file_type=file.content_type or "image",
+        venue=venue,
+        delivery_address=delivery_address,
+        request_id=request_id,
+        chat_id=chat_id,
+        user_id=user_id,
+        create_google_sheet=create_google_sheet,
+        extraction_method=extraction_method,
+        public_api_base_url=public_api_base_url,
+        db=db,
+        upload_trace_id=upload_trace_id,
+    )
 
-    def trace_log(log: dict) -> None:
-        if upload_trace_id:
-            append_trace_log(upload_trace_id, log)
 
+@router.post("/upload-photo-live")
+async def upload_invoice_photo_live(
+    file: UploadFile = File(...),
+    venue: str | None = Form(default=None),
+    delivery_address: str | None = Form(default=None),
+    request_id: str | None = Form(default=None),
+    chat_id: str | None = Form(default=None),
+    user_id: str | None = Form(default=None),
+    create_google_sheet: bool = Form(default=True),
+    extraction_method: str | None = Form(default=None),
+    upload_trace_id: str | None = Form(default=None),
+    public_api_base_url: str | None = Form(default=None),
+):
     target_dir = Path(settings.uploaded_invoices_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     safe_name = Path(file.filename or "invoice_upload").name
@@ -663,9 +703,119 @@ async def upload_invoice_photo_real_ocr(
     with file_path.open("wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
+    trace_id = upload_trace_id or f"trace-{safe_name}-{Path(file_path).stat().st_mtime_ns}"
+    initialize_trace(trace_id)
+    append_trace_log(
+        trace_id,
+        {
+            "stage": "job_queued",
+            "status": "running",
+            "message": "Документ принят в фоновую обработку.",
+            "details": {"filename": safe_name},
+        },
+    )
+    thread = Thread(
+        target=_process_invoice_upload_background,
+        kwargs={
+            "trace_id": trace_id,
+            "file_path": str(file_path),
+            "file_name": safe_name,
+            "file_type": file.content_type or "image",
+            "venue": venue,
+            "delivery_address": delivery_address,
+            "request_id": request_id,
+            "chat_id": chat_id,
+            "user_id": user_id,
+            "create_google_sheet": create_google_sheet,
+            "extraction_method": extraction_method,
+            "public_api_base_url": public_api_base_url or settings.public_api_base_url,
+        },
+        daemon=True,
+    )
+    thread.start()
+    return {"trace_id": trace_id, "status": "processing"}
+
+
+@router.get("/upload-trace/{trace_id}")
+def get_upload_trace(trace_id: str):
+    trace = get_trace(trace_id)
+    if trace is None:
+        raise HTTPException(status_code=404, detail="Трассировка загрузки не найдена")
+    return trace
+
+
+def _process_invoice_upload_background(
+    *,
+    trace_id: str,
+    file_path: str,
+    file_name: str,
+    file_type: str,
+    venue: str | None,
+    delivery_address: str | None,
+    request_id: str | None,
+    chat_id: str | None,
+    user_id: str | None,
+    create_google_sheet: bool,
+    extraction_method: str | None,
+    public_api_base_url: str,
+) -> None:
+    db = SessionLocal()
+    try:
+        response = _process_invoice_upload(
+            file_path=file_path,
+            file_name=file_name,
+            file_type=file_type,
+            venue=venue,
+            delivery_address=delivery_address,
+            request_id=request_id,
+            chat_id=chat_id,
+            user_id=user_id,
+            create_google_sheet=create_google_sheet,
+            extraction_method=extraction_method,
+            public_api_base_url=public_api_base_url,
+            db=db,
+            upload_trace_id=trace_id,
+        )
+        set_trace_result(trace_id, response)
+        finalize_trace(trace_id, error_message=response.get("google_spreadsheet_error"))
+    except Exception as exc:  # noqa: BLE001 - background upload must surface fatal failures in trace
+        append_trace_log(
+            trace_id,
+            {
+                "stage": "job_failed",
+                "status": "error",
+                "message": "Фоновая обработка документа завершилась ошибкой.",
+                "details": {"error": str(exc)},
+            },
+        )
+        finalize_trace(trace_id, error_message=str(exc))
+    finally:
+        db.close()
+
+
+def _process_invoice_upload(
+    *,
+    file_path: str,
+    file_name: str,
+    file_type: str,
+    venue: str | None,
+    delivery_address: str | None,
+    request_id: str | None,
+    chat_id: str | None,
+    user_id: str | None,
+    create_google_sheet: bool,
+    extraction_method: str | None,
+    public_api_base_url: str | None,
+    db: Session,
+    upload_trace_id: str | None,
+) -> dict:
+    def trace_log(log: dict) -> None:
+        if upload_trace_id:
+            append_trace_log(upload_trace_id, log)
+
     extraction = extract_invoice_document(
-        str(file_path),
-        safe_name,
+        file_path,
+        file_name,
         extraction_method=extraction_method,
         on_log=trace_log,
     )
@@ -722,9 +872,9 @@ async def upload_invoice_photo_real_ocr(
             trace_log(mapping_error_log)
     _apply_duplicate_status(db, parsed)
     payload = InvoiceReviewCreateRequest(
-        file_id=safe_name,
-        file_type=file.content_type or "image",
-        file_url=str(file_path),
+        file_id=file_name,
+        file_type=file_type,
+        file_url=file_path,
         raw_text=extraction.get("raw_text"),
         request_id=request_id,
         supplier=parsed.get("supplier"),
@@ -796,16 +946,9 @@ async def upload_invoice_photo_real_ocr(
             response["pipeline_logs"].append(google_error_log)
             trace_log(google_error_log)
     if upload_trace_id:
+        set_trace_result(upload_trace_id, response)
         finalize_trace(upload_trace_id, error_message=response.get("google_spreadsheet_error"))
     return response
-
-
-@router.get("/upload-trace/{trace_id}")
-def get_upload_trace(trace_id: str):
-    trace = get_trace(trace_id)
-    if trace is None:
-        raise HTTPException(status_code=404, detail="Трассировка загрузки не найдена")
-    return trace
 
 
 def _extraction_method_label(value: str | None) -> str | None:

@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -41,6 +42,18 @@ def override_get_db():
 
 app.dependency_overrides[get_db] = override_get_db
 client = TestClient(app)
+
+
+def _wait_for_trace(trace_id: str, timeout: float = 2.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        response = client.get(f"/api/v1/invoice-review/upload-trace/{trace_id}")
+        assert response.status_code == 200
+        data = response.json()
+        if data.get("completed"):
+            return data
+        time.sleep(0.05)
+    raise AssertionError(f"trace {trace_id} did not complete within {timeout} seconds")
 
 
 def _start_receiving() -> int:
@@ -531,10 +544,132 @@ def test_upload_trace_endpoint_returns_live_trace(monkeypatch, tmp_path):
     )
 
     assert response.status_code == 200
-    trace_response = client.get(f"/api/v1/invoice-review/upload-trace/{trace_id}")
-    assert trace_response.status_code == 200
-    assert trace_response.json()["completed"] is True
-    assert trace_response.json()["logs"][0]["stage"] == "openai_request_start"
+    trace_data = _wait_for_trace(trace_id)
+    assert trace_data["completed"] is True
+    assert trace_data["logs"][0]["stage"] == "openai_request_start"
+
+
+def test_upload_photo_live_returns_trace_id_and_background_result(monkeypatch, tmp_path):
+    from app.routers import invoice_review as invoice_review_router
+
+    monkeypatch.setattr(invoice_review_router.settings, "uploaded_invoices_dir", str(tmp_path))
+
+    def fake_extract(file_path, fallback_filename=None, extraction_method=None, on_log=None):
+        if on_log:
+            on_log(
+                {
+                    "stage": "document_received",
+                    "status": "ok",
+                    "message": "Документ получен backend-сервисом.",
+                    "details": {"selected_method": extraction_method or "openai"},
+                }
+            )
+        return {
+            "provider": "openai",
+            "selected_method": "openai",
+            "raw_text": "evidence",
+            "pages": 1,
+            "pipeline_logs": [
+                {
+                    "stage": "document_received",
+                    "status": "ok",
+                    "message": "Документ получен backend-сервисом.",
+                    "details": {"selected_method": extraction_method or "openai"},
+                }
+            ],
+            "payload": {
+                "supplier": "ООО Питер Кельн",
+                "supplier_legal_name": "ООО Питер Кельн",
+                "invoice_number": "123",
+                "invoice_date": "2026-07-04",
+                "venue": "Добрая столовая",
+                "items": [],
+                "parser_provider": "openai",
+                "parser_notes": [],
+            },
+        }
+
+    monkeypatch.setattr(invoice_review_router, "extract_invoice_document", fake_extract)
+    monkeypatch.setattr(invoice_review_router, "create_real_google_sheet_for_review", lambda *args, **kwargs: {
+        "spreadsheet_id": "sheet-1",
+        "spreadsheet_url": "https://example.test/sheet-1",
+    })
+
+    response = client.post(
+        "/api/v1/invoice-review/upload-photo-live",
+        files={"file": ("invoice.jpg", b"fake-image", "image/jpeg")},
+        data={
+            "create_google_sheet": "true",
+            "extraction_method": "openai",
+            "upload_trace_id": "live-trace-1",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["trace_id"] == "live-trace-1"
+
+    trace_data = _wait_for_trace("live-trace-1")
+    assert trace_data["completed"] is True
+    assert trace_data["result"]["google_spreadsheet_url"] == "https://example.test/sheet-1"
+
+
+def test_build_review_sheet_backfills_invoice_reference_mapping_for_old_items(monkeypatch):
+    from app.services import invoice_review_service
+    from app.schemas.invoice_review import InvoiceReviewCreateRequest, RecognizedInvoiceItem
+
+    payload = InvoiceReviewCreateRequest(
+        supplier='ООО "ВИКТОРИЯ БАЛТИЯ"',
+        supplier_legal_name='ООО "ВИКТОРИЯ БАЛТИЯ"',
+        invoice_date="2026-07-04",
+        invoice_number="0245",
+        venue="Добрая столовая",
+        items=[
+            RecognizedInvoiceItem(
+                name='3 ТОВАР : ШТ. [N+13968 КЕФИР ФЕРМЕРСКИЙ 800Г',
+                quantity=1,
+                unit="ШТ",
+                price=72.9,
+            )
+        ],
+        parser_metadata={
+            "upload_status": "Требует проверки",
+            "row_status": "Правка вручную",
+            "items": [
+                {
+                    "line_number": 1,
+                    "raw_name": '3 ТОВАР : ШТ. [N+13968 КЕФИР ФЕРМЕРСКИЙ 800Г',
+                    "clean_name": "КЕФИР ФЕРМЕРСКИЙ",
+                    "normalized_name_candidate": "Кефир Фермерский",
+                    "package": {"raw": "800Г"},
+                    "document_unit": "ШТ",
+                    "quantity_document": 1,
+                    "quantity_multiplier": 0.8,
+                    "accounting_unit_candidate": "л",
+                }
+            ],
+        },
+    )
+    db = TestingSessionLocal()
+    try:
+        receiving = invoice_review_service.create_invoice_review(db, payload)
+        monkeypatch.setattr(invoice_review_service.settings, "google_sheets_enabled", True)
+        monkeypatch.setattr(invoice_review_service.settings, "google_target_spreadsheet_id", "sheet-id")
+        monkeypatch.setattr(
+            invoice_review_service,
+            "load_invoice_reference_catalogs",
+            lambda: {
+                "products": [{"Наименование": "Кефир", "Код": "01-00017", "Ед. изм.": "л"}],
+                "packages": [],
+            },
+        )
+
+        sheet = invoice_review_service.build_review_sheet(receiving)
+        rows = sheet["sheets"][sheet["primary_sheet_name"]]
+    finally:
+        db.close()
+
+    assert rows[1][16] == "Кефир"
+    assert rows[1][17] == "Да"
 
 
 def test_mvp4_requires_manual_approval_before_send():

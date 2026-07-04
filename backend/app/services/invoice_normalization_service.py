@@ -208,12 +208,58 @@ def _normalize_inn(
     flags: list[InvoiceReviewFlag],
     changes: list[str],
 ) -> str:
-    cleaned = re.sub(r"\D", "", value or "")
-    if cleaned != (value or ""):
+    original = str(value or "")
+    cleaned = normalize_supplier_inn_value(original)
+    if cleaned != original:
         changes.append("document.supplier_inn normalized")
     if len(cleaned) not in {10, 12}:
         flags.append(InvoiceReviewFlag(scope="document", field="supplier_inn", reason="ИНН поставщика должен содержать 10 или 12 цифр.", severity="warning"))
     return cleaned
+
+
+def normalize_supplier_inn_value(value: Any) -> str:
+    original = str(value or "")
+    if not original:
+        return ""
+
+    # Common OCR shape: "ИНН/КПП" or merged INN+KPP.
+    split_candidates = [re.sub(r"\D", "", part) for part in re.split(r"[/|]", original) if part]
+    for candidate in split_candidates:
+        if len(candidate) in {10, 12} and _is_valid_inn(candidate):
+            return candidate
+
+    digits = re.sub(r"\D", "", original)
+    if len(digits) in {10, 12} and _is_valid_inn(digits):
+        return digits
+
+    if len(digits) in {19, 21}:
+        prefix_length = 10 if len(digits) == 19 else 12
+        prefix = digits[:prefix_length]
+        if _is_valid_inn(prefix):
+            return prefix
+
+    for length in (10, 12):
+        for start in range(0, max(len(digits) - length + 1, 0)):
+            candidate = digits[start : start + length]
+            if _is_valid_inn(candidate):
+                return candidate
+
+    if len(digits) >= 10:
+        return digits[:10]
+    return digits
+
+
+def _is_valid_inn(value: str) -> bool:
+    if not value.isdigit():
+        return False
+    if len(value) == 10:
+        checksum = sum(int(digit) * factor for digit, factor in zip(value[:9], (2, 4, 10, 3, 5, 9, 4, 6, 8), strict=False))
+        return checksum % 11 % 10 == int(value[9])
+    if len(value) == 12:
+        checksum_11 = sum(int(digit) * factor for digit, factor in zip(value[:10], (7, 2, 4, 10, 3, 5, 9, 4, 6, 8), strict=False))
+        checksum_12 = sum(int(digit) * factor for digit, factor in zip(value[:11], (3, 7, 2, 4, 10, 3, 5, 9, 4, 6, 8), strict=False))
+        return checksum_11 % 11 % 10 == int(value[10]) and checksum_12 % 11 % 10 == int(value[11])
+    return False
 
 
 def _assign_corrections(result: NormalizedInvoiceResult) -> None:

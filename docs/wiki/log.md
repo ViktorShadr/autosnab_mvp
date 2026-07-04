@@ -225,3 +225,21 @@
 - Added a lightweight backend upload-trace store plus `/api/v1/invoice-review/upload-trace/{trace_id}` endpoint.
 - The upload page now generates a `trace_id`, starts polling before file submission, and renders live stages while the backend is still processing the document.
 - Trace coverage now includes extraction steps, OpenAI request start/finish, deterministic reference mapping, and Google Sheets write attempts.
+
+## [2026-07-04] fix | backfill invoice reference mapping for older review payloads
+
+- Reviewed `Копия АвтоСнаб Кафе Ромашка  (2).xlsx` and confirmed that empty `Наименование товара в УС` values came from older stored `recognized_items_json` records where `us_product_name/product_found` had never been persisted.
+- Verified that the current deterministic matcher can map representative rows from that workbook against the current `Товары` sheet, so the gap was not in the similarity rules themselves.
+- Added a review-sheet backfill path: when `Накладная` is rebuilt and item US fields are missing, backend now re-merges parser item metadata and re-runs deterministic reference mapping against current Google catalogs before composing output rows.
+
+## [2026-07-04] fix | fallback US product name and supplier INN cleanup in shared sheet
+
+- Reviewed `img.png` and confirmed that the shared sheet still exposed two UX-visible defects on older review rows: empty `Наименование товара в УС` and overlong `ИНН Поставщика` values that actually contained merged `ИНН/КПП`.
+- Updated deterministic mapping so `Наименование товара в УС` is always populated from the normalized item candidate when no exact catalog match exists; exact matches still overwrite it with the catalog name.
+- Added reusable supplier-INN cleanup that extracts the real 10/12-digit INN from merged OCR strings such as `3900040690390001001` and reused it during review-sheet header build, not only during the initial OpenAI normalization step.
+
+## [2026-07-04] ui | live upload job split from HTTP request
+
+- Added a separate `upload-photo-live` endpoint that returns a `trace_id` immediately and runs the document processing in a background thread.
+- Kept the existing sync upload route for compatibility, but both paths now write to the same trace store so the upload page can show logs as they are produced.
+- Updated the upload page to poll the trace endpoint while the background job is still running, then render the final result once the trace is marked complete.

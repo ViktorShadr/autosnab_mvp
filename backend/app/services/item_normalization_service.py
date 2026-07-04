@@ -116,6 +116,7 @@ def apply_reference_mapping_to_payload(
 
     for index, item in enumerate(result.get("items") or [], start=1):
         line_number = int(item.get("line_number") or index)
+        item["us_product_name"] = _fallback_us_product_name(item)
         product_match = _match_product(item, products)
         package_match = _match_package(item, packages)
         product_unit = ""
@@ -421,6 +422,14 @@ def _catalog_value(row: dict[str, Any], *keys: str) -> Any:
         if row.get(key) not in (None, ""):
             return row[key]
     return None
+
+
+def _fallback_us_product_name(item: dict[str, Any]) -> str:
+    for key in ("normalized_name_candidate", "clean_name", "name", "raw_name"):
+        value = _clean_spaces(item.get(key))
+        if value:
+            return value
+    return ""
 
 
 def _number(value: Any) -> float | None:

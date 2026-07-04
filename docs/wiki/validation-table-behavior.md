@@ -195,6 +195,24 @@ unit, and accounting quantity. A missing product gets `Нет в справоч�
 an ambiguous product, missing package, or incompatible unit gets
 `Сопоставление` on that item row. The model never selects target columns.
 
+The later workbook copy `Копия АвтоСнаб Кафе Ромашка  (2).xlsx` exposed an
+operational nuance: older stored review payloads may lack `us_product_name`
+and `product_found` even when the current deterministic matcher can now find
+them. Because of that, building the `Накладная` sheet should include a backend
+backfill step that re-merges parser item metadata and re-runs product/package
+mapping before output when US fields are still empty.
+
+The later screenshot `img.png` tightened that rule further: even when a row is
+still unresolved against `Товары`, the `Наименование товара в УС` column should
+show the deterministic normalized candidate name rather than staying blank.
+This makes the operator workflow stable: `Товар найден в справочнике` can stay
+`Нет` or `?`, but the normalized target name should still be visible.
+
+The same screenshot also confirmed that `ИНН Поставщика` in the shared sheet
+cannot rely only on previously stored header metadata, because older OCR/OpenAI
+payloads may contain merged `ИНН/КПП` strings. Shared-sheet header build should
+therefore normalize supplier INN again before rendering rows.
+
 ## Practical MVP attention points
 
 For the nearest MVP, the main things to watch are:

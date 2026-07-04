@@ -18,6 +18,7 @@ def initialize_trace(trace_id: str) -> None:
             "logs": [],
             "completed": False,
             "error_message": None,
+            "result": None,
             "updated_at": _now(),
         }
 
@@ -31,6 +32,7 @@ def append_trace_log(trace_id: str, log: dict[str, Any]) -> None:
                 "logs": [],
                 "completed": False,
                 "error_message": None,
+                "result": None,
                 "updated_at": _now(),
             },
         )
@@ -47,11 +49,29 @@ def finalize_trace(trace_id: str, *, error_message: str | None = None) -> None:
                 "logs": [],
                 "completed": False,
                 "error_message": None,
+                "result": None,
                 "updated_at": _now(),
             },
         )
         trace["completed"] = True
         trace["error_message"] = error_message
+        trace["updated_at"] = _now()
+
+
+def set_trace_result(trace_id: str, result: dict[str, Any] | None) -> None:
+    with _lock:
+        trace = _traces.setdefault(
+            trace_id,
+            {
+                "trace_id": trace_id,
+                "logs": [],
+                "completed": False,
+                "error_message": None,
+                "result": None,
+                "updated_at": _now(),
+            },
+        )
+        trace["result"] = result
         trace["updated_at"] = _now()
 
 
@@ -66,6 +86,7 @@ def get_trace(trace_id: str) -> dict[str, Any] | None:
             "logs": list(trace["logs"]),
             "completed": bool(trace["completed"]),
             "error_message": trace["error_message"],
+            "result": trace["result"],
             "updated_at": trace["updated_at"].isoformat(),
         }
 

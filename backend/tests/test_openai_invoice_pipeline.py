@@ -8,7 +8,11 @@ from app.services.item_normalization_service import (
     apply_reference_mapping_to_payload,
     normalize_item_candidate,
 )
-from app.services.invoice_normalization_service import normalize_invoice_result, to_legacy_invoice_payload
+from app.services.invoice_normalization_service import (
+    normalize_invoice_result,
+    normalize_supplier_inn_value,
+    to_legacy_invoice_payload,
+)
 from app.services.openai_invoice_parser_service import SYSTEM_PROMPT, parse_invoice_with_openai
 from app.services.invoice_review_service import ensure_upload_status_allows_send
 
@@ -235,10 +239,24 @@ def test_reference_mapping_marks_missing_product_and_package():
 
     item = result["items"][0]
     assert item["product_found"] == "Нет"
+    assert item["us_product_name"] == "Неизвестный продукт"
     assert item["correction"] == "Нет в справочнике"
     assert result["parser_metadata"]["upload_status"] == "Требует проверки"
     assert result["parser_metadata"]["row_status"] == "Правка вручную"
     assert len(result["parser_metadata"]["review_flags"]) == 2
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "expected"),
+    [
+        ("3900040690/390001001", "3900040690"),
+        ("3906406206390601001", "3906406206"),
+        ("3900040690390001001", "3900040690"),
+        ("77 0123 4567", "7701234567"),
+    ],
+)
+def test_supplier_inn_normalization_extracts_real_inn(raw_value, expected):
+    assert normalize_supplier_inn_value(raw_value) == expected
 
 
 @pytest.mark.parametrize(

@@ -9,11 +9,18 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models.accounting import AccountingExport
 from app.models.receiving import Receiving, ReceivingDocument, ReceivingItem, ReceivingItemStatus, ReceivingStatus
-from app.services.google_sheets_service import create_invoice_review_spreadsheet, serialize_sheet_result
+from app.services.google_sheets_service import (
+    create_invoice_review_spreadsheet,
+    load_invoice_reference_catalogs,
+    serialize_sheet_result,
+)
 from app.services.iiko_incoming_invoice_service import build_iiko_export_payload, build_incoming_invoice_xml
 from app.services.iiko_reference_mapping_service import auto_fill_iiko_fields, get_iiko_reference_context, invalidate_iiko_reference_cache
+from app.services.invoice_normalization_service import normalize_supplier_inn_value
+from app.services.item_normalization_service import apply_reference_mapping_to_payload
 
 REQUIRED_FIELDS = {
     "supplier": "поставщик",
@@ -244,6 +251,7 @@ def build_review_sheet(receiving: Receiving) -> dict:
     meta = _document_meta(document)
     header_meta = meta.get("header", {})
     item_meta = meta.get("items", [])
+    header_meta, item_meta = _backfill_invoice_reference_mapping_if_needed(header_meta, item_meta)
     items = list(receiving.items)
     calculated_total_sum = _calculate_review_total_sum(items, item_meta)
     total_sum = header_meta.get("total_sum") if header_meta.get("total_sum") not in (None, "") else calculated_total_sum
@@ -273,6 +281,101 @@ def build_review_sheet(receiving: Receiving) -> dict:
         "status": "ready" if not issues else "needs_review",
         "issues": issues,
     }
+
+
+def _backfill_invoice_reference_mapping_if_needed(
+    header_meta: dict[str, Any],
+    item_meta: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if not item_meta:
+        return header_meta, item_meta
+    if not settings.google_sheets_enabled or not settings.google_target_spreadsheet_id:
+        return header_meta, item_meta
+    if not any(_needs_invoice_reference_backfill(item) for item in item_meta):
+        return header_meta, item_meta
+
+    parser_metadata = header_meta.get("parser_metadata") if isinstance(header_meta.get("parser_metadata"), dict) else {}
+    parser_items = parser_metadata.get("items") if isinstance(parser_metadata.get("items"), list) else []
+    enriched_items = [
+        _merge_item_with_parser_metadata(item, parser_items, index)
+        for index, item in enumerate(item_meta, start=1)
+    ]
+    payload = {
+        "items": enriched_items,
+        "parser_metadata": {
+            "review_flags": list(parser_metadata.get("review_flags", [])),
+            "item_corrections": dict(parser_metadata.get("item_corrections", {})),
+            "upload_status": parser_metadata.get("upload_status") or header_meta.get("upload_status", ""),
+            "row_status": parser_metadata.get("row_status") or header_meta.get("row_status", ""),
+            "duplicate": parser_metadata.get("duplicate") or header_meta.get("duplicate_indicator", ""),
+        },
+        "parser_notes": [],
+    }
+    try:
+        references = load_invoice_reference_catalogs()
+        mapped = apply_reference_mapping_to_payload(
+            payload,
+            products=references["products"],
+            packages=references["packages"],
+        )
+    except Exception:
+        return header_meta, item_meta
+
+    updated_header = dict(header_meta)
+    mapped_meta = mapped.get("parser_metadata") or {}
+    if mapped_meta.get("upload_status"):
+        updated_header["upload_status"] = mapped_meta["upload_status"]
+    if mapped_meta.get("row_status"):
+        updated_header["row_status"] = mapped_meta["row_status"]
+    if mapped_meta.get("duplicate"):
+        updated_header["duplicate_indicator"] = mapped_meta["duplicate"]
+    return updated_header, mapped.get("items") or item_meta
+
+
+def _needs_invoice_reference_backfill(item: dict[str, Any]) -> bool:
+    if item.get("us_product_name") or item.get("product_found"):
+        return False
+    return bool(item.get("name") or item.get("raw_name") or item.get("clean_name") or item.get("normalized_name_candidate"))
+
+
+def _merge_item_with_parser_metadata(
+    item: dict[str, Any],
+    parser_items: list[dict[str, Any]],
+    index: int,
+) -> dict[str, Any]:
+    result = dict(item)
+    parser_match = None
+    line_number = str(item.get("line_number") or index)
+    for candidate_index, candidate in enumerate(parser_items, start=1):
+        candidate_line = str(candidate.get("line_number") or candidate_index)
+        if candidate_line == line_number:
+            parser_match = candidate
+            break
+    parser_match = parser_match or {}
+
+    for key in (
+        "raw_name",
+        "clean_name",
+        "normalized_name_candidate",
+        "brand_or_descriptor",
+        "package",
+        "document_unit",
+        "quantity_document",
+        "quantity_multiplier",
+        "accounting_quantity_candidate",
+        "accounting_unit_candidate",
+        "codes",
+        "needs_review",
+        "review_reason",
+    ):
+        if result.get(key) in (None, "", [], {}):
+            value = parser_match.get(key)
+            if value not in (None, "", [], {}):
+                result[key] = value
+
+    if result.get("raw_name") in (None, "") and result.get("name"):
+        result["raw_name"] = result["name"]
+    return result
 
 
 def _invoice_register_header_values(
@@ -318,7 +421,7 @@ def _invoice_register_header_values(
         # на страницах-продолжениях ТОРГ-12 в тексте часто есть только ИНН
         # получателя/подписанта, и он не должен попадать в колонку поставщика.
         supplier_inn = _sheet_display_value(
-            header_meta.get("supplier_inn")
+            normalize_supplier_inn_value(header_meta.get("supplier_inn"))
             or _extract_first_inn(supplier)
             or ""
         )
