@@ -18,11 +18,29 @@ class InvoiceDocumentData(BaseModel):
     total_with_vat: float | None = None
 
 
+class InvoiceItemPackage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    value: float | None = None
+    unit: str | None = None
+    raw: str = ""
+
+
 class InvoiceParsedItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     line_number: int | None = None
     raw_name: str = ""
+    clean_name: str = ""
+    normalized_name_candidate: str = ""
+    brand_or_descriptor: str = ""
+    package: InvoiceItemPackage = Field(default_factory=InvoiceItemPackage)
+    document_unit: str = ""
+    quantity_document: float | None = None
+    quantity_multiplier: float | None = None
+    accounting_quantity_candidate: float | None = None
+    accounting_unit_candidate: str = ""
+    codes: list[str] = Field(default_factory=list)
     unit: str = ""
     quantity: float | None = None
     price: float | None = None
@@ -31,6 +49,8 @@ class InvoiceParsedItem(BaseModel):
     vat_amount: float | None = None
     amount_with_vat: float | None = None
     confidence: float | None = Field(default=None, ge=0, le=1)
+    needs_review: bool = False
+    review_reason: str = ""
     source_fragment: str = ""
 
 

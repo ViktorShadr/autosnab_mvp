@@ -3,9 +3,13 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from app.schemas.invoice_parser import InvoiceParserResult
+from app.schemas.invoice_parser import InvoiceParsedItem, InvoiceParserResult
+from app.services.item_normalization_service import (
+    apply_reference_mapping_to_payload,
+    normalize_item_candidate,
+)
 from app.services.invoice_normalization_service import normalize_invoice_result, to_legacy_invoice_payload
-from app.services.openai_invoice_parser_service import parse_invoice_with_openai
+from app.services.openai_invoice_parser_service import SYSTEM_PROMPT, parse_invoice_with_openai
 from app.services.invoice_review_service import ensure_upload_status_allows_send
 
 
@@ -26,7 +30,7 @@ def _parsed_invoice(**overrides):
         "items": [
             {
                 "line_number": 1,
-                "raw_name": "Товар",
+                "raw_name": "Молоко",
                 "unit": "шт",
                 "quantity": 2,
                 "price": 50,
@@ -53,6 +57,14 @@ def _parsed_invoice(**overrides):
 def test_parser_contract_forbids_unknown_fields():
     payload = _parsed_invoice()
     payload["unexpected"] = True
+
+    with pytest.raises(ValidationError):
+        InvoiceParserResult.model_validate(payload)
+
+
+def test_parser_contract_forbids_unknown_package_fields():
+    payload = _parsed_invoice()
+    payload["items"][0]["package"] = {"value": 1, "unit": "л", "raw": "1Л", "unknown": True}
 
     with pytest.raises(ValidationError):
         InvoiceParserResult.model_validate(payload)
@@ -90,6 +102,143 @@ def test_openai_parser_uses_structured_response_and_returns_legacy_payload(tmp_p
     assert result["supplier_inn"] == "7701234567"
     assert result["items"][0]["sum"] == 100.0
     assert result["parser_metadata"]["upload_status"] == "Проверить"
+    assert "Справочник фасовок" in SYSTEM_PROMPT
+    assert "quantity_multiplier" in SYSTEM_PROMPT
+
+
+def test_item_normalization_extracts_code_package_and_accounting_quantity():
+    item = InvoiceParsedItem(
+        raw_name="3 ТОВАР : ШТ. [N+13968 КЕФИР ФЕРМЕРСКИЙ 800Г",
+        unit="ШТ",
+        quantity=5,
+        price=100,
+        confidence=0.95,
+    )
+
+    issues = normalize_item_candidate(item)
+
+    assert issues == []
+    assert item.clean_name == "КЕФИР ФЕРМЕРСКИЙ"
+    assert item.normalized_name_candidate == "Кефир Фермерский"
+    assert item.codes == ["N+13968"]
+    assert item.package.model_dump() == {"value": 800.0, "unit": "г", "raw": "800Г"}
+    assert item.quantity_multiplier == 0.8
+    assert item.accounting_quantity_candidate == 4.0
+    assert item.accounting_unit_candidate == "кг"
+
+
+def test_item_normalization_multiplies_nested_liquid_package():
+    item = InvoiceParsedItem(
+        raw_name="ВОДА ПИТЬЕВАЯ 0,5Л 12ШТ",
+        document_unit="УПАК",
+        quantity_document=3,
+        confidence=0.9,
+    )
+
+    issues = normalize_item_candidate(item)
+
+    assert issues == []
+    assert item.package.model_dump() == {"value": 0.5, "unit": "л", "raw": "0,5Л"}
+    assert item.quantity_multiplier == 6.0
+    assert item.accounting_quantity_candidate == 18.0
+    assert item.accounting_unit_candidate == "л"
+
+
+def test_item_normalization_flags_ambiguous_sheets_unit():
+    item = InvoiceParsedItem(
+        raw_name="САЛФЕТКИ БУМ 24Х24 100Л",
+        document_unit="УПАК",
+        quantity_document=1,
+        confidence=0.9,
+    )
+
+    issues = normalize_item_candidate(item)
+
+    assert item.needs_review is True
+    assert any("листы" in issue["reason"] for issue in issues)
+
+
+def test_reference_mapping_fills_us_fields_deterministically():
+    payload = {
+        "items": [
+            {
+                "line_number": 1,
+                "name": "КЕФИР ФЕРМЕРСКИЙ 800Г",
+                "normalized_name_candidate": "Кефир Фермерский",
+                "package": {"value": 800, "unit": "г", "raw": "800Г"},
+                "quantity": 5,
+                "quantity_document": 5,
+                "quantity_multiplier": 0.8,
+                "accounting_unit_candidate": "кг",
+            }
+        ],
+        "parser_metadata": {
+            "upload_status": "Проверить",
+            "row_status": "Распознано",
+            "review_flags": [],
+            "item_corrections": {},
+        },
+        "parser_notes": [],
+    }
+
+    result = apply_reference_mapping_to_payload(
+        payload,
+        products=[{"Наименование": "Кефир", "Код": "01-00017", "Ед. изм.": "л"}],
+        packages=[
+            {
+                "ID": "0-00800",
+                "Фасовка в документе": "800 г",
+                "Коэффициент пересчета": 0.8,
+                "Единица учета в УС": "кг",
+                "Активна": "да",
+            }
+        ],
+    )
+
+    item = result["items"][0]
+    assert item["product_found"] == "Да"
+    assert item["us_product_name"] == "Кефир"
+    assert item["us_unit"] == "кг"
+    assert item["quantity_us"] == 4.0
+    assert item.get("correction", "") == ""
+
+
+def test_reference_mapping_marks_missing_product_and_package():
+    payload = {
+        "items": [
+            {
+                "line_number": 2,
+                "name": "НЕИЗВЕСТНЫЙ ПРОДУКТ 333Г",
+                "normalized_name_candidate": "Неизвестный продукт",
+                "package": {"value": 333, "unit": "г", "raw": "333Г"},
+                "quantity": 2,
+                "quantity_document": 2,
+                "quantity_multiplier": 0.333,
+                "accounting_unit_candidate": "кг",
+                "correction": "",
+            }
+        ],
+        "parser_metadata": {
+            "upload_status": "Проверить",
+            "row_status": "Распознано",
+            "review_flags": [],
+            "item_corrections": {},
+        },
+        "parser_notes": [],
+    }
+
+    result = apply_reference_mapping_to_payload(
+        payload,
+        products=[{"Наименование": "Кефир", "Код": "01-00017", "Ед. изм.": "л"}],
+        packages=[{"Фасовка в документе": "250г", "Коэффициент пересчета": 0.25}],
+    )
+
+    item = result["items"][0]
+    assert item["product_found"] == "Нет"
+    assert item["correction"] == "Нет в справочнике"
+    assert result["parser_metadata"]["upload_status"] == "Требует проверки"
+    assert result["parser_metadata"]["row_status"] == "Правка вручную"
+    assert len(result["parser_metadata"]["review_flags"]) == 2
 
 
 @pytest.mark.parametrize(

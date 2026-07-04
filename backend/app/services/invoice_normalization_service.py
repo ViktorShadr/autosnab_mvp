@@ -8,6 +8,7 @@ from app.schemas.invoice_parser import (
     InvoiceReviewFlag,
     NormalizedInvoiceResult,
 )
+from app.services.item_normalization_service import normalize_item_candidate
 
 
 MONEY_TOLERANCE = Decimal("0.02")
@@ -50,6 +51,15 @@ def normalize_invoice_result(
         item.vat_amount = _money(item.vat_amount)
         item.amount_with_vat = _money(item.amount_with_vat)
         item.vat_rate = _normalize_vat_rate(item.vat_rate)
+        for issue in normalize_item_candidate(item):
+            _flag(
+                result,
+                "item",
+                line_number,
+                issue["field"],
+                issue["reason"],
+                issue["severity"],
+            )
 
         if not item.raw_name:
             _flag(result, "item", line_number, "raw_name", "Не распознано наименование товара.", "error")
@@ -138,6 +148,17 @@ def to_legacy_invoice_payload(result: NormalizedInvoiceResult) -> dict[str, Any]
         "items": [
             {
                 "name": item.raw_name,
+                "raw_name": item.raw_name,
+                "clean_name": item.clean_name,
+                "normalized_name_candidate": item.normalized_name_candidate,
+                "brand_or_descriptor": item.brand_or_descriptor,
+                "package": item.package.model_dump(mode="json"),
+                "document_unit": item.document_unit,
+                "quantity_document": item.quantity_document,
+                "quantity_multiplier": item.quantity_multiplier,
+                "accounting_quantity_candidate": item.accounting_quantity_candidate,
+                "accounting_unit_candidate": item.accounting_unit_candidate,
+                "codes": item.codes,
                 "quantity": item.quantity or 0,
                 "unit": item.unit or "шт",
                 "price": item.price or 0,
@@ -147,6 +168,8 @@ def to_legacy_invoice_payload(result: NormalizedInvoiceResult) -> dict[str, Any]
                 "vat_sum": item.vat_amount,
                 "comment": item.source_fragment or None,
                 "confidence": item.confidence,
+                "needs_review": item.needs_review,
+                "review_reason": item.review_reason,
                 "line_number": item.line_number,
                 "amount_with_vat": item.amount_with_vat,
                 "correction": result.item_corrections.get(item.line_number or 0, ""),

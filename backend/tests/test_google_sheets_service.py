@@ -1,6 +1,7 @@
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -11,6 +12,12 @@ from app.services.google_sheets_service import (  # noqa: E402
     SHARED_INVOICE_HEADERS,
     _insert_into_existing_spreadsheet,
     _remap_source_rows_to_shared_sheet,
+    _table_rows_as_dicts,
+    load_invoice_reference_catalogs,
+)
+from app.services.invoice_review_service import (  # noqa: E402
+    INVOICE_REGISTER_HEADERS,
+    _invoice_register_item_row,
 )
 
 
@@ -108,6 +115,120 @@ def test_shared_mapper_uses_headers_and_writes_document_fields_only_on_first_row
     assert rows[0][indexes["Корректировка"]] == "Другое"
     assert rows[1][indexes["Корректировка"]] == "Нет в справочнике"
     assert rows[1][indexes["Дата документа"]] == ""
+
+
+def test_review_row_uses_only_deterministic_us_mapping_fields():
+    header_values = {
+        "upload_status": "Проверить",
+        "upload_time": "2026-07-04 12:00:00",
+        "document_id": 1,
+        "duplicate_indicator": "",
+        "document_form": "УПД",
+        "document_date": "2026-07-04",
+        "document_number": "42",
+        "supplier": "Supplier",
+        "supplier_inn": "1234567890",
+        "consignee": "Receiver",
+        "recipient": "Receiver",
+        "trade_point": "Point",
+        "warehouse": "Warehouse",
+        "basis": "",
+        "total_sum": 800,
+        "row_status": "Распознано",
+    }
+    item = SimpleNamespace(
+        received_quantity=5,
+        invoice_price=100,
+        item_name_from_invoice="КЕФИР ФЕРМЕРСКИЙ 800Г",
+        item_name_from_order=None,
+        unit="ШТ",
+        comment=None,
+    )
+    row = _invoice_register_item_row(
+        header_values,
+        item,
+        {
+            "us_product_name": "Кефир",
+            "product_found": "Да",
+            "us_unit": "кг",
+            "quantity_us": 4,
+            "correction": "",
+        },
+        1,
+    )
+    values = dict(zip(INVOICE_REGISTER_HEADERS, row))
+
+    assert values["Наименование товара в УС"] == "Кефир"
+    assert values["Товар найден в справочнике"] == "Да"
+    assert values["Ед.изм. в УС"] == "кг"
+    assert values["Кол-во в УС"] == 4
+
+
+def test_reference_sheet_rows_are_mapped_by_fixed_headers():
+    rows = [
+        ["Наименование", "Код", "Ед. изм."],
+        ["Кефир", "01-00017", "л"],
+        ["", "", ""],
+    ]
+
+    assert _table_rows_as_dicts(rows) == [
+        {"Наименование": "Кефир", "Код": "01-00017", "Ед. изм.": "л"}
+    ]
+
+
+def test_reference_catalog_loader_reads_fixed_google_sheet_tabs(monkeypatch):
+    class ReferenceValues:
+        def __init__(self):
+            self.kwargs = None
+
+        def batchGet(self, **kwargs):
+            self.kwargs = kwargs
+            return _FakeExecute(
+                {
+                    "valueRanges": [
+                        {"values": [["Наименование", "Код"], ["Кефир", "01-00017"]]},
+                        {
+                            "values": [
+                                ["ID", "Фасовка в документе", "Коэффициент пересчета"],
+                                ["0-00800", "800 г", 0.8],
+                            ]
+                        },
+                    ]
+                }
+            )
+
+    class ReferenceSpreadsheets:
+        def __init__(self, values):
+            self._values = values
+
+        def values(self):
+            return self._values
+
+    class ReferenceService:
+        def __init__(self, values):
+            self._spreadsheets = ReferenceSpreadsheets(values)
+
+        def spreadsheets(self):
+            return self._spreadsheets
+
+    values = ReferenceValues()
+    old_enabled = settings.google_sheets_enabled
+    old_spreadsheet_id = settings.google_target_spreadsheet_id
+    settings.google_sheets_enabled = True
+    settings.google_target_spreadsheet_id = "sheet-id"
+    monkeypatch.setattr(
+        "app.services.google_sheets_service._build_google_services",
+        lambda: (ReferenceService(values), None),
+    )
+    try:
+        catalogs = load_invoice_reference_catalogs()
+    finally:
+        settings.google_sheets_enabled = old_enabled
+        settings.google_target_spreadsheet_id = old_spreadsheet_id
+
+    assert values.kwargs["ranges"] == ["'Товары'!A1:D", "'Справочник фасовок'!A1:M"]
+    assert catalogs["products"][0]["Наименование"] == "Кефир"
+    assert catalogs["packages"][0]["Коэффициент пересчета"] == 0.8
 
 
 def test_insert_into_existing_spreadsheet_prepends_block_and_separator():

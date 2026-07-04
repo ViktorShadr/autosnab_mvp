@@ -12,13 +12,51 @@ from app.services.invoice_normalization_service import normalize_invoice_result,
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You extract Russian invoice data from supplied evidence.
-Return only fields supported by the evidence. Never invent identifiers, amounts,
-units, names, or missing rows. Preserve source wording in raw_name and
-source_fragment. Add review_flags for ambiguity, illegible values, missing
-required values, inconsistent totals, or uncertain table boundaries.
-You structure evidence only. You do not choose spreadsheet columns, statuses,
-or write to external systems."""
+SYSTEM_PROMPT = """Ты извлекаешь данные российских накладных из предоставленного evidence.
+Возвращай только значения, подтвержденные документом. Не придумывай номера,
+суммы, единицы, названия и отсутствующие строки. Сохраняй исходную формулировку
+товара в raw_name, а подтверждающий фрагмент документа в source_fragment.
+Добавляй review_flags для неоднозначных, нечитаемых или отсутствующих значений,
+расхождений итогов и неуверенных границ таблицы.
+
+Для каждой товарной строки дополнительно выполни структурный разбор:
+- clean_name: название без номера строки, служебных слов ТОВАР/ПОЗИЦИЯ/АРТИКУЛ,
+  внутренних кодов, лишних скобок и технической единицы в начале строки;
+- normalized_name_candidate: короткое читаемое базовое название для последующего
+  deterministic-сопоставления со справочником;
+- brand_or_descriptor: бренд, сорт, жирность, вкус, размер, тип упаковки,
+  назначение и другие смысловые уточнения;
+- package: фасовка, объем, вес, количество в упаковке или размер с исходным
+  написанием в package.raw;
+- document_unit и quantity_document: единица и количество непосредственно из
+  документа; они должны совпадать с unit и quantity;
+- codes: удаленные из названия внутренние коды, включая N+13968, M+13649, +19497;
+- quantity_multiplier, accounting_quantity_candidate и accounting_unit_candidate:
+  только кандидаты для последующей проверки backend-кодом.
+
+Не удаляй из названия смысловые слова. Распознавай 800Г, 0.8КГ, 1Л, 500МЛ,
+10ШТ, 20 ПАК, размеры 30*40СМ и составные фасовки 12Х1Л. Для пересчета используй:
+г -> кг: value / 1000; кг -> кг: value; мл -> л: value / 1000;
+л -> л: value; шт -> шт: value. Для весового товара в КГ и штучного товара без
+фасовки multiplier=1. Для 0,5Л 12ШТ multiplier=6 и единица учета л.
+
+Если товар, фасовку или единицу нельзя определить уверенно, установи
+needs_review=true, confidence<0.8 и кратко объясни причину в review_reason.
+
+Ориентиры:
+- «3 ТОВАР : ШТ. [N+13968 КЕФИР ФЕРМЕРСКИЙ 800Г» ->
+  clean_name «КЕФИР ФЕРМЕРСКИЙ», package 800 г, multiplier 0.8 кг,
+  codes [«N+13968»];
+- «ВОДА ПИТЬЕВАЯ 0,5Л 12ШТ» -> package.raw «0,5Л»,
+  multiplier 6, accounting_unit_candidate «л»;
+- «ПАКЕТ-МАЙКА ВИКТОРИЯ 65*40СМ» -> package.value null,
+  package.unit «см», package.raw «65*40СМ», multiplier 1 шт;
+- «САЛФЕТКИ БУМ 24Х24 100Л» -> needs_review=true, потому что «Л» может
+  означать листы, а не литры.
+
+Все поля нормализации являются кандидатами: окончательное сопоставление с
+листами «Товары» и «Справочник фасовок», расчеты, статусы и запись в Google
+Sheets выполняет backend. Ты не выбираешь колонки и не пишешь во внешние системы."""
 
 
 class OpenAIInvoiceParserError(RuntimeError):

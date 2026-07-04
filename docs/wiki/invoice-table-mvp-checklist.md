@@ -156,6 +156,24 @@ The `source_trace` block is important because the operator workflow is review-fi
 - special forms such as receipts or purchase acts can leave supplier fields blank without breaking the pipeline
 - sheet formulas and validations continue to work after insertion
 
+### Implemented item-normalization boundary
+
+The OpenAI item contract now carries `raw_name`, `clean_name`,
+`normalized_name_candidate`, `brand_or_descriptor`, structured `package`,
+document quantity/unit, conversion candidates, codes, confidence, and a
+row-specific review reason.
+
+`item_normalization_service.py` remains authoritative after model output:
+
+- it removes technical prefixes/codes and re-extracts package data
+- it recomputes conversion coefficients and accounting quantity
+- it matches products against the fixed `Товары` headers
+- it matches package variants against the fixed `Справочник фасовок` headers
+- it emits `Нет в справочнике` or `Сопоставление` on the affected item only
+
+The shared-sheet mapper consumes only these deterministic results for
+`Наименование товара в УС`, `Ед.изм. в УС`, and `Кол-во в УС`.
+
 ## Backend implementation order
 
 ### Step 1

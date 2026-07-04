@@ -43,6 +43,27 @@ class GoogleSheetsConfigurationError(RuntimeError):
     pass
 
 
+def load_invoice_reference_catalogs() -> dict[str, list[dict[str, Any]]]:
+    spreadsheet_id = settings.google_target_spreadsheet_id
+    if not settings.google_sheets_enabled or not spreadsheet_id:
+        raise GoogleSheetsConfigurationError(
+            "Для чтения справочников нужны GOOGLE_SHEETS_ENABLED=true и GOOGLE_TARGET_SPREADSHEET_ID."
+        )
+    sheets_service, _ = _build_google_services()
+    response = sheets_service.spreadsheets().values().batchGet(
+        spreadsheetId=spreadsheet_id,
+        ranges=["'Товары'!A1:D", "'Справочник фасовок'!A1:M"],
+        majorDimension="ROWS",
+    ).execute()
+    ranges = response.get("valueRanges") or []
+    products_rows = ranges[0].get("values", []) if len(ranges) > 0 else []
+    packages_rows = ranges[1].get("values", []) if len(ranges) > 1 else []
+    return {
+        "products": _table_rows_as_dicts(products_rows),
+        "packages": _table_rows_as_dicts(packages_rows),
+    }
+
+
 def create_invoice_review_spreadsheet(
     receiving,
     sheet_data: dict,
@@ -60,16 +81,7 @@ def create_invoice_review_spreadsheet(
         raise GoogleSheetsConfigurationError(
             "Google Sheets API отключен. Укажите GOOGLE_SHEETS_ENABLED=true и credentials OAuth user."
         )
-    try:
-        from googleapiclient.discovery import build
-    except ImportError as exc:
-        raise GoogleSheetsConfigurationError(
-            "Не установлены зависимости google-api-python-client/google-auth/google-auth-oauthlib. Выполните pip install -r requirements.txt."
-        ) from exc
-
-    credentials = get_google_user_credentials()
-    sheets_service = build("sheets", "v4", credentials=credentials)
-    drive_service = build("drive", "v3", credentials=credentials)
+    sheets_service, drive_service = _build_google_services()
 
     target_spreadsheet_id = settings.google_target_spreadsheet_id
     if target_spreadsheet_id:
@@ -124,6 +136,36 @@ def create_invoice_review_spreadsheet(
         "spreadsheet_name": sheet_data["spreadsheet_name"],
         "send_button": button_result,
     }
+
+
+def _build_google_services():
+    try:
+        from googleapiclient.discovery import build
+    except ImportError as exc:
+        raise GoogleSheetsConfigurationError(
+            "Не установлены зависимости google-api-python-client/google-auth/google-auth-oauthlib. Выполните pip install -r requirements.txt."
+        ) from exc
+    credentials = get_google_user_credentials()
+    return (
+        build("sheets", "v4", credentials=credentials),
+        build("drive", "v3", credentials=credentials),
+    )
+
+
+def _table_rows_as_dicts(rows: list[list[Any]]) -> list[dict[str, Any]]:
+    if not rows:
+        return []
+    headers = [str(value).strip() for value in rows[0]]
+    result = []
+    for row in rows[1:]:
+        mapped = {
+            header: row[index] if index < len(row) else ""
+            for index, header in enumerate(headers)
+            if header
+        }
+        if any(value not in (None, "") for value in mapped.values()):
+            result.append(mapped)
+    return result
 
 
 

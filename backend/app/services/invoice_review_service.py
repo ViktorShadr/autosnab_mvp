@@ -386,12 +386,13 @@ def _invoice_register_item_row(
         vat_percent = _vat_percent_for_sheet(row_meta, item.comment)
         vat_sum = row_meta.get("vat_sum") if row_meta.get("vat_sum") is not None else ""
         line_sum_with_vat = _line_sum_with_vat(line_sum, vat_sum)
-        # В пользовательскую таблицу переносим только данные, которые есть
-        # в накладной. Поля УС/справочников/ручной корректировки не
-        # заполняем автоматически, чтобы в них не попадали случайные OCR-
-        # или технические значения.
-        unit_in_us = ""
-        quantity_in_us = ""
+        # Поля УС заполняются только результатом deterministic-сопоставления.
+        unit_in_us = row_meta.get("us_unit") or row_meta.get("accounting_unit_candidate") or ""
+        quantity_in_us = (
+            row_meta.get("quantity_us")
+            if row_meta.get("quantity_us") is not None
+            else row_meta.get("accounting_quantity_candidate", "")
+        )
         price_in_us = ""
         ordered_quantity = ""
         price_by_pricelist = ""
@@ -399,8 +400,8 @@ def _invoice_register_item_row(
         upload_to_us = ""
         status = header_values.get("row_status", "") if index == 1 else ""
         manual_reason = row_meta.get("correction") or ""
-        us_product_name = ""
-        product_found = ""
+        us_product_name = row_meta.get("us_product_name") or ""
+        product_found = row_meta.get("product_found") or ""
 
     return [
         _single_value_for_first_item_row(header_values, "upload_status", index),
@@ -1432,6 +1433,25 @@ def _item_payload(item, index: int | None = None) -> dict:
     return {
         "line_number": item.line_number or index,
         "name": item.name,
+        "raw_name": item.raw_name or item.name,
+        "clean_name": item.clean_name,
+        "normalized_name_candidate": item.normalized_name_candidate,
+        "brand_or_descriptor": item.brand_or_descriptor,
+        "package": item.package,
+        "document_unit": item.document_unit or item.unit,
+        "quantity_document": item.quantity_document if item.quantity_document is not None else quantity,
+        "quantity_multiplier": item.quantity_multiplier,
+        "accounting_quantity_candidate": item.accounting_quantity_candidate,
+        "accounting_unit_candidate": item.accounting_unit_candidate,
+        "codes": item.codes,
+        "needs_review": item.needs_review,
+        "review_reason": item.review_reason,
+        "us_product_name": item.us_product_name,
+        "product_code": item.product_code,
+        "product_found": item.product_found,
+        "us_unit": item.us_unit,
+        "quantity_us": item.quantity_us,
+        "package_reference_id": item.package_reference_id,
         "iiko_product_id": item.iiko_product_id,
         "product_article": item.product_article,
         "supplier_product": item.supplier_product,

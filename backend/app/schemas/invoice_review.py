@@ -3,6 +3,19 @@ from pydantic import BaseModel, Field
 
 class RecognizedInvoiceItem(BaseModel):
     name: str = Field(..., examples=["Молоко кокосовое Aroy-D 400 мл"])
+    raw_name: str | None = None
+    clean_name: str | None = None
+    normalized_name_candidate: str | None = None
+    brand_or_descriptor: str | None = None
+    package: dict = Field(default_factory=dict)
+    document_unit: str | None = None
+    quantity_document: float | None = None
+    quantity_multiplier: float | None = None
+    accounting_quantity_candidate: float | None = None
+    accounting_unit_candidate: str | None = None
+    codes: list[str] = Field(default_factory=list)
+    needs_review: bool = False
+    review_reason: str | None = None
     quantity: float = Field(..., examples=[5])
     unit: str = "шт"
     price: float = Field(..., examples=[250])
@@ -25,6 +38,12 @@ class RecognizedInvoiceItem(BaseModel):
     mapping_error: str | None = Field(default=None, description="Human-readable mapping problem, if any")
     correction: str | None = None
     amount_with_vat: float | None = None
+    us_product_name: str | None = None
+    product_code: str | None = None
+    product_found: str | None = None
+    us_unit: str | None = None
+    quantity_us: float | None = None
+    package_reference_id: str | None = None
 
 
 class InvoiceReviewCreateRequest(BaseModel):

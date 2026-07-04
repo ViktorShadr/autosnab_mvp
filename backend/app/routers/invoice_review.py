@@ -36,6 +36,8 @@ from app.services.invoice_review_service import (
     send_google_sheet_and_confirm_to_iiko,
 )
 from app.services.document_extraction_service import extract_invoice_document
+from app.services.google_sheets_service import load_invoice_reference_catalogs
+from app.services.item_normalization_service import apply_reference_mapping_to_payload
 
 router = APIRouter(prefix="/invoice-review", tags=["invoice-review"])
 
@@ -88,6 +90,18 @@ def upload_invoice_page():
     .field {
       margin-bottom: 18px;
     }
+    .panel {
+      margin-bottom: 22px;
+      padding: 18px;
+      border: 1px solid #dbeafe;
+      border-radius: 14px;
+      background: linear-gradient(135deg, #f8fbff 0%, #eef4ff 100%);
+    }
+    .panel-title {
+      font-size: 16px;
+      font-weight: 700;
+      margin: 0 0 8px;
+    }
     .hint {
       color: #6b7280;
       font-size: 14px;
@@ -133,8 +147,58 @@ def upload_invoice_page():
       margin-top: 20px;
       text-align: center;
     }
+    .button-row.compact {
+      margin-top: 14px;
+      text-align: left;
+    }
+    .button-row.compact button,
+    .button-row.compact .secondary-btn {
+      min-width: 0;
+      margin-right: 10px;
+      margin-top: 0;
+    }
     .result-actions {
       text-align: center;
+    }
+    .preview-shell {
+      display: none;
+      margin-top: 14px;
+      border: 1px solid #d1d5db;
+      border-radius: 14px;
+      background: #f9fafb;
+      overflow: hidden;
+    }
+    .preview-shell.visible {
+      display: block;
+    }
+    .preview-meta {
+      padding: 12px 14px;
+      border-bottom: 1px solid #e5e7eb;
+      font-size: 14px;
+      color: #4b5563;
+      background: #fff;
+    }
+    .preview-frame {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 240px;
+      max-height: 520px;
+      background: #f3f4f6;
+    }
+    .preview-frame img,
+    .preview-frame iframe {
+      width: 100%;
+      height: 520px;
+      border: 0;
+      object-fit: contain;
+      background: #fff;
+    }
+    .preview-empty {
+      padding: 28px;
+      text-align: center;
+      color: #6b7280;
+      line-height: 1.5;
     }
     .loading {
       margin-top: 22px;
@@ -162,10 +226,24 @@ def upload_invoice_page():
       <div class="subtitle">
         Загрузите фото, скан или PDF накладной. OpenAI структурирует evidence, полученный из PDF, MinerU или OCR.
       </div>
+      <div class="panel">
+        <div class="panel-title">Google Sheets доступ</div>
+        <div id="googleAuthStatus" class="hint">Проверяю статус Google OAuth...</div>
+        <div class="button-row compact">
+          <button id="googleAuthBtn" type="button">Авторизоваться в Google</button>
+          <button id="googleAuthRefreshBtn" type="button">Обновить статус</button>
+        </div>
+      </div>
       <form id="uploadForm">
         <div class="field">
           <label for="file">Файл накладной</label>
           <input id="file" name="file" type="file" accept="image/*,.pdf" capture="environment" required />
+          <div id="filePreview" class="preview-shell" aria-live="polite">
+            <div id="filePreviewMeta" class="preview-meta"></div>
+            <div id="filePreviewFrame" class="preview-frame">
+              <div class="preview-empty">Выберите файл, и здесь появится его превью.</div>
+            </div>
+          </div>
         </div>
         <div class="field">
           <label for="extractionMethod">Метод распознавания</label>
@@ -191,7 +269,16 @@ def upload_invoice_page():
     const form = document.getElementById('uploadForm');
     const output = document.getElementById('output');
     const button = document.getElementById('submitBtn');
+    const fileInput = document.getElementById('file');
     const extractionMethodInput = document.getElementById('extractionMethod');
+    const previewShell = document.getElementById('filePreview');
+    const previewMeta = document.getElementById('filePreviewMeta');
+    const previewFrame = document.getElementById('filePreviewFrame');
+    const googleAuthStatus = document.getElementById('googleAuthStatus');
+    const googleAuthBtn = document.getElementById('googleAuthBtn');
+    const googleAuthRefreshBtn = document.getElementById('googleAuthRefreshBtn');
+
+    let previewUrl = null;
 
     const methodLabels = {
       openai: 'OpenAI structured parser',
@@ -206,6 +293,101 @@ def upload_invoice_page():
       }[ch]));
     }
 
+    function formatFileSize(size) {
+      if (!Number.isFinite(size) || size <= 0) {
+        return 'размер не определен';
+      }
+      if (size < 1024 * 1024) {
+        return (size / 1024).toFixed(1) + ' КБ';
+      }
+      return (size / (1024 * 1024)).toFixed(2) + ' МБ';
+    }
+
+    function resetPreview() {
+      if (previewUrl) {
+        URL.revokeObjectURL(previewUrl);
+        previewUrl = null;
+      }
+      previewShell.classList.remove('visible');
+      previewMeta.textContent = '';
+      previewFrame.innerHTML = '<div class="preview-empty">Выберите файл, и здесь появится его превью.</div>';
+    }
+
+    function renderFilePreview(file) {
+      resetPreview();
+      if (!file) {
+        return;
+      }
+
+      previewShell.classList.add('visible');
+      previewMeta.textContent = file.name + ' · ' + (file.type || 'неизвестный тип') + ' · ' + formatFileSize(file.size);
+
+      if (file.type.startsWith('image/')) {
+        previewUrl = URL.createObjectURL(file);
+        previewFrame.innerHTML = '<img alt="Превью загружаемой накладной" src="' + previewUrl + '" />';
+        return;
+      }
+
+      if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+        previewUrl = URL.createObjectURL(file);
+        previewFrame.innerHTML = '<iframe title="PDF превью" src="' + previewUrl + '#view=FitH"></iframe>';
+        return;
+      }
+
+      previewFrame.innerHTML = '<div class="preview-empty">Для этого типа файла встроенное превью недоступно. Файл будет отправлен в обработку как есть.</div>';
+    }
+
+    async function refreshGoogleAuthStatus() {
+      googleAuthStatus.textContent = 'Проверяю статус Google OAuth...';
+      googleAuthBtn.disabled = true;
+      googleAuthRefreshBtn.disabled = true;
+      try {
+        const response = await fetch('/api/v1/google-oauth/status');
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || 'Не удалось получить статус Google OAuth.');
+        }
+        if (data.authorized) {
+          googleAuthStatus.innerHTML = 'Google OAuth подключен. Redirect URI: <b>' + escapeHtml(data.redirect_uri || '') + '</b>';
+        } else if (data.configured) {
+          googleAuthStatus.innerHTML = 'Google OAuth еще не выполнен. Конфигурация есть, можно авторизоваться с этой страницы.';
+        } else {
+          googleAuthStatus.innerHTML = 'Google OAuth не настроен в `.env`. Сначала заполните клиентские переменные OAuth.';
+        }
+      } catch (error) {
+        googleAuthStatus.innerHTML = 'Ошибка проверки Google OAuth: ' + escapeHtml(error.message);
+      } finally {
+        googleAuthBtn.disabled = false;
+        googleAuthRefreshBtn.disabled = false;
+      }
+    }
+
+    fileInput.addEventListener('change', () => {
+      renderFilePreview(fileInput.files[0]);
+    });
+
+    googleAuthBtn.addEventListener('click', () => {
+      const popup = window.open(
+        '/api/v1/google-oauth/authorize',
+        'googleOAuth',
+        'width=720,height=760,menubar=no,toolbar=no,status=no'
+      );
+      if (!popup) {
+        googleAuthStatus.innerHTML = 'Браузер заблокировал popup. Откройте <a href="/api/v1/google-oauth/authorize" target="_blank" rel="noopener">авторизацию Google</a> вручную.';
+      }
+    });
+
+    googleAuthRefreshBtn.addEventListener('click', () => {
+      refreshGoogleAuthStatus();
+    });
+
+    window.addEventListener('message', event => {
+      if (!event || !event.data || event.data.type !== 'google-oauth-success') {
+        return;
+      }
+      refreshGoogleAuthStatus();
+    });
+
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       const selectedMethod = extractionMethodInput.value || 'hybrid';
@@ -214,7 +396,6 @@ def upload_invoice_page():
       button.disabled = true;
 
       const formData = new FormData();
-      const fileInput = document.getElementById('file');
       if (!fileInput.files.length) {
         output.innerHTML = '<div class="error"><b>Ошибка:</b> выберите файл накладной.</div>';
         button.disabled = false;
@@ -273,6 +454,8 @@ def upload_invoice_page():
         button.disabled = false;
       }
     });
+
+    refreshGoogleAuthStatus();
   </script>
 </body>
 </html>
@@ -314,6 +497,18 @@ async def upload_invoice_photo_real_ocr(
         extraction_method=extraction_method,
     )
     parsed = extraction["payload"]
+    if settings.google_sheets_enabled and settings.google_target_spreadsheet_id:
+        try:
+            references = load_invoice_reference_catalogs()
+            parsed = apply_reference_mapping_to_payload(
+                parsed,
+                products=references["products"],
+                packages=references["packages"],
+            )
+        except Exception as exc:  # noqa: BLE001 - reference outage must remain visible but not destroy OCR output
+            parsed.setdefault("parser_notes", []).append(
+                f"Не удалось выполнить сопоставление со справочниками Google Sheets: {exc}"
+            )
     _apply_duplicate_status(db, parsed)
     payload = InvoiceReviewCreateRequest(
         file_id=safe_name,

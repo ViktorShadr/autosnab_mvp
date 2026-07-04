@@ -200,3 +200,16 @@
 
 - Reduced the backend runtime dependency from `uvicorn[standard]==0.34.0` to `uvicorn==0.34.3`.
 - This keeps the container command unchanged (`python -m uvicorn ...`) but avoids pulling optional `standard` extras during Docker build, which were not required by the current runtime and were making pip resolution less reliable.
+
+## [2026-07-04] implementation | structured item normalization and reference mapping
+
+- Expanded the strict OpenAI item schema and prompt with cleaned names, descriptors, package data, document quantities, conversion candidates, codes, confidence, and review reasons.
+- Added deterministic item cleanup, package extraction, compound conversion, and ambiguity checks after the model response.
+- Added fixed-header reads for the Google Sheet tabs `Товары` and `Справочник фасовок`.
+- Wired deterministic product/package matches into `Наименование товара в УС`, `Ед.изм. в УС`, and `Кол-во в УС`; unresolved rows receive `Нет в справочнике` or `Сопоставление`.
+- Verified 58 backend tests outside the known hanging `test_receiving.py`; no live Google call was made because the current environment still times out during the Google TLS handshake.
+
+## [2026-07-04] ui | upload page preview and inline Google auth
+
+- Added inline preview rendering for selected invoice images and PDFs directly on the upload page before submission.
+- Added a Google OAuth status panel and popup-based authorization entrypoint on the same page, with callback postMessage support so the upload screen can refresh auth state without forcing the operator through separate URLs.

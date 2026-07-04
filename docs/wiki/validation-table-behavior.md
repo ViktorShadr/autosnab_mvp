@@ -178,6 +178,23 @@ This affects:
 
 The workbook also hints at an exception dictionary for piece-based products like eggs, lemons, limes, avocado, etc. So a naive generic converter will not be enough for all rows later.
 
+### Current deterministic implementation
+
+OpenAI returns package and normalized-name candidates, but backend code
+re-extracts codes/package values and recomputes the multiplier. The supported
+base conversions are grams to kilograms, milliliters to liters, kilograms,
+liters, and pieces; compound forms such as `0,5Л 12ШТ` are multiplied.
+
+When the configured shared Google spreadsheet is available, backend reads:
+
+- `Товары!A:D` by its fixed headers
+- `Справочник фасовок!A:M` by its fixed headers and variants
+
+An exact/unambiguous deterministic match fills the product name, accounting
+unit, and accounting quantity. A missing product gets `Нет в справочнике`;
+an ambiguous product, missing package, or incompatible unit gets
+`Сопоставление` on that item row. The model never selects target columns.
+
 ## Practical MVP attention points
 
 For the nearest MVP, the main things to watch are:
