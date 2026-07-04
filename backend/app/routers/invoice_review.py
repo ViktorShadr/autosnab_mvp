@@ -38,6 +38,7 @@ from app.services.invoice_review_service import (
     get_latest_google_spreadsheet_info,
     send_google_sheet_and_confirm_to_iiko,
 )
+from app.services.database_health_service import describe_database_write_error
 from app.services.document_extraction_service import extract_invoice_document, extract_invoice_document_set
 from app.services.google_sheets_service import load_invoice_reference_catalogs
 from app.services.item_normalization_service import apply_reference_mapping_to_payload
@@ -967,16 +968,18 @@ def _process_invoice_upload_background(
         set_trace_result(trace_id, response)
         finalize_trace(trace_id, error_message=response.get("google_spreadsheet_error"))
     except Exception as exc:  # noqa: BLE001 - background upload must surface fatal failures in trace
+        db_hint = describe_database_write_error(exc)
+        error_message = db_hint or str(exc)
         append_trace_log(
             trace_id,
             {
                 "stage": "job_failed",
                 "status": "error",
                 "message": "Фоновая обработка документа завершилась ошибкой.",
-                "details": {"error": str(exc)},
+                "details": {"error": error_message},
             },
         )
-        finalize_trace(trace_id, error_message=str(exc))
+        finalize_trace(trace_id, error_message=error_message)
     finally:
         db.close()
 

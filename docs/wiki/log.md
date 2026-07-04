@@ -282,3 +282,9 @@
 - Added OCR-based continuation-page marker checks during multi-page merge so missing pages are surfaced as consistency warnings before persistence or sheet writing.
 - Expanded the real-photo golden fixtures with expected shared-sheet rows, added replay evaluation plus compact provider/model reporting, and introduced a no-write live evaluation helper that always forces `create_google_sheet=False`.
 - Added `scripts/docker_runtime_smoke.py` for Docker/provider smoke runs and `scripts/run_invoice_golden_eval.py` for replay-driven golden reports.
+## [2026-07-04] fix | SQLite runtime health and readonly diagnosis
+
+- Added a dedicated database health service so startup now performs a real SQLite write probe instead of relying on `/ping`.
+- Added `/health/runtime` and pointed Docker healthcheck at it, so a read-only `/data` mount stops being reported as healthy.
+- Background upload traces now rewrite `attempt to write a readonly database` into a direct operator hint to check permissions on `/data/autosnab_mvp.db` and its parent volume.
+
