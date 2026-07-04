@@ -34,8 +34,8 @@ status: current
 - The shared-sheet writer now computes the Google write range from the actual row width, fixing the `AL` vs `AM` mismatch that blocked the live retest.
 - The OCR parser now filters out noisy item rows before they reach `Receiving` or the Google Sheet, reducing accidental garbage rows in the table.
 - A local document-extraction service has been added: MinerU can now be enabled as the primary backend, with the current OCR/parser chain kept as fallback.
-- The MinerU contract is now concrete: use `mineru -p <input_path> -o <output_path> -b pipeline`, then read the structured JSON/markdown output from the result directory.
-- The project dependencies now include `mineru[all]`, and the Docker image installs it so the same extraction flow can run locally or in контейнере.
+- The MinerU contract uses the active Python environment: `{python_executable} -m mineru.cli.client -p <input_path> -o <output_path> -b pipeline -l cyrillic`.
+- The project installs CPU PyTorch plus `mineru[pipeline]`; the unused `mineru[all]` profile was removed because it pulled Linux CUDA/vLLM dependencies that this backend does not use.
 - Today’s implementation track established the full local MVP loop: wiki writeback, raw intake, runbook, shared-sheet prepend mode, diagnosis of the column-contract bug, and a mapper rewrite aligned to the real `Накладная` sheet.
 
 ## Today summary
@@ -54,8 +54,13 @@ status: current
 - OCR quality is now constrained by a post-filter on item rows, so the remaining issue should be true recognition limits rather than unfiltered garbage rows.
 - The repo now has a switchable local extraction layer, and MinerU is wired in as a documented CLI/output-directory backend that can be enabled from `.env`.
 - The local extraction layer now targets MinerU's documented CLI/output-directory flow instead of stdout-only parsing.
-- The remaining operational step is to verify the MinerU package installs cleanly in the target environment and then run one real invoice through the MinerU backend switch.
+- MinerU 3.4.2 is verified end to end on the local CPU environment with a real one-page UPD: provider `mineru`, invoice `1928`, date `2026-06-23`, supplier INN `3900040690`, and item `Еноки вес` (`3.14 кг x 650 = 2041`) were returned without OCR fallback.
+- MinerU's first local run downloaded about 2.5 GB of models; cached runs complete in roughly 30 seconds on this machine. The backend timeout is 900 seconds to cover first-run model initialization.
+- The MinerU output adapter now consumes Markdown plus `*_content_list.json`, avoiding accidental selection of service `*_model.json` and extracting UPD table rows from MinerU HTML.
 - The remaining live task is to retest the Google write flow against the user-owned spreadsheet copy and verify that values now land in the correct business columns.
 - The 2026-07-04 wrap-up is now captured in wiki: the local extraction path is MinerU-ready, the Google Sheets writer is documented and fixed at the column-contract level, and only safe docs were prepared for commit.
 - Google OAuth now uses env-only credentials: client ID, client secret, access token, refresh token, and token expiry are read from `.env`; runtime no longer reads OAuth or service-account JSON files.
 - `.env` and the legacy OAuth JSON files were removed from Git tracking. Because credentials existed in repository history, they must be revoked and reissued.
+- The root `README.md` now matches the active product shape: invoice-validation MVP first, MinerU/OCR extraction backends, env-only OAuth, shared-sheet Google flow, and the remaining live retest/testing gaps.
+- The upload UI now exposes per-document extraction choice: `Google OCR`, `MinerU`, or `hybrid` (`MinerU -> Google OCR fallback`) instead of relying only on the global `.env` backend switch.
+- Docker startup is now aligned to the real backend shape: one `docker compose up --build` command starts FastAPI with mounted `.env` plus persistent volumes for SQLite, uploads, exports, and MinerU model cache.

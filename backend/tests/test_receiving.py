@@ -367,6 +367,60 @@ def test_mvp4_invoice_review_sheet_preview_and_send():
     assert "<document>" in send.json()["payload"]["iikoXml"]
 
 
+def test_upload_page_shows_extraction_method_selector():
+    response = client.get("/api/v1/invoice-review/upload-page")
+
+    assert response.status_code == 200
+    assert 'name="extraction_method"' in response.text
+    assert 'value="google_ocr"' in response.text
+    assert 'value="mineru"' in response.text
+    assert 'value="hybrid"' in response.text
+
+
+def test_upload_photo_passes_selected_extraction_method(monkeypatch, tmp_path):
+    from app.routers import invoice_review as invoice_review_router
+
+    captured = {}
+    monkeypatch.setattr(invoice_review_router.settings, "uploaded_invoices_dir", str(tmp_path))
+
+    def fake_extract(file_path, fallback_filename=None, extraction_method=None):
+        captured["file_path"] = file_path
+        captured["fallback_filename"] = fallback_filename
+        captured["extraction_method"] = extraction_method
+        return {
+            "provider": "mineru",
+            "selected_method": "hybrid",
+            "raw_text": "ООО Питер Кельн",
+            "pages": 1,
+            "payload": {
+                "supplier": "ООО Питер Кельн",
+                "supplier_legal_name": "ООО Питер Кельн",
+                "invoice_number": "123",
+                "invoice_date": "2026-07-04",
+                "venue": "Добрая столовая",
+                "items": [],
+                "parser_provider": "mineru",
+                "parser_notes": [],
+            },
+        }
+
+    monkeypatch.setattr(invoice_review_router, "extract_invoice_document", fake_extract)
+
+    response = client.post(
+        "/api/v1/invoice-review/upload-photo",
+        files={"file": ("invoice.jpg", b"fake-image", "image/jpeg")},
+        data={
+            "create_google_sheet": "false",
+            "extraction_method": "hybrid",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["fallback_filename"] == "invoice.jpg"
+    assert captured["extraction_method"] == "hybrid"
+    assert response.json()["ocr"]["selected_method"] == "hybrid"
+
+
 def test_mvp4_requires_manual_approval_before_send():
     response = client.post(
         "/api/v1/invoice-review/upload",

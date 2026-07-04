@@ -149,3 +149,29 @@
 - OAuth callback and token refresh now persist updated token values back into `.env`.
 - Removed `.env` and legacy OAuth JSON files from Git tracking while preserving the local ignored files.
 - Recorded that the exposed Google credentials must be revoked and reissued because they already exist in Git history.
+
+## [2026-07-04] docs | README aligned with active MVP and runtime
+
+- Rewrote the root `README.md` around the actual current product center: invoice upload, OCR/MinerU extraction, validation-table flow, and iiko send/mock export.
+- Removed outdated assumptions about secrets, Google setup, and project scope so the repo entrypoint now matches the active code and wiki status.
+
+## [2026-07-04] ui | upload page now selects extraction backend per document
+
+- Added a dedicated method selector on the invoice upload page for `Google OCR`, `MinerU`, or hybrid mode.
+- Wired the selected method through the upload endpoint into the extraction service so one document can force OCR-only, MinerU-only, or `MinerU -> Google OCR fallback` without changing global `.env` settings.
+
+## [2026-07-04] verification | MinerU pipeline works end to end
+
+- Installed CPU PyTorch and the `mineru[pipeline]` dependency profile; added the undeclared MinerU runtime dependency `six`.
+- Replaced the missing `mineru` launcher dependency with `python -m mineru.cli.client`, using the backend's active interpreter and Cyrillic OCR.
+- Registered the real UPD smoke source and ran MinerU 3.4.2 successfully on it without Google OCR fallback.
+- Updated the MinerU adapter for actual 3.4.2 output: Markdown is paired with `*_content_list.json`, while service model JSON is ignored.
+- The final backend result contained supplier `ООО "ФРУКТЫ АРИФА"`, INN `3900040690`, invoice `1928`, date `2026-06-23`, and one item totaling `2041`.
+- MinerU-focused tests pass; all 35 tests outside `test_receiving.py` pass. The pre-existing `test_receiving.py` hang remains.
+
+## [2026-07-04] operations | one-command Docker startup aligned
+
+- Reworked the Docker image to copy the real backend runtime layout instead of only `backend/app`.
+- Added `.dockerignore` so the image build no longer uploads `.venv`, local databases, exports, uploads, and other heavy local artifacts.
+- Updated `docker-compose.yml` to support `docker compose up --build` with persistent volumes for SQLite, uploads, exports, and MinerU/HuggingFace cache.
+- Updated the README and runbook so Docker startup instructions now match the active runtime contract.

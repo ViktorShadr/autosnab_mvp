@@ -79,6 +79,21 @@ def upload_invoice_page():
       border: 1px solid #d1d5db; border-radius: 10px; background: #fff;
       font-size: 15px;
     }
+    select {
+      width: 100%; box-sizing: border-box; padding: 12px;
+      border: 1px solid #d1d5db; border-radius: 10px; background: #fff;
+      font-size: 15px;
+      margin-top: 4px;
+    }
+    .field {
+      margin-bottom: 18px;
+    }
+    .hint {
+      color: #6b7280;
+      font-size: 14px;
+      line-height: 1.5;
+      margin-top: 6px;
+    }
     button {
       border: 0; border-radius: 12px; padding: 14px 18px;
       background: #2563eb; color: white; font-weight: 700; font-size: 16px;
@@ -145,11 +160,24 @@ def upload_invoice_page():
     <section class="card">
       <h1>АвтоСнаб - Загрузка накладной</h1>
       <div class="subtitle">
-        Загрузите фото, скан или PDF накладной. Система распознает данные через Google Drive OCR и создаст Google Таблицу для проверки.
+        Загрузите фото, скан или PDF накладной. Перед отправкой можно выбрать метод распознавания: Google OCR, MinerU или гибридный режим.
       </div>
       <form id="uploadForm">
-        <label for="file">Файл накладной</label>
-        <input id="file" name="file" type="file" accept="image/*,.pdf" capture="environment" required />
+        <div class="field">
+          <label for="file">Файл накладной</label>
+          <input id="file" name="file" type="file" accept="image/*,.pdf" capture="environment" required />
+        </div>
+        <div class="field">
+          <label for="extractionMethod">Метод распознавания</label>
+          <select id="extractionMethod" name="extraction_method">
+            <option value="google_ocr">Google OCR</option>
+            <option value="mineru">MinerU</option>
+            <option value="hybrid" selected>Гибрид: MinerU -> Google OCR fallback</option>
+          </select>
+          <div class="hint">
+            `Google OCR` использует Google Drive OCR. `MinerU` идет только через локальный backend. `Гибрид` сначала пробует MinerU, затем откатывается на Google OCR.
+          </div>
+        </div>
         <div class="button-row">
           <button id="submitBtn" type="submit">Загрузить накладную с таблицей заведения</button>
         </div>
@@ -162,6 +190,13 @@ def upload_invoice_page():
     const form = document.getElementById('uploadForm');
     const output = document.getElementById('output');
     const button = document.getElementById('submitBtn');
+    const extractionMethodInput = document.getElementById('extractionMethod');
+
+    const methodLabels = {
+      google_ocr: 'Google OCR',
+      mineru: 'MinerU',
+      hybrid: 'гибридный режим'
+    };
 
     function escapeHtml(value) {
       return String(value ?? '').replace(/[&<>'"]/g, ch => ({
@@ -171,7 +206,9 @@ def upload_invoice_page():
 
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
-      output.innerHTML = '<div class="loading">Файл загружается и распознается через Google Drive OCR. Подождите...</div>';
+      const selectedMethod = extractionMethodInput.value || 'hybrid';
+      const selectedMethodLabel = methodLabels[selectedMethod] || selectedMethod;
+      output.innerHTML = '<div class="loading">Файл загружается. Метод распознавания: <b>' + escapeHtml(selectedMethodLabel) + '</b>. Подождите...</div>';
       button.disabled = true;
 
       const formData = new FormData();
@@ -183,6 +220,7 @@ def upload_invoice_page():
       }
       formData.append('file', fileInput.files[0]);
       formData.append('create_google_sheet', 'true');
+      formData.append('extraction_method', selectedMethod);
 
       try {
         const response = await fetch('/api/v1/invoice-review/upload-photo', {
@@ -201,12 +239,16 @@ def upload_invoice_page():
         }
 
         const hasGoogleSheet = Boolean(data.google_spreadsheet_url);
+        const methodInfo = data.ocr && data.ocr.selected_method_label
+          ? `<div>Метод распознавания: <b>${escapeHtml(data.ocr.selected_method_label)}</b></div>`
+          : '';
         const ocrError = data.ocr && data.ocr.error ? `<div>⚠️ OCR не сработал: ${escapeHtml(data.ocr.error)}</div>` : '';
         if (hasGoogleSheet) {
           output.innerHTML = `
             <div class="status-box">
               <div class="status-line">✅ Накладная обработана успешно.</div>
               <div class="status-line">✅ Данные добавлены в таблицу заведения.</div>
+              ${methodInfo}
               ${ocrError}
               <div class="result-actions"><a class="secondary-btn" href="${escapeHtml(data.google_spreadsheet_url)}" target="_blank" rel="noopener">Открыть таблицу заведения</a></div>
             </div>
@@ -217,6 +259,7 @@ def upload_invoice_page():
             <div class="status-box warning">
               <div class="status-line">⚠️ Накладная сохранена для ручной проверки.</div>
               <div>Google Таблица не создана.</div>
+              ${methodInfo}
               ${ocrError}
               ${sheetError}
             </div>
@@ -252,6 +295,7 @@ async def upload_invoice_photo_real_ocr(
     chat_id: str | None = Form(default=None),
     user_id: str | None = Form(default=None),
     create_google_sheet: bool = Form(default=True),
+    extraction_method: str | None = Form(default=None),
     public_api_base_url: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ):
@@ -262,7 +306,11 @@ async def upload_invoice_photo_real_ocr(
     with file_path.open("wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    extraction = extract_invoice_document(str(file_path), safe_name)
+    extraction = extract_invoice_document(
+        str(file_path),
+        safe_name,
+        extraction_method=extraction_method,
+    )
     parsed = extraction["payload"]
     payload = InvoiceReviewCreateRequest(
         file_id=safe_name,
@@ -298,6 +346,8 @@ async def upload_invoice_photo_real_ocr(
         "provider": extraction["provider"],
         "pages": extraction.get("pages"),
         "raw_text_length": len(extraction.get("raw_text") or ""),
+        "selected_method": extraction.get("selected_method"),
+        "selected_method_label": _extraction_method_label(extraction.get("selected_method")),
     }
     if extraction.get("error"):
         response["ocr"]["error"] = extraction["error"]
@@ -311,6 +361,16 @@ async def upload_invoice_photo_real_ocr(
         except Exception as exc:  # noqa: BLE001 - external provider errors must be surfaced to user
             response["google_spreadsheet_error"] = str(exc)
     return response
+
+
+def _extraction_method_label(value: str | None) -> str | None:
+    if value == "google_ocr":
+        return "Google OCR"
+    if value == "mineru":
+        return "MinerU"
+    if value == "hybrid":
+        return "Гибрид: MinerU -> Google OCR fallback"
+    return None
 
 
 @router.post("/upload", response_model=InvoiceReviewResponse)

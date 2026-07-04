@@ -36,8 +36,11 @@ class Settings(BaseSettings):
     # local document parser that can be enabled when it is installed/configured.
     document_extraction_backend: str = "ocr"
     document_extraction_fallback_to_ocr: bool = True
-    mineru_command: str | None = "mineru -p {file_path} -o {output_dir} -b pipeline"
-    mineru_timeout_seconds: float = 180.0
+    mineru_command: str | None = (
+        "{python_executable} -m mineru.cli.client "
+        "-p {file_path} -o {output_dir} -b pipeline -l cyrillic"
+    )
+    mineru_timeout_seconds: float = 900.0
 
     # iiko Server API integration for incoming invoice XML.
     iiko_integration_enabled: bool = False

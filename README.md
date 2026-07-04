@@ -1,346 +1,212 @@
-# АвтоСнаб
+# АвтоСнаб MVP
 
-Backend-проект для сценария загрузки накладной, распознавания данных, ручной проверки в Google Таблице и последующей подготовки/отправки данных в iiko.
-Для теста используется google аккаунт: autosnab.system@gmail.com  с паролем Autosnab2026!
+`autosnab_mvp` сейчас решает одну ближайшую задачу: провести накладную от загрузки файла до проверочной таблицы и подготовить данные к отправке в iiko.
 
-Основной текущий сценарий:
+Это не общий "документооборот" и не финальная procurement-платформа. Текущий центр продукта: `upload -> extract -> normalize -> validate in Google Sheets -> send/mock iiko`.
 
-```text
-Фото / PDF накладной
-↓
-загрузка через web-страницу backend
-↓
-локальный document extraction backend
-↓
-OCR по умолчанию или MinerU как локальный backend
-↓
-встроенный parser нормализует текст / JSON в рабочий payload
-↓
-если данные не найдены — создается пустая таблица для ручной проверки
-↓
-backend формирует Google Таблицу «АвтоСнаб Накладные»
-↓
-пользователь проверяет и исправляет строки в Google Таблице
-↓
-страница отправки читает фактические данные из Google Таблицы
-↓
-backend формирует payload / XML для iiko
-↓
-ручное подтверждение отправки в iiko
+## Текущий фокус проекта
+
+- Основной MVP: надежно загружать фото/скан/PDF накладной и класть результат в существующую таблицу проверки.
+- Ближайшие риски: многополосные документы, стабильность распознавания, сохранение реального табличного контракта `Накладная`, ручная дозаправка справочников.
+- Следующий этап: SBIS EDO как еще один source adapter поверх того же document core.
+- Более дальний трек: supplier catalog, price ingestion и поиск по товарам.
+
+## Что реально работает
+
+### 1. Загрузка и распознавание накладной
+
+Пользовательский вход:
+
+- `GET /api/v1/invoice-review/upload-page`
+
+После загрузки файла backend:
+
+1. сохраняет исходник в `uploads/invoices`
+2. запускает extraction backend
+3. нормализует результат встроенным парсером
+4. создает запись проверки в SQLite
+5. сохраняет CSV-экспорт
+6. при включенном Google Sheets создает отдельную таблицу или пишет в общую рабочую таблицу
+
+Поддерживаемые входы:
+
+- `JPG`
+- `PNG`
+- `PDF`
+
+### 2. Два extraction backend'а
+
+По умолчанию используется:
+
+- `DOCUMENT_EXTRACTION_BACKEND=ocr`
+
+Это Google Drive OCR через OAuth пользователя.
+
+Опционально можно включить:
+
+- `DOCUMENT_EXTRACTION_BACKEND=mineru`
+
+Тогда backend вызывает локальный MinerU по контракту:
+
+```bash
+python -m mineru.cli.client \
+  -p <input_path> \
+  -o <output_path> \
+  -b pipeline \
+  -l cyrillic
 ```
 
-## Что сейчас реализовано
+Для CPU-окружения зависимости устанавливаются из `backend/requirements.txt`.
+Первый запуск дополнительно скачивает около 2.5 ГБ моделей MinerU; следующие
+запуски используют локальный кэш.
 
-### 1. Загрузка накладной через браузер
+Если MinerU включен, но не справился, можно оставить fallback:
 
-Основная пользовательская страница:
+- `DOCUMENT_EXTRACTION_FALLBACK_TO_OCR=true`
 
-```text
-GET /api/v1/invoice-review/upload-page
-```
+### 3. Встроенный parser и ручной fallback
 
-На странице можно выбрать фото, скан или PDF накладной. После загрузки backend:
+Внешний AI parser в активной версии не используется.
 
-- сохраняет файл в папку `uploads/invoices`;
-- запускает локальный document extraction backend;
-- при `DOCUMENT_EXTRACTION_BACKEND=ocr` использует Google Drive OCR;
-- при `DOCUMENT_EXTRACTION_BACKEND=mineru` использует MinerU;
-- передает результат во встроенный parser;
-- создает запись проверки накладной в базе;
-- создает CSV-копию в `exports/invoice_review_{review_id}.csv`;
-- при включенном `GOOGLE_SHEETS_ENABLED=true` создает Google Таблицу для проверки.
-
-### 2. Google Таблица для проверки накладных
-
-Текущий формат Google Таблицы — один основной лист:
+Сейчас pipeline такой:
 
 ```text
-Накладные
+invoice file
+-> Google Drive OCR or MinerU
+-> deterministic parser
+-> invoice review payload
+-> Google Sheet or manual review fallback
 ```
 
-Название создаваемой таблицы:
+Если extraction или parser не дают достаточно данных, система все равно сохраняет review и может создать таблицу для ручной проверки.
 
-```text
-АвтоСнаб Накладные
+### 4. Google Sheets как рабочий интерфейс оператора
+
+Проект сейчас ориентирован на Google Sheets как на основную поверхность ручной проверки.
+
+Есть два режима:
+
+- создание отдельной таблицы под review
+- запись в уже существующую таблицу заведения через `GOOGLE_TARGET_SPREADSHEET_ID`
+
+Для shared-sheet режима важны настройки:
+
+```env
+GOOGLE_TARGET_SPREADSHEET_ID=
+GOOGLE_TARGET_SHEET_NAME=Накладная
+GOOGLE_TARGET_HEADER_ROW_COUNT=2
 ```
 
-Диапазон записи в Google Sheets:
+Поведение в shared-sheet режиме:
 
-```text
-A1:AL500
-```
+- новые строки вставляются сразу под шапкой
+- старые данные сдвигаются вниз
+- после блока документа добавляется одна пустая строка
 
-В таблице сейчас 38 колонок. Актуальная структура заголовков:
+### 5. Отправка в iiko
 
-```text
-Время загрузки документа
-ID документа
-Индикатор дубля документа
-Форма документа
-Дата документа
-№ Документа
-Поставщик
-ИНН Поставщика
-Грузополучатель
-Получатель
-Торговая точка
-Склад
-Основание
-Наименование товара из документа
-Госсистемы
-Наименование товара в УС
-Товар найден в справочнике
-Ед.изм.
-Кол-во из документа
-Цена за единицу
-Стоимость без НДС
-Ставка НДС %
-Сумма НДС
-Общая стоимость
-Сумма накладной
-Ед.изм. в УС
-Кол-во в УС
-Цена в УС
-Дата приема
-Принял, Ф.И.О.
-Кол-во в заявке
-Цена по прайсу
-Последняя дата поставки
-Последняя цена
-Отклонение от цены прайса
-Загрузить в УС
-Статус строки
-Причина ручной корректировки
-```
+После ручной проверки пользователь открывает:
 
-Важно: отдельных столбцов `ЕГАИС`, `Меркурий`, `Честный знак` больше нет. Вместо них используется один общий столбец `Госсистемы`. Предпоследний столбец называется `Статус строки`.
+- `GET /api/v1/invoice-review/{review_id}/send-page`
 
-### 3. Google OAuth вместо service account
+Дальше backend читает актуальные данные из Google Sheets и либо:
 
-Текущий основной режим работы с Google Drive OCR и Google Sheets — OAuth обычного Google-аккаунта.
-Client credentials и пользовательские токены хранятся только в `.env`:
+- собирает dry-run/mock export
+- либо пытается отправить payload в iiko
 
-```text
-GOOGLE_OAUTH_CLIENT_ID
-GOOGLE_OAUTH_CLIENT_SECRET
-GOOGLE_OAUTH_ACCESS_TOKEN
-GOOGLE_OAUTH_REFRESH_TOKEN
-GOOGLE_OAUTH_TOKEN_EXPIRY
-```
+Ключевой endpoint:
 
-Access token, refresh token и expiry обновляются автоматически после авторизации через endpoint:
+- `POST /api/v1/invoice-review/{review_id}/send-from-google-sheet`
 
-```text
-GET /api/v1/google-oauth/authorize
-```
+## Архитектурная рамка
 
-Проверить статус авторизации можно здесь:
+Проект уже нужно читать не как один hardcoded flow, а как общий document core с адаптерами:
 
-```text
-GET /api/v1/google-oauth/status
-```
+- photo/PDF upload: текущий активный source adapter
+- Google Drive OCR: extraction backend по умолчанию
+- MinerU: локальный extraction backend
+- SBIS EDO: следующий source adapter
+- iiko: downstream integration target
 
-Выйти из Google-авторизации локально:
+Правило для дальнейшей разработки: не плодить отдельные пайплайны под каждый источник, а держать единый контракт документа, нормализации, статусов и выгрузки.
 
-```text
-POST /api/v1/google-oauth/logout
-```
-
-### 4. OCR через Google Drive OCR
-
-Google Vision API больше не используется.
-
-Для OCR нужны:
-
-- Google Drive API;
-- Google Sheets API;
-- OAuth Client ID;
-- авторизация пользователя через `/api/v1/google-oauth/authorize`.
-
-### 4.1 Локальный MinerU backend
-
-MinerU можно использовать как локальный backend вместо Google Drive OCR.
-
-Используемый контракт:
-
-```text
-mineru -p <input_path> -o <output_path> -b pipeline
-```
-
-Backend читает structured JSON / markdown / text из output directory MinerU и затем нормализует результат в тот же рабочий payload, что и OCR-ветка.
-
-Логика OCR:
-
-```text
-JPG / PNG / PDF
-↓
-временный Google Docs документ через Google Drive API
-↓
-экспорт распознанного текста в text/plain
-↓
-удаление временного документа, если GOOGLE_DRIVE_OCR_DELETE_TEMP_FILES=true
-```
-
-### 5. Парсер накладной и fallback
-
-Файл текущего парсера OCR-текста:
-
-```text
-backend/app/services/document_extraction_service.py
-backend/app/services/invoice_parser_service.py
-```
-
-Каскад обработки:
-
-```text
-1. MinerU или Google Drive OCR
-2. встроенный deterministic parser / нормализация payload
-3. manual_review_empty_sheet
-```
-
-В текущей версии внешний AI parser не используется. Проект не требует внешних API-ключей для разбора накладной. Если локальный backend или parser не нашли полезные поля, backend создает пустую таблицу для ручной проверки.
-
-### 6. Отправка в iiko
-
-После проверки таблицы пользователь открывает страницу отправки:
-
-```text
-GET /api/v1/invoice-review/{review_id}/send-page
-```
-
-На этой странице backend читает актуальные данные из листа `Накладные` и вызывает:
-
-```text
-POST /api/v1/invoice-review/{review_id}/send-from-google-sheet
-```
-
-Также есть прямой endpoint для ручного подтверждения:
-
-```text
-POST /api/v1/invoice-review/{review_id}/confirm-send
-```
-
-И endpoint для синхронизации данных из таблицы с последующим подтверждением:
-
-```text
-POST /api/v1/invoice-review/{review_id}/sync-sheet-and-confirm-send
-```
-
-Отправка в iiko поддерживает два режима (еще не реализовано):
-
-- `IIKO_INTEGRATION_ENABLED=false` — mock/export режим, payload сохраняется в базе;
-- `IIKO_INTEGRATION_ENABLED=true` — попытка реальной отправки через iiko Server API при заполненных настройках iiko.
-
-## Основные файлы проекта
-
-```text
-backend/app/main.py
-backend/app/config.py
-backend/app/routers/invoice_review.py
-backend/app/routers/google_oauth.py
-backend/app/routers/receiving.py
-backend/app/routers/receiving_backoffice.py
-backend/app/routers/accounting.py
-backend/app/services/invoice_review_service.py
-backend/app/services/google_sheets_service.py
-backend/app/services/google_oauth_service.py
-backend/app/services/ocr_service.py
-backend/app/services/document_extraction_service.py
-backend/app/services/invoice_parser_service.py
-backend/app/services/iiko_incoming_invoice_service.py
-backend/app/services/iiko_reference_mapping_service.py
-backend/app/models/receiving.py
-backend/app/models/accounting.py
-backend/tests/test_receiving.py
-backend/tests/test_ocr_parser.py
-```
-
-## Endpoint'ы
+## Основные сценарии API
 
 ### Сервис
 
-```text
-GET /ping
-GET /docs
-```
+- `GET /ping`
+- `GET /docs`
 
-### Google OAuth
+### OAuth Google
 
-```text
-GET  /api/v1/google-oauth/status
-GET  /api/v1/google-oauth/authorize
-GET  /api/v1/google-oauth/callback
-POST /api/v1/google-oauth/logout
-```
+- `GET /api/v1/google-oauth/status`
+- `GET /api/v1/google-oauth/authorize`
+- `GET /api/v1/google-oauth/callback`
+- `POST /api/v1/google-oauth/logout`
 
-### Проверка накладной
+### Invoice review MVP
 
-```text
-GET  /api/v1/invoice-review/upload-page
-POST /api/v1/invoice-review/upload-photo
-POST /api/v1/invoice-review/upload
-PUT  /api/v1/invoice-review/{review_id}
-GET  /api/v1/invoice-review/iiko/references/status
-POST /api/v1/invoice-review/{review_id}/iiko-auto-map
-GET  /api/v1/invoice-review/{review_id}/sheet
-GET  /api/v1/invoice-review/{review_id}/sheet.csv
-GET  /api/v1/invoice-review/{review_id}/preview
-GET  /api/v1/invoice-review/{review_id}/apps-script
-POST /api/v1/invoice-review/{review_id}/google-sheet
-GET  /api/v1/invoice-review/{review_id}/send-page
-POST /api/v1/invoice-review/{review_id}/send-from-google-sheet
-POST /api/v1/invoice-review/{review_id}/sync-sheet-and-confirm-send
-POST /api/v1/invoice-review/{review_id}/confirm-send
-GET  /api/v1/invoice-review/exports/iiko
-```
+- `GET /api/v1/invoice-review/upload-page`
+- `POST /api/v1/invoice-review/upload-photo`
+- `POST /api/v1/invoice-review/upload`
+- `PUT /api/v1/invoice-review/{review_id}`
+- `GET /api/v1/invoice-review/iiko/references/status`
+- `POST /api/v1/invoice-review/{review_id}/iiko-auto-map`
+- `GET /api/v1/invoice-review/{review_id}/sheet`
+- `GET /api/v1/invoice-review/{review_id}/sheet.csv`
+- `GET /api/v1/invoice-review/{review_id}/preview`
+- `GET /api/v1/invoice-review/{review_id}/apps-script`
+- `POST /api/v1/invoice-review/{review_id}/google-sheet`
+- `GET /api/v1/invoice-review/{review_id}/send-page`
+- `POST /api/v1/invoice-review/{review_id}/send-from-google-sheet`
+- `POST /api/v1/invoice-review/{review_id}/sync-sheet-and-confirm-send`
+- `POST /api/v1/invoice-review/{review_id}/confirm-send`
+- `GET /api/v1/invoice-review/exports/iiko`
 
-### Приемка
+### Receiving / accounting MVP
 
-```text
-POST /api/v1/receiving/start
-POST /api/v1/receiving/{receiving_id}/documents
-POST /api/v1/receiving/{receiving_id}/compare-invoice
-POST /api/v1/receiving/{receiving_id}/corrections
-POST /api/v1/receiving/{receiving_id}/corrections/parse
-POST /api/v1/receiving/{receiving_id}/corrections/text
-POST /api/v1/receiving/{receiving_id}/confirm
-GET  /api/v1/receiving/{receiving_id}
-GET  /api/v1/receiving/{receiving_id}/accounting-payload
-POST /api/v1/receiving/export/google-sheets-mvp
-```
+Это отдельный, более старый API-слой приемки и сверки. Он остается в проекте, но текущий продуктовый центр не здесь.
 
-### Backoffice, аналитика и iiko MVP
+- `POST /api/v1/receiving/start`
+- `POST /api/v1/receiving/{receiving_id}/documents`
+- `POST /api/v1/receiving/{receiving_id}/compare-invoice`
+- `POST /api/v1/receiving/{receiving_id}/corrections`
+- `POST /api/v1/receiving/{receiving_id}/corrections/parse`
+- `POST /api/v1/receiving/{receiving_id}/corrections/text`
+- `POST /api/v1/receiving/{receiving_id}/confirm`
+- `GET /api/v1/receiving/{receiving_id}`
+- `GET /api/v1/receiving/{receiving_id}/accounting-payload`
+- `POST /api/v1/receiving/export/google-sheets-mvp`
+- `POST /api/v1/accounting/mappings`
+- `GET /api/v1/accounting/mappings`
+- `POST /api/v1/accounting/receivings/{receiving_id}/send`
+- `GET /api/v1/accounting/exports`
 
-```text
-GET  /api/v1/receiving/{receiving_id}/documents
-GET  /api/v1/documents/history
-GET  /api/v1/documents/{document_id}
-GET  /api/v1/documents/{document_id}/view
-GET  /api/v1/analytics/discrepancies
-GET  /api/v1/suppliers/control
-GET  /api/v1/iiko/receivings/{receiving_id}/payload
-POST /api/v1/iiko/receivings/{receiving_id}/send
-GET  /api/v1/iiko/exports
-```
+### Backoffice / diagnostics
 
-### Учетная система
+- `GET /api/v1/receiving/{receiving_id}/documents`
+- `GET /api/v1/documents/history`
+- `GET /api/v1/documents/{document_id}`
+- `GET /api/v1/documents/{document_id}/view`
+- `GET /api/v1/analytics/discrepancies`
+- `GET /api/v1/suppliers/control`
+- `GET /api/v1/iiko/receivings/{receiving_id}/payload`
+- `POST /api/v1/iiko/receivings/{receiving_id}/send`
+- `GET /api/v1/iiko/exports`
 
-```text
-POST /api/v1/accounting/mappings
-GET  /api/v1/accounting/mappings
-POST /api/v1/accounting/receivings/{receiving_id}/send
-GET  /api/v1/accounting/exports
-```
+## Локальный запуск
 
-## Настройка `.env`
-
-Создать `.env` можно из примера:
+### 1. Установить зависимости
 
 ```bash
-cp .env.example .env
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r backend/requirements.txt
 ```
 
-Актуальные основные настройки:
+### 2. Подготовить `.env`
+
+Базовый вариант:
 
 ```env
 DATABASE_URL=sqlite:///./autosnab_mvp.db
@@ -369,8 +235,8 @@ UPLOADED_INVOICES_DIR=uploads/invoices
 
 DOCUMENT_EXTRACTION_BACKEND=ocr
 DOCUMENT_EXTRACTION_FALLBACK_TO_OCR=true
-MINERU_COMMAND=mineru -p {file_path} -o {output_dir} -b pipeline
-MINERU_TIMEOUT_SECONDS=180
+MINERU_COMMAND={python_executable} -m mineru.cli.client -p {file_path} -o {output_dir} -b pipeline -l cyrillic
+MINERU_TIMEOUT_SECONDS=900
 
 IIKO_INTEGRATION_ENABLED=false
 IIKO_BASE_URL=
@@ -382,152 +248,126 @@ IIKO_AUTO_MAPPING_ENABLED=true
 IIKO_MAPPING_MIN_CONFIDENCE=0.72
 ```
 
-## Настройка Google OAuth
+Актуальный шаблон также лежит в [.env.example](/home/viktor-shadrin/PycharmProjects/autosnab_mvp/.env.example).
 
-1. В Google Cloud Console включить API:
+### 3. Пройти OAuth
 
-```text
-Google Drive API
-Google Sheets API
-```
+В Google Cloud нужны:
 
-2. Создать OAuth Client ID типа:
+- `Google Drive API`
+- `Google Sheets API`
+- OAuth client типа `Web application`
 
-```text
-Web application
-```
-
-3. Добавить redirect URI:
+Redirect URI:
 
 ```text
 http://localhost:8000/api/v1/google-oauth/callback
 ```
 
-4. Скопировать `client_id` и `client_secret` из скачанного JSON в `.env`:
-
-```env
-GOOGLE_OAUTH_CLIENT_ID=...
-GOOGLE_OAUTH_CLIENT_SECRET=...
-```
-
-5. Запустить backend и открыть:
+После старта backend откройте:
 
 ```text
 http://localhost:8000/api/v1/google-oauth/authorize
 ```
 
-6. После успешного входа backend заполнит в `.env`:
+После callback приложение само запишет в `.env`:
 
-```text
-GOOGLE_OAUTH_ACCESS_TOKEN
-GOOGLE_OAUTH_REFRESH_TOKEN
-GOOGLE_OAUTH_TOKEN_EXPIRY
-```
+- `GOOGLE_OAUTH_ACCESS_TOKEN`
+- `GOOGLE_OAUTH_REFRESH_TOKEN`
+- `GOOGLE_OAUTH_TOKEN_EXPIRY`
 
-## Локальный запуск
+### 4. Запустить backend
 
 ```bash
-cd autosnab_mvp
-python -m venv .venv
-source .venv/bin/activate
-pip install -r backend/requirements.txt
-python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 --app-dir backend
+python3 -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 --app-dir backend
 ```
 
-Для Windows:
+Точки входа:
+
+- `http://localhost:8000/ping`
+- `http://localhost:8000/docs`
+- `http://localhost:8000/api/v1/invoice-review/upload-page`
+
+## Docker
+
+После подготовки `.env` сервис поднимается одной командой:
 
 ```bash
-cd autosnab_mvp
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r backend\requirements.txt
-python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 --app-dir backend
+docker compose up --build
 ```
 
-Открыть страницу загрузки:
+Что делает текущая Docker-конфигурация:
+
+- поднимает один контейнер FastAPI на `http://localhost:8000`
+- читает переменные из локального `.env`
+- монтирует `.env` в `/app/.env`, чтобы OAuth callback мог обновлять токены прямо в этот файл
+- хранит SQLite, `uploads`, `exports` и HuggingFace/MinerU cache в named volumes Docker
+- не тянет в build context `.venv`, локальные базы, `uploads`, `exports` и прочие тяжелые артефакты
+
+Полезные команды:
+
+```bash
+docker compose up --build -d
+docker compose logs -f backend
+docker compose down
+```
+
+Проверка после старта:
 
 ```text
+http://localhost:8000/ping
+http://localhost:8000/docs
 http://localhost:8000/api/v1/invoice-review/upload-page
 ```
 
-Swagger:
+## Структура кода
 
-```text
-http://localhost:8000/docs
-```
+Ключевые точки:
 
-## Запуск через Docker
+- [backend/app/main.py](/home/viktor-shadrin/PycharmProjects/autosnab_mvp/backend/app/main.py)
+- [backend/app/config.py](/home/viktor-shadrin/PycharmProjects/autosnab_mvp/backend/app/config.py)
+- [backend/app/routers/invoice_review.py](/home/viktor-shadrin/PycharmProjects/autosnab_mvp/backend/app/routers/invoice_review.py)
+- [backend/app/routers/google_oauth.py](/home/viktor-shadrin/PycharmProjects/autosnab_mvp/backend/app/routers/google_oauth.py)
+- [backend/app/routers/receiving.py](/home/viktor-shadrin/PycharmProjects/autosnab_mvp/backend/app/routers/receiving.py)
+- [backend/app/services/document_extraction_service.py](/home/viktor-shadrin/PycharmProjects/autosnab_mvp/backend/app/services/document_extraction_service.py)
+- [backend/app/services/ocr_service.py](/home/viktor-shadrin/PycharmProjects/autosnab_mvp/backend/app/services/ocr_service.py)
+- [backend/app/services/google_sheets_service.py](/home/viktor-shadrin/PycharmProjects/autosnab_mvp/backend/app/services/google_sheets_service.py)
+- [backend/app/services/google_oauth_service.py](/home/viktor-shadrin/PycharmProjects/autosnab_mvp/backend/app/services/google_oauth_service.py)
+- [backend/app/services/invoice_review_service.py](/home/viktor-shadrin/PycharmProjects/autosnab_mvp/backend/app/services/invoice_review_service.py)
+- [backend/app/services/iiko_incoming_invoice_service.py](/home/viktor-shadrin/PycharmProjects/autosnab_mvp/backend/app/services/iiko_incoming_invoice_service.py)
 
-```bash
-cd autosnab_mvp
-docker compose build --no-cache
-docker compose up
-```
 
-При Docker-запуске `.env` подключается в контейнер как `/app/.env`, чтобы OAuth callback мог обновлять токены без отдельных JSON-файлов.
-В Docker-образе также устанавливается `mineru[all]`, поэтому локальный MinerU-backend можно включить через `DOCUMENT_EXTRACTION_BACKEND=mineru`.
+## Проверки
 
-## Пример загрузки накладной через curl
-
-```bash
-curl -X POST "http://localhost:8000/api/v1/invoice-review/upload-photo" \
-  -F "file=@invoice.jpg" \
-  -F "create_google_sheet=true" \
-  -F "public_api_base_url=http://localhost:8000"
-```
-
-Пример ответа:
-
-```json
-{
-  "review_id": 1,
-  "status": "needs_review",
-  "spreadsheet_name": "АвтоСнаб Накладные",
-  "csv_path": "exports/invoice_review_1.csv",
-  "google_spreadsheet_id": "...",
-  "google_spreadsheet_url": "https://docs.google.com/spreadsheets/d/...",
-  "next_actions": {
-    "open_sheet": "/api/v1/invoice-review/1/sheet",
-    "open_csv": "/api/v1/invoice-review/1/sheet.csv",
-    "create_google_sheet": "/api/v1/invoice-review/1/google-sheet",
-    "send_page": "/api/v1/invoice-review/1/send-page",
-    "preview": "/api/v1/invoice-review/1/preview",
-    "confirm_send": "/api/v1/invoice-review/1/confirm-send",
-    "sync_sheet_and_confirm_send": "/api/v1/invoice-review/1/sync-sheet-and-confirm-send"
-  }
-}
-```
-
-## Проверка и отправка
-
-1. Загрузить накладную через `/api/v1/invoice-review/upload-page`.
-2. Открыть созданную Google Таблицу.
-3. Проверить и исправить лист `Накладные`.
-4. При необходимости заполнить поля УС, статус строки и причину ручной корректировки.
-5. Открыть `/api/v1/invoice-review/{review_id}/send-page`.
-6. Нажать `Отправить в iiko`.
-
-Backend прочитает данные из Google Таблицы и сформирует актуальный payload для iiko на основе пользовательских исправлений.
-
-## Тесты
+Wiki:
 
 ```bash
-cd autosnab_mvp/backend
-pytest
+python3 scripts/wiki_check.py
+python3 scripts/raw_manifest_check.py
 ```
 
-Текущий результат проверки:
+Быстрый Python spot-check:
 
-```text
-41 passed
+```bash
+python3 -m py_compile backend/app/config.py backend/app/services/google_sheets_service.py backend/app/services/invoice_review_service.py
 ```
 
-## Текущие ограничения
+Точечные тесты:
 
-- Google Vision API не используется.
-- Основной Google-доступ идет через OAuth пользователя, а не через service account.
-- Если OAuth не выполнен, Google Drive OCR и создание Google Таблиц не сработают.
-- Внешние AI/API-ключи не используются: разбор выполняется локальным OCR/MinerU backend и встроенной нормализацией.
-- Реальная отправка в iiko требует заполненных настроек iiko и включения `IIKO_INTEGRATION_ENABLED=true`.
-- При `IIKO_INTEGRATION_ENABLED=false` данные сохраняются как mock/export payload.
-- MAX, Telegram, n8n и другие внешние интерфейсы остаются внешним слоем и должны вызывать backend endpoint'ы.
+```bash
+pytest backend/tests/test_google_oauth_service.py
+pytest backend/tests/test_document_extraction_service.py
+pytest backend/tests/test_google_sheets_service.py
+```
+
+## Актуальные ограничения
+
+- Shared-sheet запись уже переписана под реальный табличный контракт `Накладная`, но нужен живой ретест на пользовательской Google-таблице.
+- Полный `pytest` сейчас не считается полностью надежным smoke-check: ранее зависал на `backend/tests/test_receiving.py::test_start_receiving`.
+- OAuth credentials уже были в Git history до миграции в `.env`, поэтому их нужно перевыпустить и отозвать старые.
+
+## Правила работы с репозиторием
+
+- Секреты не хранятся в Git, только в локальном `.env`.
+- Новые не-кодовые исходники сначала регистрируются в `manifests/raw_sources.csv`, потом используются.
+- Для любых заметных изменений нужен wiki writeback в `docs/wiki/`.

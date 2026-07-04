@@ -81,8 +81,8 @@ IIKO_MAPPING_MIN_CONFIDENCE=0.72
 # Optional local MinerU backend
 DOCUMENT_EXTRACTION_BACKEND=ocr
 DOCUMENT_EXTRACTION_FALLBACK_TO_OCR=true
-MINERU_COMMAND=mineru -p {file_path} -o {output_dir} -b pipeline
-MINERU_TIMEOUT_SECONDS=180
+MINERU_COMMAND={python_executable} -m mineru.cli.client -p {file_path} -o {output_dir} -b pipeline -l cyrillic
+MINERU_TIMEOUT_SECONDS=900
 ```
 
 ## Shared-sheet mode
@@ -125,18 +125,30 @@ http://localhost:8000/api/v1/invoice-review/upload-page
 From the repo root:
 
 ```bash
-docker compose build --no-cache
-docker compose up
+docker compose up --build
 ```
 
 Notes:
 
-- `docker-compose.yml` mounts `.env` and `backend/uploads`
+- `docker-compose.yml` starts the backend in one command and publishes it on `localhost:8000`
 - `.env` is loaded into the backend container
 - `.env` is mounted at `/app/.env` so the OAuth callback can persist refreshed tokens
+- SQLite data is stored in the Docker volume `autosnab_data`
+- uploaded files are stored in the Docker volume `autosnab_uploads`
+- CSV exports are stored in the Docker volume `autosnab_exports`
+- MinerU/HuggingFace model cache is stored in the Docker volume `autosnab_hf_cache`
 - no OAuth or service-account JSON is read by the active Google flow
-- `backend/requirements.txt` now installs `mineru[all]`, so the image can run the local MinerU backend when `DOCUMENT_EXTRACTION_BACKEND=mineru`
+- `backend/requirements.txt` installs the CPU PyTorch build and `mineru[pipeline]`, which is the backend selected by `MINERU_COMMAND`
+- The first MinerU run downloads about 2.5 GB of model files into the user cache; later runs reuse that cache.
 - if you want the Docker container to stay on OCR-only mode, keep `DOCUMENT_EXTRACTION_BACKEND=ocr`
+
+Useful operational commands:
+
+```bash
+docker compose up --build -d
+docker compose logs -f backend
+docker compose down
+```
 
 ## Google OAuth setup
 
