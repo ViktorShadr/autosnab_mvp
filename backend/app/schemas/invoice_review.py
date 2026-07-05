@@ -78,6 +78,7 @@ class InvoiceReviewCreateRequest(BaseModel):
     display_store: str | None = None
     document_form: str | None = None
     supplier_inn: str | None = None
+    shipper: str | None = None
     consignee: str | None = None
     recipient: str | None = None
     trade_point: str | None = None
@@ -108,6 +109,7 @@ class InvoiceReviewUpdateRequest(BaseModel):
     display_store: str | None = None
     document_form: str | None = None
     supplier_inn: str | None = None
+    shipper: str | None = None
     consignee: str | None = None
     recipient: str | None = None
     trade_point: str | None = None
@@ -169,6 +171,7 @@ class SyncSheetAndConfirmRequest(ConfirmSendToIikoRequest):
     display_store: str | None = None
     document_form: str | None = None
     supplier_inn: str | None = None
+    shipper: str | None = None
     consignee: str | None = None
     recipient: str | None = None
     trade_point: str | None = None

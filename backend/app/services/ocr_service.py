@@ -168,6 +168,7 @@ def parse_invoice_text_to_payload(raw_text: str, fallback_filename: str | None =
         invoice_date = None
         venue = None
         store = None
+        shipper = None
         consignee = None
         recipient = None
         supplier_inn = None
@@ -177,6 +178,7 @@ def parse_invoice_text_to_payload(raw_text: str, fallback_filename: str | None =
         invoice_date = (_extract_upd_invoice_date(lines) if is_upd_document else None) or _extract_date(joined)
         venue = _extract_delivery_point(lines)
         store = _extract_store_or_department(lines)
+        shipper = _extract_party_by_label(lines, "грузоотправитель")
         consignee = _extract_party_by_label(lines, "грузополучатель")
         recipient = _extract_recipient(lines) or consignee or venue
         supplier_inn = (
@@ -203,6 +205,7 @@ def parse_invoice_text_to_payload(raw_text: str, fallback_filename: str | None =
         "invoice_date": invoice_date,
         "document_form": _extract_document_form(joined),
         "supplier_inn": supplier_inn,
+        "shipper": shipper,
         "consignee": consignee,
         "recipient": recipient,
         "trade_point": venue,

@@ -339,6 +339,10 @@ def _backfill_invoice_reference_mapping_if_needed(
 
 
 def _needs_invoice_reference_backfill(item: dict[str, Any]) -> bool:
+    if item.get("product_found") == "Нет" and item.get("correction") != "Нет в справочнике":
+        return True
+    if item.get("product_found") == "?" and item.get("correction") not in {"Сопоставление", "Нет в справочнике"}:
+        return True
     if item.get("us_product_name") or item.get("product_found"):
         return False
     return bool(item.get("name") or item.get("raw_name") or item.get("clean_name") or item.get("normalized_name_candidate"))
@@ -350,6 +354,7 @@ def _hydrate_review_sheet_item_meta(
     index: int,
 ) -> dict[str, Any]:
     result = _merge_item_with_parser_metadata(item, parser_items, index)
+    result["correction"] = _normalized_review_sheet_correction(result)
     if result.get("us_product_name") in (None, ""):
         result["us_product_name"] = _review_sheet_fallback_us_product_name(result)
     return result
@@ -408,6 +413,16 @@ def _review_sheet_fallback_us_product_name(item: dict[str, Any]) -> str:
     return ""
 
 
+def _normalized_review_sheet_correction(item: dict[str, Any]) -> str:
+    correction = str(item.get("correction") or "").strip()
+    product_found = str(item.get("product_found") or "").strip()
+    if product_found == "Нет":
+        return "Нет в справочнике"
+    if product_found == "?" and correction in {"", "Другое"}:
+        return "Сопоставление"
+    return correction
+
+
 def _invoice_register_header_values(
     receiving: Receiving,
     document: ReceivingDocument | None,
@@ -436,8 +451,8 @@ def _invoice_register_header_values(
         document_date = document.invoice_date if document else None
         document_date = document_date or header_meta.get("invoice_date") or header_meta.get("incoming_date")
         supplier = _sheet_display_value(receiving.supplier or (document.supplier_legal_name if document else ""))
-        consignee = _sheet_display_value(header_meta.get("consignee") or receiving.venue)
-        recipient = _sheet_display_value(header_meta.get("recipient") or header_meta.get("buyer") or consignee)
+        consignee = _sheet_display_value(header_meta.get("shipper") or "")
+        recipient = _sheet_display_value(header_meta.get("recipient") or header_meta.get("buyer") or "")
         trade_point = _sheet_display_value(header_meta.get("trade_point") or receiving.venue)
         warehouse = _sheet_display_value(
             header_meta.get("warehouse")
@@ -1543,6 +1558,7 @@ def _header_payload(payload) -> dict[str, Any]:
         "due_date": getattr(payload, "due_date", None),
         "document_form": getattr(payload, "document_form", None),
         "supplier_inn": getattr(payload, "supplier_inn", None),
+        "shipper": getattr(payload, "shipper", None),
         "consignee": getattr(payload, "consignee", None),
         "recipient": getattr(payload, "recipient", None),
         "trade_point": trade_point,

@@ -14,6 +14,8 @@ from app.services.invoice_normalization_service import (
     normalize_supplier_inn_value,
     to_legacy_invoice_payload,
 )
+from app.services.normalization import canonical_invoice_number
+from app.routers.invoice_review import _apply_duplicate_status
 from app.services.openai_invoice_parser_service import SYSTEM_PROMPT, parse_invoice_with_openai
 from app.services.invoice_review_service import ensure_upload_status_allows_send
 
@@ -220,6 +222,61 @@ def test_item_normalization_multiplies_nested_liquid_package():
     assert item.accounting_unit_candidate == "л"
 
 
+def test_item_normalization_keeps_identity_for_weight_document_unit_even_if_raw_name_contains_weight():
+    item = InvoiceParsedItem(
+        raw_name='Окорок "Пармский" 3,954 КГ',
+        document_unit="КГ",
+        quantity_document=3.954,
+        quantity=3.954,
+        confidence=0.95,
+    )
+
+    issues = normalize_item_candidate(item)
+
+    assert issues == []
+    payload = {
+        "items": [
+            {
+                "line_number": 1,
+                "name": item.raw_name,
+                "raw_name": item.raw_name,
+                "document_unit": item.document_unit,
+                "quantity_document": item.quantity_document,
+                "quantity": item.quantity,
+                "price": 2250,
+            }
+        ],
+        "parser_metadata": {
+            "upload_status": "Проверить",
+            "row_status": "Распознано",
+            "review_flags": [],
+            "item_corrections": {},
+        },
+        "parser_notes": [],
+    }
+
+    result = apply_reference_mapping_to_payload(payload, products=[], packages=[])
+    mapped = result["items"][0]
+    assert mapped["conversion_method"] in {"identity", "identity_document_unit"}
+    assert mapped["quantity_us"] == 3.954
+    assert mapped["price_us"] == 2250.0
+
+
+def test_item_normalization_cleans_packaging_noise_for_fallback_name():
+    item = InvoiceParsedItem(
+        raw_name="7 ТОВАР : ШТ. ПАКЕТ-МАЙКА ВИКТОРИЯ 65*40СМ",
+        unit="ШТ",
+        quantity=1,
+        price=9.9,
+        confidence=0.95,
+    )
+
+    normalize_item_candidate(item)
+
+    assert item.clean_name == "ПАКЕТ"
+    assert item.normalized_name_candidate == "Пакет"
+
+
 def test_item_normalization_flags_ambiguous_sheets_unit():
     item = InvoiceParsedItem(
         raw_name="САЛФЕТКИ БУМ 24Х24 100Л",
@@ -322,6 +379,113 @@ def test_reference_mapping_marks_missing_product_and_package():
     assert result["parser_metadata"]["row_status"] == "Правка вручную"
     assert len(result["parser_metadata"]["review_flags"]) == 1
     assert item["quantity_us"] == 0.666
+
+
+def test_normalization_clears_basis_when_it_repeats_document_form():
+    result = normalize_invoice_result(
+        _parsed_invoice(
+            document={
+                "document_date": "23.06.2026",
+                "document_number": "1928",
+                "document_form": "УПД",
+                "supplier_name": 'ООО "ФРУКТЫ АРИФА"',
+                "supplier_inn": "3900040690",
+                "shipper": 'ООО "ЛИР"',
+                "receiver": 'ООО "ЛИР"',
+                "basis": "Универсальный передаточный документ No1928 от 23 июня 2026 г",
+                "total_without_vat": 2041,
+                "vat_total": 0,
+                "total_with_vat": 2041,
+            }
+        )
+    )
+
+    assert result.document.basis == ""
+    assert any(flag.field == "basis" for flag in result.review_flags)
+
+
+def test_receipt_defaults_fill_vat_fields_when_missing():
+    result = normalize_invoice_result(
+        _parsed_invoice(
+            document={
+                "document_date": "23.06.2026 18:04",
+                "document_number": "ЧЕК 0245",
+                "document_form": "Чек",
+                "supplier_name": 'ООО "ВИКТОРИЯ БАЛТИЯ"',
+                "supplier_inn": "3905069220",
+                "shipper": "",
+                "receiver": "",
+                "basis": "",
+                "total_without_vat": 72.9,
+                "vat_total": None,
+                "total_with_vat": 72.9,
+            },
+            items=[
+                {
+                    "line_number": 1,
+                    "raw_name": "КЕФИР ФЕРМЕРСКИЙ 800Г",
+                    "unit": "шт",
+                    "quantity": 1,
+                    "price": 72.9,
+                    "amount_without_vat": 72.9,
+                    "vat_rate": "",
+                    "vat_amount": None,
+                    "amount_with_vat": None,
+                    "confidence": 0.95,
+                    "source_fragment": "ЧЕК",
+                }
+            ],
+        )
+    )
+
+    item = result.items[0]
+    assert item.vat_rate == "Без НДС"
+    assert item.vat_amount == 0.0
+    assert item.amount_with_vat == 72.9
+
+
+def test_canonical_invoice_number_normalizes_latin_prefix_and_receipt_prefix():
+    assert canonical_invoice_number("UPMK3003248", document_form="ТОРГ-12") == "УПМК3003248"
+    assert canonical_invoice_number("УПМК3003248", document_form="ТОРГ-12") == "УПМК3003248"
+    assert canonical_invoice_number("ЧЕК 0245", document_form="Чек") == "0245"
+
+
+def test_duplicate_status_uses_canonical_invoice_number():
+    class _Doc:
+        def __init__(self, invoice_number, supplier_legal_name, invoice_date, recognized_items_json="{}"):
+            self.invoice_number = invoice_number
+            self.supplier_legal_name = supplier_legal_name
+            self.invoice_date = invoice_date
+            self.recognized_items_json = recognized_items_json
+
+    class _Query:
+        def __init__(self, docs):
+            self.docs = docs
+
+        def all(self):
+            return self.docs
+
+    class _DB:
+        def __init__(self, docs):
+            self.docs = docs
+
+        def query(self, _model):
+            return _Query(self.docs)
+
+    parsed = {
+        "invoice_number": "UPMK3003248",
+        "document_form": "ТОРГ-12",
+        "supplier": 'ООО "МК "Залесье"',
+        "invoice_date": "2026-06-22",
+        "total_sum": 13303.32,
+        "parser_metadata": {},
+    }
+    db = _DB([_Doc("УПМК3003248", 'ООО "МК "Залесье"', "2026-06-22")])
+
+    _apply_duplicate_status(db, parsed)
+
+    assert parsed["parser_metadata"]["duplicate"] == "Да"
+    assert parsed["parser_metadata"]["upload_status"] == "Не готово"
 
 
 def test_reference_mapping_uses_piece_weight_exception():

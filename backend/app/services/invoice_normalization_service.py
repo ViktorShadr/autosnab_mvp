@@ -9,6 +9,7 @@ from app.schemas.invoice_parser import (
     NormalizedInvoiceResult,
 )
 from app.services.item_normalization_service import normalize_item_candidate
+from app.services.normalization import canonical_invoice_number
 
 
 MONEY_TOLERANCE = Decimal("0.02")
@@ -30,6 +31,17 @@ def normalize_invoice_result(
         result.normalization_log,
     )
     result.document.document_number = _clean_text(result.document.document_number)
+    result.document.document_form = _clean_text(result.document.document_form)
+    result.document.shipper = _clean_text(result.document.shipper)
+    result.document.receiver = _clean_text(result.document.receiver)
+    result.document.basis = _normalize_basis(
+        result.document.basis,
+        result.document.document_form,
+        result.document.document_number,
+        result.document.document_date,
+        result.review_flags,
+        result.normalization_log,
+    )
     result.document.supplier_inn = _normalize_inn(
         result.document.supplier_inn,
         result.review_flags,
@@ -130,6 +142,8 @@ def normalize_invoice_result(
         result.row_status = "Правка вручную"
         _assign_corrections(result)
 
+    _apply_receipt_defaults(result)
+
     return result
 
 
@@ -140,7 +154,9 @@ def to_legacy_invoice_payload(result: NormalizedInvoiceResult) -> dict[str, Any]
         "supplier_legal_name": document.supplier_name or None,
         "invoice_number": document.document_number or None,
         "invoice_date": document.document_date or None,
+        "document_form": document.document_form or None,
         "supplier_inn": document.supplier_inn or None,
+        "shipper": document.shipper or None,
         "consignee": document.receiver or None,
         "recipient": document.receiver or None,
         "basis": document.basis or None,
@@ -212,6 +228,53 @@ def _normalize_date(
         return russian_date
     flags.append(InvoiceReviewFlag(scope="document", field="document_date", reason="Дата документа имеет неизвестный формат.", severity="error"))
     return cleaned
+
+
+def _normalize_basis(
+    value: str,
+    document_form: str,
+    document_number: str,
+    document_date: str,
+    flags: list[InvoiceReviewFlag],
+    changes: list[str],
+) -> str:
+    cleaned = _clean_text(value)
+    if not cleaned:
+        return ""
+    normalized = re.sub(r"\s+", " ", cleaned).strip(" ,;")
+    lowered = normalized.lower()
+    form_lower = (document_form or "").strip().lower()
+    if "универсальный передаточный документ" in lowered or "товарная накладная" in lowered:
+        if form_lower and (form_lower in lowered or "документ" in lowered or "наклад" in lowered):
+            flags.append(
+                InvoiceReviewFlag(
+                    scope="document",
+                    field="basis",
+                    reason="Основание совпадает с названием формы документа и очищено.",
+                    severity="warning",
+                )
+            )
+            changes.append("document.basis cleared as document-form echo")
+            return ""
+    canonical_basis = canonical_invoice_number(normalized, document_form=document_form)
+    canonical_number = canonical_invoice_number(document_number, document_form=document_form)
+    if canonical_number and canonical_basis and canonical_basis == canonical_number:
+        flags.append(
+            InvoiceReviewFlag(
+                scope="document",
+                field="basis",
+                reason="Основание совпадает только с номером документа и очищено.",
+                severity="warning",
+            )
+        )
+        changes.append("document.basis cleared as document-number echo")
+        return ""
+    if document_date and normalized.endswith(document_date):
+        form_tokens = {"упд", "торг-12", "чек"}
+        if form_lower in form_tokens or any(token in lowered for token in ("документ", "наклад", "чек")):
+            changes.append("document.basis cleared as dated document-form echo")
+            return ""
+    return normalized
 
 
 def _normalize_russian_date(value: str) -> str | None:
@@ -350,6 +413,28 @@ def _assign_corrections(result: NormalizedInvoiceResult) -> None:
         reason = flag.reason.lower()
         correction = "Нет в справочнике" if "справочник" in reason else "Сопоставление" if "сопостав" in reason else "Другое"
         result.item_corrections.setdefault(flag.line_number, correction)
+
+
+def _apply_receipt_defaults(result: NormalizedInvoiceResult) -> None:
+    if not _looks_like_receipt(result.document.document_form, result.document.document_number):
+        return
+    for item in result.items:
+        if not item.vat_rate:
+            item.vat_rate = "Без НДС"
+            result.normalization_log.append(f"items[{item.line_number or 0}].vat_rate receipt default")
+        if item.vat_amount is None:
+            item.vat_amount = 0.0
+            result.normalization_log.append(f"items[{item.line_number or 0}].vat_amount receipt default")
+        if item.amount_with_vat is None and item.amount_without_vat is not None:
+            item.amount_with_vat = item.amount_without_vat
+            result.normalization_log.append(f"items[{item.line_number or 0}].amount_with_vat receipt default")
+
+
+def _looks_like_receipt(document_form: str, document_number: str) -> bool:
+    form = (document_form or "").strip().lower()
+    if "чек" in form or "receipt" in form:
+        return True
+    return str(document_number or "").strip().upper().startswith("ЧЕК")
 
 
 def _flag(

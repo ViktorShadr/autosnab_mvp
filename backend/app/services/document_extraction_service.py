@@ -991,6 +991,7 @@ def _normalize_mineru_payload(raw_result: Any, fallback_filename: str | None) ->
             "store": _first_non_empty(header_source, "store") or payload.get("store"),
             "document_form": _first_non_empty(header_source, "document_form", "form") or payload.get("document_form"),
             "supplier_inn": structured_fields.get("supplier_inn") or _first_non_empty(header_source, "supplier_inn", "inn") or payload.get("supplier_inn"),
+            "shipper": _first_non_empty(header_source, "shipper", "consignor") or payload.get("shipper"),
             "consignee": _first_non_empty(header_source, "consignee") or payload.get("consignee"),
             "recipient": _first_non_empty(header_source, "recipient", "buyer") or payload.get("recipient"),
             "trade_point": _first_non_empty(header_source, "trade_point") or payload.get("trade_point"),

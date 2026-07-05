@@ -42,6 +42,7 @@ from app.services.database_health_service import describe_database_write_error
 from app.services.document_extraction_service import extract_invoice_document, extract_invoice_document_set
 from app.services.google_sheets_service import load_invoice_reference_catalogs
 from app.services.item_normalization_service import apply_reference_mapping_to_payload
+from app.services.normalization import canonical_invoice_number
 from app.services.upload_trace_service import (
     append_trace_log,
     finalize_trace,
@@ -1193,7 +1194,8 @@ def _apply_duplicate_status(db: Session, parsed: dict) -> None:
     metadata = parsed.get("parser_metadata")
     if not isinstance(metadata, dict):
         return
-    invoice_number = str(parsed.get("invoice_number") or "").strip()
+    document_form = str(parsed.get("document_form") or "").strip()
+    invoice_number = canonical_invoice_number(parsed.get("invoice_number"), document_form=document_form)
     supplier = str(parsed.get("supplier") or "").strip().casefold()
     invoice_date = str(parsed.get("invoice_date") or "").strip()
     total_sum = parsed.get("total_sum")
@@ -1202,7 +1204,8 @@ def _apply_duplicate_status(db: Session, parsed: dict) -> None:
 
     possible = False
     for document in db.query(ReceivingDocument).all():
-        if invoice_number and document.invoice_number == invoice_number:
+        existing_invoice_number = canonical_invoice_number(document.invoice_number, document_form=document_form)
+        if invoice_number and existing_invoice_number == invoice_number:
             existing_supplier = (document.supplier_legal_name or "").strip().casefold()
             if supplier and existing_supplier == supplier:
                 metadata.update(duplicate="Да", upload_status="Не готово", row_status="Распознано")

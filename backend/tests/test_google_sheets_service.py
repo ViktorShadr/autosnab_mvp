@@ -81,13 +81,14 @@ class _FakeExecute:
 
 
 class _FakeDocument:
-    def __init__(self, file_url):
+    def __init__(self, file_url, recognized_items_json=None):
         self.file_url = file_url
+        self.recognized_items_json = recognized_items_json
 
 
 class _FakeReceiving:
-    def __init__(self, file_url):
-        self.documents = [_FakeDocument(file_url)]
+    def __init__(self, file_url, recognized_items_json=None):
+        self.documents = [_FakeDocument(file_url, recognized_items_json=recognized_items_json)]
 
 
 def test_shared_mapper_uses_headers_and_writes_document_fields_only_on_first_row():
@@ -115,6 +116,38 @@ def test_shared_mapper_uses_headers_and_writes_document_fields_only_on_first_row
     assert rows[0][indexes["Корректировка"]] == "Другое"
     assert rows[1][indexes["Корректировка"]] == "Нет в справочнике"
     assert rows[1][indexes["Дата документа"]] == ""
+
+
+def test_shared_mapper_uses_backend_document_meta_for_shipper_basis_and_correction():
+    source = [
+        [
+            "Статус загрузки", "Статус строки", "Причина ручной корректировки",
+            "Индикатор дубля документа", "Форма документа", "ИНН Поставщика",
+            "Грузополучатель", "Получатель", "Основание", "Товар найден в справочнике",
+            "Наименование товара из документа",
+        ],
+        [
+            "Требует проверки", "Правка вручную", "Другое", "", "УПД", "1234567890",
+            "ООО ЛИР", "ООО ЛИР", "Универсальный передаточный документ", "Нет", "Тушка ЦБ",
+        ],
+    ]
+    recognized_items_json = (
+        '{"header":{"document_form":"УПД","supplier_inn":"3900040690","shipper":"ООО МК Залесье",'
+        '"recipient":"ООО ЛИР","basis":"Основной договор"}}'
+    )
+
+    rows = _remap_source_rows_to_shared_sheet(
+        source,
+        _FakeReceiving("uploads/invoice.jpg", recognized_items_json=recognized_items_json),
+        SHARED_INVOICE_HEADERS,
+    )
+    values = dict(zip(SHARED_INVOICE_HEADERS, rows[0]))
+
+    assert values["Грузоотправитель"] == "ООО МК Залесье"
+    assert values["Получатель"] == "ООО ЛИР"
+    assert values["Основание"] == "Основной договор"
+    assert values["ИНН Поставщика"] == "3900040690"
+    assert values["Корректировка"] == "Нет в справочнике"
 
 
 def test_review_row_uses_only_deterministic_us_mapping_fields():

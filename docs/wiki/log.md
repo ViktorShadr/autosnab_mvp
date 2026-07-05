@@ -306,3 +306,35 @@
 - Updated review-sheet build so each row first rehydrates parser metadata and then falls back to `normalized_name_candidate`, `clean_name`, or raw item name when `us_product_name` is still absent in stored payload.
 - This keeps `Наименование товара в УС` visible for old documents even before a full deterministic remap runs; when Google reference catalogs are reachable, the normal exact mapped name still overrides the fallback.
 - Added regression coverage for both cases: exact backfill through Google reference catalogs and local fallback rendering without mapped fields.
+
+## [2026-07-05] intake | analyst screenshot on shared-sheet fill logic
+
+- Registered `img_2.png` in `manifests/raw_sources.csv` as a new raw source with business-analyst feedback on the `Накладная` sheet output.
+- Extracted new business constraints from the screenshot: `Грузоотправитель/Получатель` should not be guessed from the wrong company, unmatched products must set `Нет в справочнике`, `Основание` must not mirror `Форма документа`, and `Госсистема` / `Дата приема` remain later-stage fields.
+- Captured additional open logic gaps: noisy fallback `Наименование товара в УС`, incomplete deterministic fill of `Цена в УС`, receipt-specific VAT handling, and a mismatch between backend assumptions and the live `Проверить` gate.
+
+## [2026-07-05] planning | shared-sheet fill change plan
+
+- Added `docs/wiki/google-sheet-fill-change-plan.md` with an ordered implementation plan for the next table-writing pass.
+- Set the recommended sequence to semantic field mapping first, then row-level correction/fallback cleanup, then deterministic conversion completion, then receipt-specific handling, then live `Проверить`-gate diagnosis.
+
+## [2026-07-05] analysis | workbook export 3 tied analyst remarks to concrete rows
+
+- Registered `Копия АвтоСнаб Кафе Ромашка 3.xlsx` in `manifests/raw_sources.csv` and analyzed the latest `Накладная` export block-by-block.
+- Confirmed that Lilia's remarks are visible directly in the workbook output: supplier-side documents still write buyer-like values into `Грузоотправитель/Получатель`, the UPD path sometimes copies document-form text into `Основание`, and receipt rows still leave `Цена в УС` and VAT columns empty.
+- Found a concrete conversion inconsistency on the same `ТОРГ-12` document: one historical block keeps `3.954 кг -> 3.954 кг`, while another expands the same row to `15.634116` in `Кол-во в УС` and lowers `Цена в УС` accordingly.
+- Confirmed that unmatched-product signaling is still inconsistent: at least one row shows `Товар найден в справочнике = Нет` while `Корректировка` remains `Другое` instead of `Нет в справочнике`.
+
+## [2026-07-05] planning | code-level backlog for shared-sheet fix path
+
+- Added `docs/wiki/google-sheet-fill-tech-backlog.md` as the executable backend backlog derived from the analyst screenshot plus workbook export 3.
+- Bound the next implementation wave to concrete modules: `google_sheets_service.py`, `item_normalization_service.py`, `invoice_normalization_service.py`, `invoice_review_service.py`, and duplicate handling in `invoice_review.py`.
+- Set P0 to semantic header mapping, deterministic `Нет в справочнике`, and stable `quantity_us`/`price_us`; P1 to receipt-specific logic and duplicate-key normalization; P2 to fallback-name cleanup and live `Проверить`-gate diagnosis.
+
+## [2026-07-05] implementation | first backlog pass for shared-sheet correctness
+
+- Added `shipper` to the review payload flow, taught OCR/MinerU normalization to carry it forward, and changed shared-sheet output so `Грузоотправитель` no longer falls back to `Грузополучатель`.
+- Tightened shared-sheet and review-sheet correction normalization: rows with `product_found = Нет` now render `Нет в справочнике`, while ambiguous rows no longer silently degrade into `Другое`.
+- Hardened document normalization: basis values that only repeat `УПД`/`ТОРГ-12` document-form text are cleared, receipt-like documents receive deterministic VAT defaults (`Без НДС`, `0`) when evidence is absent, and fallback product-name cleanup now strips more packaging/promo noise.
+- Stabilized key parts of conversion and dedupe logic: weight-unit rows no longer auto-multiply themselves from OCR numbers embedded in the product text, and duplicate classification now canonicalizes invoice-number variants such as `UPMK...`/`УПМК...` and `ЧЕК 0245`/`0245`.
+- Added focused regression coverage in `test_openai_invoice_pipeline.py`, `test_google_sheets_service.py`, and selected `test_receiving.py` cases; targeted suites now pass.

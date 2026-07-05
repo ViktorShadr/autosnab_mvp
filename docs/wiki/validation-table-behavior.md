@@ -228,6 +228,43 @@ cannot rely only on previously stored header metadata, because older OCR/OpenAI
 payloads may contain merged `ИНН/КПП` strings. Shared-sheet header build should
 therefore normalize supplier INN again before rendering rows.
 
+## Analyst feedback from 2026-07-05 screenshot
+
+The later screenshot `img_2.png` refines the write contract further with
+operator-visible acceptance criteria:
+
+- `Грузоотправитель` and `Получатель` should not be blindly copied from the
+  same counterparty fields if the source document is issued for another legal
+  entity; mapping needs document-form-aware rules and explicit fallbacks.
+- If a product is not found in `Товары`, `Причина корректировки` should be
+  `Нет в справочнике` on that row. This is now a business-confirmed rule, not
+  only an implementation guess.
+- The fallback for `Наименование товара в УС` should prefer the closest
+  normalized catalog-facing candidate and avoid noisy package strings such as
+  `Пакет-майка Виктория` when the catalog item is simply `Пакет пэт`.
+- The empty separator row between document blocks may stay, but its visual
+  height should be reduced if the Google Sheets API/app-script path allows it
+  without harming document separation.
+- Quantity and price conversion must be explainable from package evidence. If
+  the source row does not explicitly support the computed multiplier, the row
+  should surface a review reason rather than silently inflating `Кол-во в УС`.
+- `Цена в УС` must be filled whenever deterministic conversion succeeds; the
+  kefir example confirms the current row-level conversion pipeline is still
+  incomplete.
+- Retail receipt documents need a separate extraction/mapping branch for VAT
+  and possibly other fiscal fields; the screenshot confirms this cannot rely on
+  the generic supplier-invoice assumptions.
+- A row that visually satisfies the status prerequisites but still cannot pass
+  `Проверить` indicates a mismatch between the backend write contract and the
+  script's actual gating conditions. This needs explicit diagnosis against the
+  live sheet behavior, not only backend reasoning.
+- `Основание` should not be auto-filled with the document form name when the
+  form already has its own dedicated column (`Форма документа`); those fields
+  carry different semantics.
+- `Госсистема` and `Дата приема` remain later-stage fields and should stay out
+  of the initial intake payload unless a specific source adapter truly knows
+  them.
+
 ## Practical MVP attention points
 
 For the nearest MVP, the main things to watch are:

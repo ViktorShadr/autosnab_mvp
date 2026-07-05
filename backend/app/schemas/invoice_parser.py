@@ -13,6 +13,7 @@ class InvoiceDocumentData(BaseModel):
     shipper: str = ""
     receiver: str = ""
     basis: str = ""
+    document_form: str = ""
     total_without_vat: float | None = None
     vat_total: float | None = None
     total_with_vat: float | None = None

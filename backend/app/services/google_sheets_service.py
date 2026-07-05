@@ -466,6 +466,7 @@ def _remap_source_rows_to_shared_sheet(
     target_headers = target_headers or SHARED_INVOICE_HEADERS
     target_width = len(target_headers)
     target_indexes = {header: index for index, header in enumerate(target_headers)}
+    document_meta = _shared_sheet_document_meta(receiving)
     result: list[list[Any]] = []
     for index, row in enumerate(source_rows[1:], start=1):
         row_map = {
@@ -474,23 +475,29 @@ def _remap_source_rows_to_shared_sheet(
             if header
         }
         target_row = [""] * target_width
+        product_found = row_map.get("Товар найден в справочнике", "")
+        correction = row_map.get("Причина ручной корректировки", "")
+        if product_found == "Нет":
+            correction = "Нет в справочнике"
+        elif product_found == "?" and correction in ("", "Другое"):
+            correction = "Сопоставление"
         mapped_values = {
             "Статус загрузки": row_map.get("Статус загрузки", ""),
             "Статус строки": row_map.get("Статус строки", ""),
-            "Корректировка": row_map.get("Причина ручной корректировки", ""),
+            "Корректировка": correction,
             "Дубль": row_map.get("Индикатор дубля документа", ""),
-            "Форма документа": row_map.get("Форма документа", ""),
+            "Форма документа": document_meta.get("document_form") or row_map.get("Форма документа", ""),
             "Загрузка": row_map.get("Загрузить в УС", ""),
             "Дата документа": row_map.get("Дата документа", ""),
             "№ Документа": row_map.get("№ Документа", ""),
             "Поставщик": row_map.get("Поставщик", ""),
-            "ИНН Поставщика": row_map.get("ИНН Поставщика", ""),
-            "Грузоотправитель": row_map.get("Грузоотправитель", row_map.get("Грузополучатель", "")),
-            "Получатель": row_map.get("Получатель", ""),
+            "ИНН Поставщика": document_meta.get("supplier_inn") or row_map.get("ИНН Поставщика", ""),
+            "Грузоотправитель": document_meta.get("shipper") or row_map.get("Грузоотправитель", ""),
+            "Получатель": document_meta.get("recipient") or row_map.get("Получатель", ""),
             "Торговая точка": row_map.get("Торговая точка", ""),
             "Склад": row_map.get("Склад", ""),
-            "Основание": row_map.get("Основание", ""),
-            "Товар найден в справочнике": row_map.get("Товар найден в справочнике", ""),
+            "Основание": document_meta.get("basis") or row_map.get("Основание", ""),
+            "Товар найден в справочнике": product_found,
             "Наименование товара из документа": row_map.get("Наименование товара из документа", ""),
             "Наименование товара в УС": row_map.get("Наименование товара в УС", ""),
             "Ед.изм. в документе": row_map.get("Ед.изм.", ""),
@@ -530,6 +537,26 @@ def _remap_source_rows_to_shared_sheet(
                 target_row[target_indexes[header]] = "" if index != 1 and header in first_row_only else value
         result.append(target_row)
     return result
+
+
+def _shared_sheet_document_meta(receiving: Any) -> dict[str, Any]:
+    documents = getattr(receiving, "documents", None) or []
+    document = documents[-1] if documents else None
+    raw_json = getattr(document, "recognized_items_json", None)
+    if not raw_json:
+        return {}
+    try:
+        payload = json.loads(raw_json)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    header = payload.get("header") or {}
+    return {
+        "document_form": header.get("document_form") or "",
+        "supplier_inn": header.get("supplier_inn") or "",
+        "shipper": header.get("shipper") or "",
+        "recipient": header.get("recipient") or "",
+        "basis": header.get("basis") or "",
+    }
 
 
 def _column_index_to_a1(column_index: int) -> str:

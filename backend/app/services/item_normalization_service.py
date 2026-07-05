@@ -24,6 +24,10 @@ _TECHNICAL_PREFIX_RE = re.compile(
     r"(?:(?:ШТ|КГ|Л|УПАК)\.?\s*[:.-]?\s*)*",
     re.IGNORECASE,
 )
+_PROMO_PACKAGING_TOKEN_RE = re.compile(
+    r"\b(?:ВИКТОРИЯ|МАЙКА|ПАКЕТ-МАЙКА|ПАКЕТ|ФАС|ФАС\.|УПАК|УПАК\.|ПРОМО)\b",
+    re.IGNORECASE,
+)
 
 _UNIT_ALIASES = {
     "Г": "г",
@@ -287,6 +291,18 @@ def apply_reference_mapping_to_payload(
                 item.get("review_reason")
                 or "Не удалось детерминированно рассчитать количество и цену в УС."
             )
+        elif item["price_us"] is None and price is not None:
+            item["conversion_review_reason"] = "Цена в УС не рассчитана, хотя коэффициент определен."
+            _add_mapping_problem(
+                item,
+                line_number,
+                "price_us",
+                item["conversion_review_reason"],
+                "Сопоставление",
+                review_flags,
+                corrections,
+                parser_notes,
+            )
         item["mapping_status"] = "needs_review" if item.get("correction") else "ready"
         item["mapping_error"] = item.get("review_reason") if item.get("correction") else ""
 
@@ -299,8 +315,15 @@ def apply_reference_mapping_to_payload(
 
 def _calculate_conversion(item: dict[str, Any]) -> tuple[float | None, str, str]:
     raw_name = str(item.get("raw_name") or item.get("name") or "")
+    document_unit = _normalize_unit(item.get("document_unit") or item.get("unit"))
     package, multiplier, accounting_unit = _extract_package(raw_name)
     if multiplier is not None:
+        if (
+            document_unit in {"кг", "л"}
+            and accounting_unit == document_unit
+            and multiplier > 1
+        ):
+            return 1.0, document_unit, "identity_document_unit"
         method = "compound_package" if _COMPOUND_PACKAGE_RE.search(raw_name) else "standard"
         return multiplier, accounting_unit, method
 
@@ -311,7 +334,6 @@ def _calculate_conversion(item: dict[str, Any]) -> tuple[float | None, str, str]
     if multiplier is not None:
         return multiplier, accounting_unit, "standard"
 
-    document_unit = _normalize_unit(item.get("document_unit") or item.get("unit"))
     if document_unit in {"кг", "л", "шт", "бут"}:
         return 1.0, document_unit, "identity"
     if package.raw:
@@ -398,6 +420,15 @@ def _clean_product_name(value: Any, package_raw: str = "") -> str:
     text = _TECHNICAL_PREFIX_RE.sub("", text)
     if package_raw:
         text = re.sub(re.escape(package_raw), " ", text, flags=re.IGNORECASE)
+    if _PROMO_PACKAGING_TOKEN_RE.search(text):
+        original_text = text
+        reduced = _PROMO_PACKAGING_TOKEN_RE.sub(" ", text)
+        reduced = re.sub(r"\b\d+(?:[.,]\d+)?\s*[*XХ]\s*\d+(?:[.,]\d+)?\s*СМ\b", " ", reduced, flags=re.IGNORECASE)
+        reduced = re.sub(r"\s+", " ", reduced).strip()
+        if reduced and len(reduced) >= 4:
+            text = reduced
+        elif re.search(r"\bПАКЕТ\b", original_text, re.IGNORECASE):
+            text = "ПАКЕТ"
     text = re.sub(r"^[\[\]():;,.+\-\s]+|[\[\]():;,+\s]+$", "", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
