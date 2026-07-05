@@ -338,3 +338,9 @@
 - Hardened document normalization: basis values that only repeat `УПД`/`ТОРГ-12` document-form text are cleared, receipt-like documents receive deterministic VAT defaults (`Без НДС`, `0`) when evidence is absent, and fallback product-name cleanup now strips more packaging/promo noise.
 - Stabilized key parts of conversion and dedupe logic: weight-unit rows no longer auto-multiply themselves from OCR numbers embedded in the product text, and duplicate classification now canonicalizes invoice-number variants such as `UPMK...`/`УПМК...` and `ЧЕК 0245`/`0245`.
 - Added focused regression coverage in `test_openai_invoice_pipeline.py`, `test_google_sheets_service.py`, and selected `test_receiving.py` cases; targeted suites now pass.
+
+## [2026-07-05] planning | provider strategy for OCR and parser layers
+
+- Added `docs/wiki/ocr-parser-provider-strategy.md` to capture the next architecture hypothesis for provider evolution.
+- Fixed the target shape as `OCR / layout provider -> normalized evidence -> pluggable parser backend`, instead of binding one OCR stack to one LLM stack.
+- Recorded `Yandex Vision OCR` as the strongest OCR candidate to evaluate next, with `YandexGPT` and `GigaChat` as parser-backend candidates to compare against the current OpenAI baseline on the same golden set.

@@ -14,6 +14,7 @@
 - [google-sheet-fill-change-plan.md](./google-sheet-fill-change-plan.md)
 - [google-sheet-fill-tech-backlog.md](./google-sheet-fill-tech-backlog.md)
 - [workbook-export-3-analysis.md](./workbook-export-3-analysis.md)
+- [ocr-parser-provider-strategy.md](./ocr-parser-provider-strategy.md)
 - [sbis-edo-integration.md](./sbis-edo-integration.md)
 - [github-and-raw-strategy.md](./github-and-raw-strategy.md)
 - [runtime-profile.md](./runtime-profile.md)
