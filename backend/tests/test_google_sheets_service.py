@@ -10,6 +10,7 @@ os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 from app.config import settings  # noqa: E402
 from app.services.google_sheets_service import (  # noqa: E402
     SHARED_INVOICE_HEADERS,
+    _align_shared_rows_to_target_headers,
     _insert_into_existing_spreadsheet,
     _remap_source_rows_to_shared_sheet,
     _table_rows_as_dicts,
@@ -211,6 +212,11 @@ def test_reference_sheet_rows_are_mapped_by_fixed_headers():
     ]
 
 
+def test_align_shared_rows_to_target_headers_keeps_canonical_width():
+    rows = [["x"] * len(SHARED_INVOICE_HEADERS)]
+    assert _align_shared_rows_to_target_headers(rows, SHARED_INVOICE_HEADERS) == rows
+
+
 def test_reference_catalog_loader_reads_fixed_google_sheet_tabs(monkeypatch):
     class ReferenceValues:
         def __init__(self):
@@ -405,6 +411,26 @@ def test_insert_into_existing_spreadsheet_prepends_block_and_separator():
                         ],
                     ]
                 },
+                "shared_sheet_rows": [
+                    [
+                        "Проверить", "Распознано", "", "", "УПД", "",
+                        "2026-07-03", "doc-1", "Supplier", "1234567890",
+                        "Shipper", "Recipient", "Main point", "Warehouse", "Basis",
+                        "Да", "item-1", "item-us-1", "kg", "pcs", "10", "9",
+                        "100", "95", "1000", "20", "200", "1200", "2400", "", "",
+                        "GS", "11", "105", "2026-07-04", "110", "-5",
+                        "2026-07-03T10:00:00", "doc-id-1", "uploads/invoices/test.jpg",
+                    ],
+                    [
+                        "", "", "Нет в справочнике", "", "", "",
+                        "", "", "", "",
+                        "", "", "", "", "",
+                        "Нет", "item-2", "item-us-2", "kg", "pcs", "20", "18",
+                        "200", "190", "2000", "20", "400", "2400", "", "", "",
+                        "GS", "22", "205", "2026-07-05", "210", "-10",
+                        "", "", "",
+                    ],
+                ],
             },
         )
     finally:
@@ -449,7 +475,9 @@ def test_insert_into_existing_spreadsheet_prepends_block_and_separator():
     assert written[0][37] == "2026-07-03T10:00:00"
     assert written[0][38] == "doc-id-1"
     assert written[0][39] == "uploads/invoices/test.jpg"
+    assert written[0][10] == "Shipper"
     assert written[1][16] == "item-2"
+    assert written[1][2] == "Нет в справочнике"
     assert written[1][20] == "20"
     assert written[1][39] == ""
     assert written[2] == [""] * 40

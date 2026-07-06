@@ -13,6 +13,7 @@ from app.config import settings
 from app.models.accounting import AccountingExport
 from app.models.receiving import Receiving, ReceivingDocument, ReceivingItem, ReceivingItemStatus, ReceivingStatus
 from app.services.google_sheets_service import (
+    SHARED_INVOICE_HEADERS,
     create_invoice_review_spreadsheet,
     load_invoice_reference_catalogs,
     serialize_sheet_result,
@@ -271,6 +272,13 @@ def build_review_sheet(receiving: Receiving) -> dict:
             register_rows.append(_invoice_register_item_row(header_values, item, row_meta, index))
     else:
         register_rows.append(_invoice_register_item_row(header_values, None, {}, 1))
+    shared_rows = build_shared_invoice_rows(
+        receiving,
+        header_values=header_values,
+        item_meta=item_meta,
+        parser_items=parser_items,
+        total_sum=total_sum,
+    )
 
     return {
         "review_id": receiving.id,
@@ -284,9 +292,48 @@ def build_review_sheet(receiving: Receiving) -> dict:
             "method": "POST",
             "endpoint": f"/api/v1/invoice-review/{receiving.id}/confirm-send",
         },
+        "shared_sheet_rows": shared_rows,
         "status": "ready" if not issues else "needs_review",
         "issues": issues,
     }
+
+
+def build_shared_invoice_rows(
+    receiving: Receiving,
+    *,
+    header_values: dict[str, Any] | None = None,
+    item_meta: list[dict[str, Any]] | None = None,
+    parser_items: list[dict[str, Any]] | None = None,
+    total_sum: Any | None = None,
+) -> list[list[Any]]:
+    document = receiving.documents[-1] if receiving.documents else None
+    meta = _document_meta(document)
+    header_meta = meta.get("header", {})
+    if item_meta is None:
+        item_meta = meta.get("items", [])
+    if parser_items is None:
+        parser_metadata = header_meta.get("parser_metadata") if isinstance(header_meta.get("parser_metadata"), dict) else {}
+        parser_items = parser_metadata.get("items") if isinstance(parser_metadata.get("items"), list) else []
+    header_meta, item_meta = _backfill_invoice_reference_mapping_if_needed(header_meta, item_meta)
+    items = list(receiving.items)
+    if total_sum is None:
+        calculated_total_sum = _calculate_review_total_sum(items, item_meta)
+        total_sum = header_meta.get("total_sum") if header_meta.get("total_sum") not in (None, "") else calculated_total_sum
+    if header_values is None:
+        header_values = _invoice_register_header_values(receiving, document, header_meta, total_sum)
+
+    rows: list[list[Any]] = []
+    if items:
+        for index, item in enumerate(items, start=1):
+            row_meta = _hydrate_review_sheet_item_meta(
+                item_meta[index - 1] if index - 1 < len(item_meta) else {},
+                parser_items,
+                index,
+            )
+            rows.append(_shared_invoice_item_row(receiving, header_values, item, row_meta, index))
+    else:
+        rows.append(_shared_invoice_item_row(receiving, header_values, None, {}, 1))
+    return rows
 
 
 def _backfill_invoice_reference_mapping_if_needed(
@@ -592,6 +639,133 @@ def _invoice_register_item_row(
         status,
         manual_reason,
     ]
+
+
+def _shared_invoice_item_row(
+    receiving: Receiving,
+    header_values: dict[str, Any],
+    item: ReceivingItem | None,
+    row_meta: dict[str, Any],
+    index: int,
+) -> list[Any]:
+    if item is None:
+        item_name = ""
+        unit = ""
+        quantity = ""
+        price = ""
+        line_sum = ""
+        vat_percent = ""
+        vat_sum = ""
+        line_sum_with_vat = ""
+        unit_in_us = ""
+        quantity_in_us = ""
+        price_in_us = ""
+        date_accept = ""
+        accepted_by = ""
+        government_systems = ""
+        quantity_in_request = ""
+        price_by_pricelist = ""
+        previous_delivery_date = ""
+        previous_price = ""
+        price_deviation = ""
+        correction = ""
+        us_product_name = ""
+        product_found = ""
+    else:
+        quantity = item.received_quantity or 0
+        price = item.invoice_price or 0
+        item_name = item.item_name_from_invoice or item.item_name_from_order or ""
+        unit = item.unit
+        line_sum = row_meta.get("sum") if row_meta.get("sum") is not None else round(quantity * price, 2)
+        vat_percent = _vat_percent_for_sheet(row_meta, item.comment)
+        vat_sum = row_meta.get("vat_sum") if row_meta.get("vat_sum") is not None else ""
+        line_sum_with_vat = _line_sum_with_vat(line_sum, vat_sum)
+        unit_in_us = row_meta.get("us_unit") or row_meta.get("accounting_unit_candidate") or ""
+        quantity_in_us = (
+            row_meta.get("quantity_us")
+            if row_meta.get("quantity_us") is not None
+            else row_meta.get("accounting_quantity_candidate", "")
+        )
+        price_in_us = row_meta.get("price_us") if row_meta.get("price_us") is not None else ""
+        date_accept = ""
+        accepted_by = ""
+        government_systems = ""
+        quantity_in_request = ""
+        price_by_pricelist = ""
+        previous_delivery_date = ""
+        previous_price = ""
+        price_deviation = ""
+        correction = row_meta.get("correction") or ""
+        us_product_name = row_meta.get("us_product_name") or ""
+        product_found = row_meta.get("product_found") or ""
+
+    first_row_only_values = {
+        "Статус загрузки": header_values.get("upload_status", ""),
+        "Статус строки": header_values.get("row_status", ""),
+        "Дубль": header_values.get("duplicate_indicator", ""),
+        "Форма документа": header_values.get("document_form", ""),
+        "Дата документа": header_values.get("document_date", ""),
+        "№ Документа": header_values.get("document_number", ""),
+        "Поставщик": header_values.get("supplier", ""),
+        "ИНН Поставщика": header_values.get("supplier_inn", ""),
+        "Грузоотправитель": header_values.get("consignee", ""),
+        "Получатель": header_values.get("recipient", ""),
+        "Торговая точка": header_values.get("trade_point", ""),
+        "Склад": header_values.get("warehouse", ""),
+        "Основание": header_values.get("basis", ""),
+        "Сумма накладной": header_values.get("total_sum", ""),
+        "Время загрузки документа": header_values.get("upload_time", ""),
+        "ID документа": header_values.get("document_id", ""),
+        "Ссылка на исходный документ": (
+            (getattr(receiving, "documents", None) and getattr(receiving.documents[-1], "file_url", ""))
+            or ""
+        ),
+    }
+    row_values = {
+        "Статус загрузки": "",
+        "Статус строки": "",
+        "Корректировка": correction,
+        "Дубль": "",
+        "Форма документа": "",
+        "Загрузка": "",
+        "Дата документа": "",
+        "№ Документа": "",
+        "Поставщик": "",
+        "ИНН Поставщика": "",
+        "Грузоотправитель": "",
+        "Получатель": "",
+        "Торговая точка": "",
+        "Склад": "",
+        "Основание": "",
+        "Товар найден в справочнике": product_found,
+        "Наименование товара из документа": item_name,
+        "Наименование товара в УС": us_product_name,
+        "Ед.изм. в документе": unit,
+        "Ед.изм. в УС": unit_in_us,
+        "Кол-во в документе": quantity,
+        "Кол-во в УС": quantity_in_us,
+        "Цена за ед-цу": price,
+        "Цена в УС": price_in_us,
+        "Стоимость без НДС": line_sum,
+        "Ставка НДС": vat_percent,
+        "Сумма НДС": vat_sum,
+        "Общая стоимость": line_sum_with_vat,
+        "Сумма накладной": "",
+        "Дата приема": date_accept,
+        "Принял, Ф.И.О.": accepted_by,
+        "Госсистемы": government_systems,
+        "Кол-во в заявке": quantity_in_request,
+        "Цена по прайсу": price_by_pricelist,
+        "Предыдущая дата поставки": previous_delivery_date,
+        "Предыдущая цена": previous_price,
+        "Отклонение от цены прайса": price_deviation,
+        "Время загрузки документа": "",
+        "ID документа": "",
+        "Ссылка на исходный документ": "",
+    }
+    if index == 1:
+        row_values.update(first_row_only_values)
+    return [row_values.get(header, "") for header in SHARED_INVOICE_HEADERS]
 
 def build_review_csv(receiving: Receiving) -> str:
     sheet = build_review_sheet(receiving)

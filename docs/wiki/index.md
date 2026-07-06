@@ -11,6 +11,8 @@
 - [sources-and-data.md](./sources-and-data.md)
 - [supplier-catalog-roadmap.md](./supplier-catalog-roadmap.md)
 - [validation-table-behavior.md](./validation-table-behavior.md)
+- [original-workbook-contract.md](./original-workbook-contract.md)
+- [backend-vs-original-workbook-gap-analysis.md](./backend-vs-original-workbook-gap-analysis.md)
 - [google-sheet-fill-change-plan.md](./google-sheet-fill-change-plan.md)
 - [google-sheet-fill-tech-backlog.md](./google-sheet-fill-tech-backlog.md)
 - [workbook-export-3-analysis.md](./workbook-export-3-analysis.md)

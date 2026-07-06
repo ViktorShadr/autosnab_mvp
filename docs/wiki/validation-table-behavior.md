@@ -25,14 +25,16 @@ The call with Lilia makes one more thing explicit: she demonstrated the intended
 - the second row contains the effective column names used by the Apps Script and integration logic
 - those names must stay stable
 - warning/blocking around header renames is desirable because both script logic and code are name-bound
-- the upper explanatory row can change, but the actual machine-bound header row should be treated as frozen contract
+- the upper explanatory row must also be read as a business-annotation layer: it explains how a column is intended to be filled even when row 2 already defines the machine name
+- row 2 remains the machine-bound header contract, but row 1 is not disposable noise; it is part of the offline interpretation contract for backend mapping
 
 ## Observed real sheet contract
 
 The root workbook copy reviewed on 2026-07-04 makes the current working contract more concrete:
 
 - the authoritative operator sheet is `Накладная`
-- row 1 is explanatory and can vary; row 2 is the machine-bound contract
+- row 1 contains explanatory/business fill rules and must be considered during contract analysis
+- row 2 is the machine-bound contract used for column lookup and Apps Script integration
 - the actual business contract spans `A:AN` (`40` columns), from `Статус загрузки` to `Ссылка на исходный документ`
 - the workbook also contains helper/automation columns in `AO:AU`; some of them mirror status/duplicate/correction logic and should be preserved rather than overwritten by backend payload shaping
 - reference tabs already exist for suppliers, own-company/trade-point/warehouse mapping, products, and pack-size conversions: `Поставщики`, `Наша фирма`, `Товары`, `Справочник фасовок`
@@ -40,9 +42,31 @@ The root workbook copy reviewed on 2026-07-04 makes the current working contract
 Important implementation consequence:
 
 - the backend should write the document block against the row-2 contract in `A:AN`
+- backend interpretation of how each target column should be filled must consider row 1 annotations together with row 2 machine names
 - formulas, validations, and helper logic outside that contract should be treated as spreadsheet-owned behavior
 
 The local `.xlsx` export also shows broken dropdown references (`#REF!`) for some list validations. That strongly suggests the live Google Sheet, not an exported `.xlsx`, must remain the final source of truth for named ranges and Apps Script behavior.
+
+### Canonical workbook decision as of 2026-07-06
+
+The local raw intake now contains the original workbook:
+
+- `src_bd91ee3517` -> `../autosnab_mvp_raw/inbox/АвтоСнаб Кафе Ромашка  (ориг).xlsx`
+
+This changes the evidence priority for future contract work:
+
+- the original workbook should be treated as the canonical offline workbook source for the `Накладная` contract;
+- the contract should be read from the combination of row 1 annotations, row 2 machine headers, reference tabs, and the immutable Apps Script workflow;
+- workbook copies such as `Копия АвтоСнаб Кафе Ромашка 2.xlsx` and `Копия АвтоСнаб Кафе Ромашка 3.xlsx` remain useful for diagnosing historical bad exports, but they are not the contract authority;
+- backend write rules should now be validated first against the original workbook structure, then against the live Apps Script behavior, and only after that against historical export copies.
+
+Practical consequence:
+
+- when two historical exports of the same invoice disagree, prefer the original workbook's row-2 headers, reference tabs, and document layout as the baseline, not the accidental shape of a past generated block.
+- Apps Script is part of the table/workflow contract, not part of source-document parsing; OCR/MinerU/OpenAI still parse the invoice itself, while Apps Script constrains how parsed data must behave inside the sheet.
+
+The extracted per-column mapping from the original workbook is now frozen in
+`docs/wiki/original-workbook-contract.md`.
 
 ## Source document fields
 

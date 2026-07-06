@@ -218,6 +218,18 @@
 
 - Added explicit `pipeline_logs` from backend extraction stages into the invoice upload response and rendered them on the upload page for operator-visible tracing.
 - Added hard stop behavior for empty pre-OpenAI evidence and empty OpenAI structured payloads: the backend now returns a structured error instead of saving an empty review document.
+
+## [2026-07-06] intake | original workbook registered as canonical raw source
+
+- Registered `../autosnab_mvp_raw/inbox/АвтоСнаб Кафе Ромашка  (ориг).xlsx` via `scripts/ingest_raw.py` as `src_bd91ee3517`.
+- Fixed the project stance that this original workbook is now the canonical offline source for the `Накладная` contract.
+- Fixed the contract-reading rule as well: row 1 is the business-annotation layer, row 2 is the machine-binding layer, and Apps Script is the workflow/gating layer.
+- Fixed the architectural interpretation that Apps Script constrains sheet behavior and readiness checks, but does not parse invoice contents; OCR/MinerU/OpenAI remain the document-parsing layer.
+- Extracted the original `Накладная` mapping into a dedicated wiki page, including the row-1 business instructions, row-2 machine headers, calculation/reference columns, and the first-row-only implications for backend block building.
+- Compared the current backend write path against that canonical workbook, then implemented a native shared-sheet row builder: the active `Накладная` write path now uses direct canonical rows instead of depending primarily on the legacy `Накладные` -> remap pipeline.
+- Left the legacy register builder in place only as a compatibility layer for the old review output shape.
+- Kept `Копия АвтоСнаб Кафе Ромашка ...xlsx` files in the wiki model as diagnostic exports for regression analysis rather than the primary contract authority.
+- This narrows the next implementation target: backend row mapping should be checked against the original workbook structure plus the existing Apps Script behavior before comparing against historical generated copies.
 - Added retry guidance in the upload UI so empty OCR/MinerU flows can recommend switching to `OpenAI structured parser`.
 
 ## [2026-07-04] ui | live upload trace polling

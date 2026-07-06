@@ -327,7 +327,8 @@ def _insert_into_existing_spreadsheet(
 
     source_sheet_name = sheet_data.get("primary_sheet_name") or next(iter(sheet_data["sheets"]))
     source_rows = sheet_data["sheets"].get(source_sheet_name) or []
-    if not source_rows:
+    shared_rows = sheet_data.get("shared_sheet_rows") or []
+    if not source_rows and not shared_rows:
         raise GoogleSheetsConfigurationError("Нет данных для записи в target spreadsheet.")
 
     # In a shared operator sheet the real machine-bound header already exists.
@@ -338,9 +339,14 @@ def _insert_into_existing_spreadsheet(
         target_sheet_name,
         settings.google_target_header_row_count,
     )
-    document_rows = _remap_source_rows_to_shared_sheet(source_rows, receiving, target_headers)
+    document_rows = (
+        _align_shared_rows_to_target_headers(shared_rows, target_headers)
+        if shared_rows
+        else _remap_source_rows_to_shared_sheet(source_rows, receiving, target_headers)
+    )
     if not document_rows:
-        document_rows = [[""] * len(source_rows[0])]
+        template_width = len(target_headers) if target_headers else len(source_rows[0])
+        document_rows = [[""] * template_width]
     column_count = max(len(row) for row in document_rows)
     separator_row = [""] * column_count
     rows_to_insert = document_rows + [separator_row]
@@ -536,6 +542,26 @@ def _remap_source_rows_to_shared_sheet(
             if header in target_indexes:
                 target_row[target_indexes[header]] = "" if index != 1 and header in first_row_only else value
         result.append(target_row)
+    return result
+
+
+def _align_shared_rows_to_target_headers(
+    source_rows: list[list[Any]],
+    target_headers: list[str] | None = None,
+) -> list[list[Any]]:
+    if not source_rows:
+        return []
+    target_headers = target_headers or SHARED_INVOICE_HEADERS
+    target_width = len(target_headers)
+    result: list[list[Any]] = []
+    for row in source_rows:
+        if len(row) == target_width:
+            result.append(list(row))
+            continue
+        padded = list(row[:target_width])
+        if len(padded) < target_width:
+            padded.extend([""] * (target_width - len(padded)))
+        result.append(padded)
     return result
 
 
