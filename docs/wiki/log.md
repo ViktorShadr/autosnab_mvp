@@ -356,3 +356,11 @@
 - Added `docs/wiki/ocr-parser-provider-strategy.md` to capture the next architecture hypothesis for provider evolution.
 - Fixed the target shape as `OCR / layout provider -> normalized evidence -> pluggable parser backend`, instead of binding one OCR stack to one LLM stack.
 - Recorded `Yandex Vision OCR` as the strongest OCR candidate to evaluate next, with `YandexGPT` and `GigaChat` as parser-backend candidates to compare against the current OpenAI baseline on the same golden set.
+
+## [2026-07-06] implementation | direct canonical `Накладная` builder for shared Google Sheets
+
+- Replaced the primary shared-sheet write path with a native canonical `Накладная` row builder: shared Google Sheets output no longer depends primarily on the legacy `Накладные -> remap -> Накладная` translation route.
+- Added `build_shared_invoice_rows(...)` and direct canonical row emission from normalized header/item review data while keeping the old register builder only as a compatibility layer for legacy review-sheet output.
+- Updated shared-sheet insertion logic so `google_sheets_service.py` prefers already-built canonical shared rows when available and only falls back to the old remap path for compatibility.
+- Added focused regression coverage for the new path in `backend/tests/test_google_sheets_service.py`, then re-ran targeted `test_receiving.py` cases covering supplier-INN safety and TORG-12 continuation-page cleanup.
+- Fixed wiki status/gap-analysis pages so they now reflect the post-rewrite state: the main remaining issues are contract-centralization and field ownership, not the existence of a mandatory legacy remap stage.
