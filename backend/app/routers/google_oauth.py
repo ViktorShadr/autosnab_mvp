@@ -51,9 +51,15 @@ def google_oauth_callback(request: Request, error: str | None = None):
     return HTMLResponse(
         f"""
         <h2>Google OAuth подключен</h2>
-        <p>Токен сохранён: {status.get('token_file')}</p>
+        <p>OAuth-токены сохранены в .env.</p>
         <p>Теперь можно вернуться на страницу загрузки накладной.</p>
         <p><a href="/api/v1/invoice-review/upload-page">Открыть загрузку накладной</a></p>
+        <script>
+          if (window.opener) {{
+            window.opener.postMessage({{ type: 'google-oauth-success' }}, window.location.origin);
+            setTimeout(() => window.close(), 1200);
+          }}
+        </script>
         """
     )
 

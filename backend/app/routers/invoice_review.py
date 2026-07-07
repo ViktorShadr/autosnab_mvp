@@ -1,6 +1,7 @@
 import html
 import json
 import shutil
+from threading import Thread
 from pathlib import Path
 from uuid import uuid4
 
@@ -9,13 +10,14 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.db.session import get_db
+from app.db.session import SessionLocal, get_db
 from app.models.accounting import AccountingExport
-from app.models.receiving import Receiving
+from app.models.receiving import Receiving, ReceivingDocument
 from app.schemas.invoice_review import (
     ConfirmSendToIikoRequest,
     InvoiceReviewCreateRequest,
     InvoiceReviewResponse,
+    PipelineLogEntry,
     InvoiceReviewUpdateRequest,
     RecognizedInvoiceItem,
     SyncSheetAndConfirmRequest,
@@ -36,8 +38,19 @@ from app.services.invoice_review_service import (
     get_latest_google_spreadsheet_info,
     send_google_sheet_and_confirm_to_iiko,
 )
-from app.services.invoice_parser_service import extract_invoice_payload_with_fallback
-from app.services.ocr_service import OcrConfigurationError, recognize_invoice_image
+from app.services.database_health_service import describe_database_write_error
+from app.services.document_extraction_service import extract_invoice_document, extract_invoice_document_set
+from app.services.google_sheets_service import load_invoice_reference_catalogs
+from app.services.item_normalization_service import apply_reference_mapping_to_payload
+from app.services.normalization import canonical_invoice_number
+from app.services.upload_trace_service import (
+    append_trace_log,
+    finalize_trace,
+    get_trace,
+    initialize_trace,
+    set_trace_metadata,
+    set_trace_result,
+)
 
 router = APIRouter(prefix="/invoice-review", tags=["invoice-review"])
 
@@ -118,6 +131,33 @@ def upload_invoice_page():
       color: #1f2937;
       margin-right: 0;
     }
+    select {
+      width: 100%; box-sizing: border-box; padding: 12px;
+      border: 1px solid #d1d5db; border-radius: 10px; background: #fff;
+      font-size: 15px;
+      margin-top: 4px;
+    }
+    .field {
+      margin-bottom: 18px;
+    }
+    .panel {
+      margin-bottom: 22px;
+      padding: 18px;
+      border: 1px solid #dbeafe;
+      border-radius: 14px;
+      background: linear-gradient(135deg, #f8fbff 0%, #eef4ff 100%);
+    }
+    .panel-title {
+      font-size: 16px;
+      font-weight: 700;
+      margin: 0 0 8px;
+    }
+    .hint {
+      color: #6b7280;
+      font-size: 14px;
+      line-height: 1.5;
+      margin-top: 6px;
+    }
     button {
       border: 0; border-radius: 12px; padding: 14px 18px;
       background: #2563eb; color: white; font-weight: 700; font-size: 16px;
@@ -157,8 +197,88 @@ def upload_invoice_page():
       margin-top: 20px;
       text-align: center;
     }
+    .button-row.compact {
+      margin-top: 14px;
+      text-align: left;
+    }
+    .button-row.compact button,
+    .button-row.compact .secondary-btn {
+      min-width: 0;
+      margin-right: 10px;
+      margin-top: 0;
+    }
     .result-actions {
       text-align: center;
+    }
+    .preview-shell {
+      display: none;
+      margin-top: 14px;
+      border: 1px solid #d1d5db;
+      border-radius: 14px;
+      background: #f9fafb;
+      overflow: hidden;
+    }
+    .preview-shell.visible {
+      display: block;
+    }
+    .preview-meta {
+      padding: 12px 14px;
+      border-bottom: 1px solid #e5e7eb;
+      font-size: 14px;
+      color: #4b5563;
+      background: #fff;
+    }
+    .preview-frame {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 240px;
+      max-height: 520px;
+      background: #f3f4f6;
+    }
+    .preview-frame img,
+    .preview-frame iframe {
+      width: 100%;
+      height: 520px;
+      border: 0;
+      object-fit: contain;
+      background: #fff;
+    }
+    .preview-item {
+      border-top: 1px solid #e5e7eb;
+      background: #fff;
+    }
+    .preview-item:first-child {
+      border-top: 0;
+    }
+    .preview-item-toolbar {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      padding: 10px 14px;
+      border-bottom: 1px solid #e5e7eb;
+      background: #fff;
+      font-size: 14px;
+    }
+    .preview-item-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .preview-item-actions button {
+      min-width: 0;
+      padding: 8px 10px;
+      font-size: 13px;
+      border-radius: 10px;
+      background: #e5e7eb;
+      color: #111827;
+    }
+    .preview-empty {
+      padding: 28px;
+      text-align: center;
+      color: #6b7280;
+      line-height: 1.5;
     }
     .loading {
       margin-top: 22px;
@@ -177,6 +297,70 @@ def upload_invoice_page():
       line-height: 1.45;
       white-space: pre-wrap;
     }
+    .pipeline-log-box {
+      margin-top: 18px;
+      padding: 16px;
+      border-radius: 12px;
+      background: #0f172a;
+      color: #e2e8f0;
+      border: 1px solid #1e293b;
+    }
+    .pipeline-log-title {
+      font-size: 16px;
+      font-weight: 700;
+      margin-bottom: 12px;
+    }
+    .pipeline-log-entry {
+      padding: 12px 0;
+      border-top: 1px solid rgba(148, 163, 184, 0.2);
+    }
+    .pipeline-log-entry:first-child {
+      border-top: 0;
+      padding-top: 0;
+    }
+    .pipeline-log-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 14px;
+      margin-bottom: 6px;
+    }
+    .pipeline-log-stage {
+      font-weight: 700;
+      color: #93c5fd;
+    }
+    .pipeline-log-status {
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .pipeline-log-status.ok {
+      color: #86efac;
+    }
+    .pipeline-log-status.warning {
+      color: #fde68a;
+    }
+    .pipeline-log-status.error {
+      color: #fca5a5;
+    }
+    .pipeline-log-status.running {
+      color: #c4b5fd;
+    }
+    .pipeline-log-message {
+      font-size: 14px;
+      line-height: 1.5;
+      margin-bottom: 6px;
+    }
+    .pipeline-log-details {
+      font-size: 13px;
+      line-height: 1.5;
+      color: #cbd5e1;
+      white-space: pre-wrap;
+    }
+    .pipeline-log-recommendation {
+      margin-top: 6px;
+      color: #fcd34d;
+      font-size: 13px;
+    }
   </style>
 </head>
 <body>
@@ -184,19 +368,39 @@ def upload_invoice_page():
     <section class="card">
       <h1>АвтоСнаб - Загрузка накладной</h1>
       <div class="subtitle">
-        Загрузите фото, скан или PDF накладной. Система распознает данные через Google Drive OCR и создаст Google Таблицу для проверки.
+        Загрузите фото, скан или PDF накладной. OpenAI vision parser структурирует evidence из PDF, MinerU, OCR и самих изображений страниц.
+      </div>
+      <div class="panel">
+        <div class="panel-title">Google Sheets доступ</div>
+        <div id="googleAuthStatus" class="hint">Проверяю статус Google OAuth...</div>
+        <div class="button-row compact">
+          <button id="googleAuthBtn" type="button">Авторизоваться в Google</button>
+          <button id="googleAuthRefreshBtn" type="button">Обновить статус</button>
+        </div>
       </div>
       <form id="uploadForm">
-        <label class="checkbox-label" for="multipageInvoice">
-          <input id="multipageInvoice" name="multipage_invoice" type="checkbox" />
-          <span>Многостраничная накладная</span>
-        </label>
-        <input id="file" name="file" type="file" accept="image/*,.pdf" capture="environment" />
-        <div class="hint" id="fileHint">Если накладная одностраничная, выберите один файл.</div>
-        <div class="duplicate-hint" id="duplicateHint"></div>
-        <div class="selected-files" id="selectedFilesBox" hidden>
-          <div class="selected-files-title">Выбранные файлы:</div>
-          <ol id="selectedFilesList"></ol>
+        <div class="field">
+          <label for="file">Страницы накладной</label>
+          <input id="file" name="files" type="file" accept="image/*,.pdf" capture="environment" multiple required />
+          <div class="hint">Можно менять порядок страниц и удалять лишние до отправки.</div>
+          <div id="filePreview" class="preview-shell" aria-live="polite">
+            <div id="filePreviewMeta" class="preview-meta"></div>
+            <div id="filePreviewFrame" class="preview-frame">
+              <div class="preview-empty">Выберите один или несколько файлов в порядке страниц.</div>
+            </div>
+          </div>
+        </div>
+        <div class="field">
+          <label for="extractionMethod">Метод распознавания</label>
+          <select id="extractionMethod" name="extraction_method">
+            <option value="openai" selected>OpenAI vision parser (text + images)</option>
+            <option value="google_ocr">Google OCR</option>
+            <option value="mineru">MinerU</option>
+            <option value="hybrid">Гибрид: MinerU -> Google OCR fallback</option>
+          </select>
+          <div class="hint">
+            OpenAI получает извлеченный текст и изображения страниц, но не управляет Google Sheets и не выбирает колонки таблицы.
+          </div>
         </div>
         <div class="button-row">
           <button id="submitBtn" type="submit">Загрузить накладную заведения</button>
@@ -211,86 +415,25 @@ def upload_invoice_page():
     const output = document.getElementById('output');
     const button = document.getElementById('submitBtn');
     const fileInput = document.getElementById('file');
-    const multipageCheckbox = document.getElementById('multipageInvoice');
-    const fileHint = document.getElementById('fileHint');
-    const duplicateHint = document.getElementById('duplicateHint');
-    const selectedFilesBox = document.getElementById('selectedFilesBox');
-    const selectedFilesList = document.getElementById('selectedFilesList');
-    const sheetWindowName = 'autosnab_google_sheet';
-    let sheetWindow = null;
-    let selectedInvoiceFiles = [];
+    const extractionMethodInput = document.getElementById('extractionMethod');
+    const previewShell = document.getElementById('filePreview');
+    const previewMeta = document.getElementById('filePreviewMeta');
+    const previewFrame = document.getElementById('filePreviewFrame');
+    const googleAuthStatus = document.getElementById('googleAuthStatus');
+    const googleAuthBtn = document.getElementById('googleAuthBtn');
+    const googleAuthRefreshBtn = document.getElementById('googleAuthRefreshBtn');
 
-    fileInput.addEventListener('change', () => {
-      handleSelectedFiles(Array.from(fileInput.files || []));
-      fileInput.value = '';
-      output.innerHTML = '';
-    });
+    let previewUrls = [];
+    let activeTraceId = null;
+    let tracePollTimer = null;
+    let selectedFiles = [];
 
-    selectedFilesList.addEventListener('click', (event) => {
-      const removeButton = event.target.closest('[data-remove-file-index]');
-      if (!removeButton) {
-        return;
-      }
-
-      const removeIndex = Number(removeButton.getAttribute('data-remove-file-index'));
-      selectedInvoiceFiles = selectedInvoiceFiles.filter((_, index) => index !== removeIndex);
-      duplicateHint.textContent = '';
-      renderSelectedFiles();
-    });
-
-    multipageCheckbox.addEventListener('change', () => {
-      fileInput.multiple = multipageCheckbox.checked;
-      if (multipageCheckbox.checked) {
-        fileInput.removeAttribute('capture');
-      } else {
-        fileInput.setAttribute('capture', 'environment');
-      }
-      resetSelectedFiles();
-      output.innerHTML = '';
-      fileHint.textContent = multipageCheckbox.checked
-        ? 'Выбирайте файлы страниц одной накладной в правильном порядке. Повторно выбранный файл не будет добавлен и загружен.'
-        : 'Если накладная одностраничная, выберите один файл.';
-    });
-
-    function getUserTimezone() {
-      try {
-        return Intl.DateTimeFormat().resolvedOptions().timeZone || '';
-      } catch (error) {
-        return '';
-      }
-    }
-
-    function getUserUtcOffsetMinutes() {
-      try {
-        return String(-new Date().getTimezoneOffset());
-      } catch (error) {
-        return '';
-      }
-    }
-
-    function openSheetInSingleTab(url) {
-      const targetUrl = String(url || '').trim();
-      if (!targetUrl) {
-        return false;
-      }
-
-      sheetWindow = window.open(targetUrl, sheetWindowName);
-      if (sheetWindow) {
-        sheetWindow.focus();
-      }
-
-      return false;
-    }
-
-    output.addEventListener('click', (event) => {
-      const link = event.target.closest('[data-google-sheet-url]');
-      if (!link) {
-        return;
-      }
-
-      event.preventDefault();
-      openSheetInSingleTab(link.getAttribute('data-google-sheet-url'));
-    });
+    const methodLabels = {
+      openai: 'OpenAI vision parser (text + images)',
+      google_ocr: 'Google OCR',
+      mineru: 'MinerU',
+      hybrid: 'гибридный режим'
+    };
 
     function escapeHtml(value) {
       return String(value ?? '').replace(/[&<>'"]/g, ch => ({
@@ -298,118 +441,264 @@ def upload_invoice_page():
       }[ch]));
     }
 
-    function normalizeOcrErrorMessage(value) {
-      const rawText = String(value || '').trim();
-      if (!rawText) {
+    function renderPipelineLogs(logs) {
+      if (!Array.isArray(logs) || !logs.length) {
         return '';
       }
-
-      const uniqueParts = [];
-      rawText
-        .split(/\\s*;\\s*|\\n+/)
-        .map((part) => part.replace(/^Страница\\s+\\d+\\s*:\\s*/, '').trim())
-        .filter(Boolean)
-        .forEach((part) => {
-          if (!uniqueParts.includes(part)) {
-            uniqueParts.push(part);
-          }
-        });
-
-      return uniqueParts
-        .join('\\n')
-        .replace(/\\.\\s+Откройте\\s+/g, '.\\nОткройте ');
+      const entries = logs.map(log => {
+        const details = log && log.details ? Object.entries(log.details)
+          .filter(([, value]) => value !== null && value !== undefined && value !== '')
+          .map(([key, value]) => `${key}: ${typeof value === 'object' ? JSON.stringify(value, null, 2) : value}`)
+          .join('\\n') : '';
+        return `
+          <div class="pipeline-log-entry">
+            <div class="pipeline-log-head">
+              <span class="pipeline-log-stage">${escapeHtml(log.stage || 'unknown')}</span>
+              <span class="pipeline-log-status ${escapeHtml(log.status || 'warning')}">${escapeHtml(log.status || 'warning')}</span>
+            </div>
+            <div class="pipeline-log-message">${escapeHtml(log.message || '')}</div>
+            ${details ? `<div class="pipeline-log-details">${escapeHtml(details)}</div>` : ''}
+            ${log.recommendation ? `<div class="pipeline-log-recommendation">Рекомендация: ${escapeHtml(log.recommendation)}</div>` : ''}
+          </div>
+        `;
+      }).join('');
+      return `<div class="pipeline-log-box"><div class="pipeline-log-title">Логи обработки документа</div>${entries}</div>`;
     }
 
-    function renderOcrError(value) {
-      const normalizedText = normalizeOcrErrorMessage(value);
-      if (!normalizedText) {
+    function renderTraceResult(result) {
+      if (!result) {
         return '';
       }
-
+      const hasGoogleSheet = Boolean(result.google_spreadsheet_url);
+      const methodInfo = result.ocr && result.ocr.selected_method_label
+        ? `<div>Метод распознавания: <b>${escapeHtml(result.ocr.selected_method_label)}</b></div>`
+        : '';
+      const traceMeta = result.trace_metadata
+        ? `<div>Логический документ: <b>${escapeHtml(result.trace_metadata.logical_document_id || '')}</b> · evidence: <b>${escapeHtml(result.trace_metadata.evidence_version || '')}</b></div>`
+        : '';
+      const ocrError = result.ocr && result.ocr.error ? `<div>⚠️ OCR не сработал: ${escapeHtml(result.ocr.error)}</div>` : '';
+      const sheetError = result.google_spreadsheet_error ? `<div>Ошибка Google Таблицы: ${escapeHtml(result.google_spreadsheet_error)}</div>` : '';
+      if (hasGoogleSheet) {
+        return `
+          <div class="status-box">
+            <div class="status-line">✅ Накладная обработана успешно.</div>
+            <div class="status-line">✅ Данные добавлены в таблицу заведения.</div>
+            ${methodInfo}
+            ${traceMeta}
+            ${ocrError}
+            <div class="result-actions"><a class="secondary-btn" href="${escapeHtml(result.google_spreadsheet_url)}" target="_blank" rel="noopener">Открыть таблицу заведения</a></div>
+          </div>
+          ${renderPipelineLogs(result.pipeline_logs)}
+        `;
+      }
       return `
-        <div class="status-line">⚠️ OCR не сработал:</div>
-        <div>${escapeHtml(normalizedText).replaceAll('\\n', '<br>')}</div>
+        <div class="status-box warning">
+          <div class="status-line">⚠️ Накладная сохранена для ручной проверки.</div>
+          <div>Google Таблица не создана.</div>
+          ${methodInfo}
+          ${traceMeta}
+          ${ocrError}
+          ${sheetError}
+        </div>
+        ${renderPipelineLogs(result.pipeline_logs)}
       `;
     }
 
-    function getFileKey(file) {
-      return [file.name, file.size, file.lastModified, file.type].join('::');
+    function stopTracePolling() {
+      if (tracePollTimer) {
+        window.clearInterval(tracePollTimer);
+        tracePollTimer = null;
+      }
+    }
+
+    async function pollTrace(traceId) {
+      try {
+        const response = await fetch('/api/v1/invoice-review/upload-trace/' + encodeURIComponent(traceId));
+        if (!response.ok) {
+          return;
+        }
+        const data = await response.json();
+        if (activeTraceId !== traceId) {
+          return;
+        }
+        if (data.completed && data.result) {
+          output.innerHTML = renderTraceResult(data.result);
+        } else {
+          const existingLogBox = renderPipelineLogs(data.logs || []);
+          output.innerHTML = '<div class="loading">Документ обрабатывается. Логи обновляются автоматически...</div>' + existingLogBox;
+        }
+        if (data.completed) {
+          stopTracePolling();
+        }
+      } catch (error) {
+        // Ignore transient polling errors; final upload response remains source of truth.
+      }
+    }
+
+    function startTracePolling(traceId) {
+      activeTraceId = traceId;
+      stopTracePolling();
+      pollTrace(traceId);
+      tracePollTimer = window.setInterval(() => {
+        pollTrace(traceId);
+      }, 1200);
     }
 
     function formatFileSize(size) {
-      if (!Number.isFinite(size)) {
-        return '';
-      }
-      if (size < 1024) {
-        return `${size} Б`;
+      if (!Number.isFinite(size) || size <= 0) {
+        return 'размер не определен';
       }
       if (size < 1024 * 1024) {
-        return `${(size / 1024).toFixed(1)} КБ`;
+        return (size / 1024).toFixed(1) + ' КБ';
       }
-      return `${(size / 1024 / 1024).toFixed(2)} МБ`;
+      return (size / (1024 * 1024)).toFixed(2) + ' МБ';
     }
 
-    function resetSelectedFiles() {
-      selectedInvoiceFiles = [];
-      duplicateHint.textContent = '';
-      fileInput.value = '';
-      renderSelectedFiles();
+    function resetPreview() {
+      previewUrls.forEach(url => URL.revokeObjectURL(url));
+      previewUrls = [];
+      previewShell.classList.remove('visible');
+      previewMeta.textContent = '';
+      previewFrame.innerHTML = '<div class="preview-empty">Выберите один или несколько файлов в порядке страниц.</div>';
     }
 
-    function handleSelectedFiles(files) {
-      duplicateHint.textContent = '';
-      if (!files.length) {
-        renderSelectedFiles();
+    function syncFileInputFromSelection() {
+      if (typeof DataTransfer === 'undefined') {
+        return;
+      }
+      const transfer = new DataTransfer();
+      selectedFiles.forEach(file => transfer.items.add(file));
+      fileInput.files = transfer.files;
+    }
+
+    function moveSelectedFile(index, direction) {
+      const nextIndex = index + direction;
+      if (nextIndex < 0 || nextIndex >= selectedFiles.length) {
+        return;
+      }
+      const copy = selectedFiles.slice();
+      const [file] = copy.splice(index, 1);
+      copy.splice(nextIndex, 0, file);
+      selectedFiles = copy;
+      syncFileInputFromSelection();
+      renderFilePreviews(selectedFiles);
+    }
+
+    function removeSelectedFile(index) {
+      selectedFiles = selectedFiles.filter((_, current) => current !== index);
+      syncFileInputFromSelection();
+      renderFilePreviews(selectedFiles);
+    }
+
+    function bindPreviewActions() {
+      previewFrame.querySelectorAll('[data-move]').forEach(node => {
+        node.addEventListener('click', () => {
+          moveSelectedFile(Number(node.dataset.index), Number(node.dataset.move));
+        });
+      });
+      previewFrame.querySelectorAll('[data-remove]').forEach(node => {
+        node.addEventListener('click', () => {
+          removeSelectedFile(Number(node.dataset.index));
+        });
+      });
+    }
+
+    function renderFilePreviews(files) {
+      resetPreview();
+      if (!files || !files.length) {
         return;
       }
 
-      if (!multipageCheckbox.checked) {
-        selectedInvoiceFiles = [files[0]];
-        if (files.length > 1) {
-          duplicateHint.textContent = 'Для одностраничной накладной выбран только первый файл.';
-        }
-        renderSelectedFiles();
-        return;
-      }
-
-      const existingKeys = new Set(selectedInvoiceFiles.map(getFileKey));
-      const skippedNames = [];
-      for (const file of files) {
-        const key = getFileKey(file);
-        if (existingKeys.has(key)) {
-          skippedNames.push(file.name);
-        } else {
-          selectedInvoiceFiles.push(file);
-          existingKeys.add(key);
-        }
-      }
-      if (skippedNames.length) {
-        duplicateHint.textContent = `Повторно выбранные файлы не добавлены: ${skippedNames.join(', ')}`;
-      }
-      renderSelectedFiles();
-    }
-
-    function renderSelectedFiles() {
-      selectedFilesBox.hidden = selectedInvoiceFiles.length === 0;
-      selectedFilesList.innerHTML = selectedInvoiceFiles.map((file, index) => {
-        const sizeText = formatFileSize(file.size);
-        const pageText = `Страница ${index + 1}: `;
-        return `
-          <li>
-            ${escapeHtml(pageText)}${escapeHtml(file.name)}
-            ${sizeText ? `<span class="file-size">(${escapeHtml(sizeText)})</span>` : ''}
-            <button class="remove-file-btn" type="button" data-remove-file-index="${index}">Убрать</button>
-          </li>
+      previewShell.classList.add('visible');
+      previewMeta.textContent = files.length + ' стр. · ' + Array.from(files)
+        .map(file => file.name + ' (' + formatFileSize(file.size) + ')')
+        .join(' · ');
+      previewFrame.innerHTML = Array.from(files).map((file, index) => {
+        const url = URL.createObjectURL(file);
+        previewUrls.push(url);
+        const toolbar = `
+          <div class="preview-item-toolbar">
+            <span>Страница ${index + 1}: ${escapeHtml(file.name)}</span>
+            <div class="preview-item-actions">
+              <button type="button" data-index="${index}" data-move="-1" ${index === 0 ? 'disabled' : ''}>↑</button>
+              <button type="button" data-index="${index}" data-move="1" ${index === files.length - 1 ? 'disabled' : ''}>↓</button>
+              <button type="button" data-index="${index}" data-remove="1">Удалить</button>
+            </div>
+          </div>
         `;
+        if (file.type.startsWith('image/')) {
+          return '<div class="preview-item">' + toolbar + '<img alt="Страница ' + (index + 1) + '" src="' + url + '" /></div>';
+        }
+        if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+          return '<div class="preview-item">' + toolbar + '<iframe title="PDF страница ' + (index + 1) + '" src="' + url + '#view=FitH"></iframe></div>';
+        }
+        return '<div class="preview-item">' + toolbar + '<div class="preview-empty">Превью недоступно.</div></div>';
       }).join('');
+      bindPreviewActions();
     }
+
+    async function refreshGoogleAuthStatus() {
+      googleAuthStatus.textContent = 'Проверяю статус Google OAuth...';
+      googleAuthBtn.disabled = true;
+      googleAuthRefreshBtn.disabled = true;
+      try {
+        const response = await fetch('/api/v1/google-oauth/status');
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || 'Не удалось получить статус Google OAuth.');
+        }
+        if (data.authorized) {
+          googleAuthStatus.innerHTML = 'Google OAuth подключен. Redirect URI: <b>' + escapeHtml(data.redirect_uri || '') + '</b>';
+        } else if (data.configured) {
+          googleAuthStatus.innerHTML = 'Google OAuth еще не выполнен. Конфигурация есть, можно авторизоваться с этой страницы.';
+        } else {
+          googleAuthStatus.innerHTML = 'Google OAuth не настроен в `.env`. Сначала заполните клиентские переменные OAuth.';
+        }
+      } catch (error) {
+        googleAuthStatus.innerHTML = 'Ошибка проверки Google OAuth: ' + escapeHtml(error.message);
+      } finally {
+        googleAuthBtn.disabled = false;
+        googleAuthRefreshBtn.disabled = false;
+      }
+    }
+
+    fileInput.addEventListener('change', () => {
+      selectedFiles = Array.from(fileInput.files || []);
+      syncFileInputFromSelection();
+      renderFilePreviews(selectedFiles);
+    });
+
+    googleAuthBtn.addEventListener('click', () => {
+      const popup = window.open(
+        '/api/v1/google-oauth/authorize',
+        'googleOAuth',
+        'width=720,height=760,menubar=no,toolbar=no,status=no'
+      );
+      if (!popup) {
+        googleAuthStatus.innerHTML = 'Браузер заблокировал popup. Откройте <a href="/api/v1/google-oauth/authorize" target="_blank" rel="noopener">авторизацию Google</a> вручную.';
+      }
+    });
+
+    googleAuthRefreshBtn.addEventListener('click', () => {
+      refreshGoogleAuthStatus();
+    });
+
+    window.addEventListener('message', event => {
+      if (!event || !event.data || event.data.type !== 'google-oauth-success') {
+        return;
+      }
+      refreshGoogleAuthStatus();
+    });
 
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
-      const selectedFiles = selectedInvoiceFiles.slice();
-      const isMultipage = multipageCheckbox.checked;
-      const loadingText = 'Обрабатка через Google Drive OCR. Подождите...';
-      output.innerHTML = `<div class="loading">${escapeHtml(loadingText)}</div>`;
+      const selectedMethod = extractionMethodInput.value || 'hybrid';
+      const selectedMethodLabel = methodLabels[selectedMethod] || selectedMethod;
+      const traceId = (window.crypto && window.crypto.randomUUID)
+        ? window.crypto.randomUUID()
+        : ('trace-' + Date.now() + '-' + Math.random().toString(16).slice(2));
+      startTracePolling(traceId);
+      output.innerHTML = '<div class="loading">Файл загружается. Метод распознавания: <b>' + escapeHtml(selectedMethodLabel) + '</b>. Подождите...</div>';
       button.disabled = true;
 
       const formData = new FormData();
@@ -418,23 +707,19 @@ def upload_invoice_page():
         button.disabled = false;
         return;
       }
-      if (!isMultipage && selectedFiles.length > 1) {
-        output.innerHTML = '<div class="error"><b>Ошибка:</b> для одностраничной накладной выберите один файл или включите галочку «Многостраничная накладная».</div>';
+      if (selectedFiles.length > 1 && selectedMethod !== 'openai') {
+        output.innerHTML = '<div class="error"><b>Ошибка:</b> многостраничная загрузка доступна только в режиме OpenAI vision parser.</div>';
         button.disabled = false;
+        stopTracePolling();
         return;
       }
-      if (isMultipage) {
-        selectedFiles.forEach(file => formData.append('files', file));
-      } else {
-        formData.append('file', selectedFiles[0]);
-      }
-      formData.append('multipage_invoice', isMultipage ? 'true' : 'false');
+      selectedFiles.forEach(file => formData.append('files', file));
       formData.append('create_google_sheet', 'true');
-      formData.append('user_timezone', getUserTimezone());
-      formData.append('user_utc_offset_minutes', getUserUtcOffsetMinutes());
+      formData.append('extraction_method', selectedMethod);
+      formData.append('upload_trace_id', traceId);
 
       try {
-        const response = await fetch('/api/v1/invoice-review/upload-photo', {
+        const response = await fetch('/api/v1/invoice-review/upload-document-live', {
           method: 'POST',
           body: formData
         });
@@ -446,42 +731,47 @@ def upload_invoice_page():
           throw new Error(responseText || 'Сервер вернул не JSON-ответ.');
         }
         if (!response.ok) {
-          throw new Error(data.detail || JSON.stringify(data, null, 2));
+          const detail = typeof data.detail === 'object' ? JSON.stringify(data.detail) : (data.detail || JSON.stringify(data, null, 2));
+          throw new Error(detail);
         }
-
-        const hasGoogleSheet = Boolean(data.google_spreadsheet_url);
-        const ocrError = data.ocr && data.ocr.error ? renderOcrError(data.ocr.error) : '';
-        if (hasGoogleSheet) {
-          output.innerHTML = `
-            <div class="status-box">
-              <div class="status-line">✅ Накладная обработана успешно.</div>
-              <div class="status-line">✅ Данные добавлены в таблицу заведения.</div>
-              ${ocrError}
-              <div class="result-actions"><a class="secondary-btn" href="${escapeHtml(data.google_spreadsheet_url)}" data-google-sheet-url="${escapeHtml(data.google_spreadsheet_url)}">Открыть таблицу заведения</a></div>
-            </div>
-          `;
-        } else if (ocrError) {
-          output.innerHTML = `
-            <div class="status-box warning">
-              ${ocrError}
-            </div>
-          `;
-        } else {
-          const sheetError = data.google_spreadsheet_error ? `<div>Ошибка Google Таблицы: ${escapeHtml(data.google_spreadsheet_error)}</div>` : '';
-          output.innerHTML = `
-            <div class="status-box warning">
-              <div class="status-line">⚠️ Накладная сохранена для ручной проверки.</div>
-              <div>Google Таблица не создана.</div>
-              ${sheetError}
-            </div>
-          `;
+        if (data && data.trace_id) {
+          output.innerHTML = '<div class="loading">Документ принят в обработку. Логи обновляются автоматически...</div>';
+          return;
         }
+        stopTracePolling();
+        output.innerHTML = renderTraceResult(data);
       } catch (error) {
-        output.innerHTML = `<div class="error"><b>Ошибка загрузки:</b> ${escapeHtml(error.message)}</div>`;
+        stopTracePolling();
+        let detail = null;
+        try {
+          detail = JSON.parse(error.message);
+        } catch (parseError) {
+          detail = null;
+        }
+        if (detail && typeof detail === 'object') {
+          const retryButton = detail.retry_recommended_method
+            ? `<div class="button-row compact"><button id="retryRecommendedBtn" type="button">Выбрать режим: ${escapeHtml(detail.retry_recommended_label || detail.retry_recommended_method)}</button></div>`
+            : '';
+          output.innerHTML = `
+            <div class="error"><b>Ошибка загрузки:</b> ${escapeHtml(detail.error_message || 'Процесс остановлен из-за пустого или некорректного ответа.')}</div>
+            ${retryButton}
+            ${renderPipelineLogs(detail.pipeline_logs)}
+          `;
+          const retryButtonNode = document.getElementById('retryRecommendedBtn');
+          if (retryButtonNode) {
+            retryButtonNode.addEventListener('click', () => {
+              extractionMethodInput.value = detail.retry_recommended_method;
+            });
+          }
+        } else {
+          output.innerHTML = `<div class="error"><b>Ошибка загрузки:</b> ${escapeHtml(error.message)}</div>`;
+        }
       } finally {
         button.disabled = false;
       }
     });
+
+    refreshGoogleAuthStatus();
   </script>
 </body>
 </html>
@@ -497,188 +787,358 @@ def _fallback_ocr_result(exc: Exception) -> dict:
         "error": str(exc),
     }
 
-def _collect_invoice_uploads(
-    file: UploadFile | None,
-    files: list[UploadFile] | None,
-    multipage_invoice: bool,
-) -> list[UploadFile]:
-    uploads = list(files or [])
-    if file is not None:
-        uploads.insert(0, file)
-    if not multipage_invoice and len(uploads) > 1:
-        raise HTTPException(
-            status_code=400,
-            detail="Для нескольких файлов включите галочку «Многостраничная накладная».",
-        )
-    return uploads
-
-
-def _save_recognize_and_parse_invoice_page(
-    upload_file: UploadFile,
-    target_dir: Path,
-    page_index: int,
-) -> dict:
-    safe_name = _safe_invoice_upload_name(upload_file.filename, page_index)
-    file_path = target_dir / safe_name
-    with file_path.open("wb") as buffer:
-        shutil.copyfileobj(upload_file.file, buffer)
-
-    try:
-        ocr_result = recognize_invoice_image(str(file_path))
-    except OcrConfigurationError as exc:
-        ocr_result = _fallback_ocr_result(exc)
-    except Exception as exc:  # noqa: BLE001 - external OCR errors must not break upload
-        ocr_result = _fallback_ocr_result(exc)
-
-    parsed = extract_invoice_payload_with_fallback(ocr_result["raw_text"], safe_name)
-    return {
-        "page_index": page_index,
-        "saved_file": {
-            "safe_name": safe_name,
-            "path": str(file_path),
-            "content_type": upload_file.content_type,
-        },
-        "ocr": ocr_result,
-        "parsed": parsed,
-    }
-
-
-def _safe_invoice_upload_name(filename: str | None, page_index: int) -> str:
-    original_name = Path(filename or f"invoice_page_{page_index}").name or f"invoice_page_{page_index}"
-    original_path = Path(original_name)
-    stem = original_path.stem or f"invoice_page_{page_index}"
-    suffix = original_path.suffix
-    unique_part = uuid4().hex[:8]
-    return f"page_{page_index}_{unique_part}_{stem}{suffix}"
-
-
-def _merge_invoice_page_payloads(page_results: list[dict]) -> dict:
-    merged = dict(page_results[0]["parsed"] or {})
-    all_items = []
-    raw_text_parts = []
-    parser_notes = []
-    parser_providers = []
-
-    for page in page_results:
-        parsed = page["parsed"] or {}
-        saved_file = page["saved_file"]
-        raw_text = parsed.get("raw_text") or page["ocr"].get("raw_text") or ""
-        raw_text_parts.append(f"--- File {page['page_index']}: {saved_file['safe_name']} ---\n{raw_text}")
-        all_items.extend(parsed.get("items") or [])
-        _extend_unique(parser_notes, parsed.get("parser_notes") or [])
-        if parsed.get("parser_provider"):
-            _extend_unique(parser_providers, [parsed["parser_provider"]])
-        if page["page_index"] > 1:
-            _fill_missing_invoice_header_fields(merged, parsed)
-
-    merged["raw_text"] = "\n\n".join(raw_text_parts)
-    merged["items"] = all_items
-    if len(page_results) > 1 and all_items:
-        # Для многостраничной накладной итог в таблице должен считаться по всем
-        # добавленным строкам, а не по возможному промежуточному итогу первой страницы.
-        merged["total_sum"] = None
-    if len(page_results) > 1:
-        parser_notes.insert(0, f"Многостраничная накладная: объединено файлов/страниц: {len(page_results)}.")
-    merged["parser_notes"] = parser_notes
-    if len(parser_providers) == 1:
-        merged["parser_provider"] = parser_providers[0]
-    elif parser_providers:
-        merged["parser_provider"] = "multipage_" + "+".join(parser_providers)
-    return merged
-
-
-def _fill_missing_invoice_header_fields(merged: dict, parsed: dict) -> None:
-    fields = (
-        "supplier",
-        "supplier_legal_name",
-        "invoice_number",
-        "invoice_date",
-        "document_form",
-        "supplier_inn",
-        "consignee",
-        "recipient",
-        "trade_point",
-        "warehouse",
-        "basis",
-        "venue",
-        "delivery_address",
-        "store",
-        "display_store",
-        "iiko_default_store_id",
-        "total_sum",
-    )
-    for field in fields:
-        if _is_empty_value(merged.get(field)) and not _is_empty_value(parsed.get(field)):
-            merged[field] = parsed.get(field)
-
-
-def _merge_invoice_page_ocr_results(page_results: list[dict]) -> dict:
-    raw_text = "\n\n".join(page["ocr"].get("raw_text") or "" for page in page_results)
-    providers = []
-    errors = []
-    for page in page_results:
-        ocr = page["ocr"]
-        _extend_unique(providers, [ocr.get("provider") or "unknown"])
-        if ocr.get("error"):
-            error_text = str(ocr["error"]).strip()
-            if error_text and error_text not in errors:
-                errors.append(error_text)
-    result = {
-        "provider": providers[0] if len(providers) == 1 else "+".join(providers),
-        "raw_text": raw_text,
-        "confidence": None,
-        "pages": len(page_results),
-    }
-    if errors:
-        result["error"] = "; ".join(errors)
-    return result
-
-
-def _extend_unique(target: list, values: list) -> None:
-    for value in values:
-        if value not in (None, "") and value not in target:
-            target.append(value)
-
-
-def _is_empty_value(value) -> bool:
-    return value is None or value == "" or value == []
-
-
 @router.post("/upload-photo", response_model=InvoiceReviewResponse)
 async def upload_invoice_photo_real_ocr(
-    file: UploadFile | None = File(default=None),
-    files: list[UploadFile] | None = File(default=None),
-    multipage_invoice: bool = Form(default=False),
+    file: UploadFile = File(...),
     venue: str | None = Form(default=None),
     delivery_address: str | None = Form(default=None),
     request_id: str | None = Form(default=None),
     chat_id: str | None = Form(default=None),
     user_id: str | None = Form(default=None),
-    user_timezone: str | None = Form(default=None),
-    user_utc_offset_minutes: str | None = Form(default=None),
     create_google_sheet: bool = Form(default=True),
+    extraction_method: str | None = Form(default=None),
+    upload_trace_id: str | None = Form(default=None),
     public_api_base_url: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ):
-    upload_files = _collect_invoice_uploads(file, files, multipage_invoice)
-    if not upload_files:
-        raise HTTPException(status_code=400, detail="Выберите файл накладной.")
-
     target_dir = Path(settings.uploaded_invoices_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
-    page_results = []
-    for page_index, upload_file in enumerate(upload_files, start=1):
-        page_results.append(_save_recognize_and_parse_invoice_page(upload_file, target_dir, page_index))
+    safe_name = Path(file.filename or "invoice_upload").name
+    file_path = target_dir / safe_name
+    with file_path.open("wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    return _process_invoice_upload(
+        file_path=str(file_path),
+        file_name=safe_name,
+        file_type=file.content_type or "image",
+        venue=venue,
+        delivery_address=delivery_address,
+        request_id=request_id,
+        chat_id=chat_id,
+        user_id=user_id,
+        create_google_sheet=create_google_sheet,
+        extraction_method=extraction_method,
+        public_api_base_url=public_api_base_url,
+        db=db,
+        upload_trace_id=upload_trace_id,
+    )
 
-    parsed = _merge_invoice_page_payloads(page_results)
-    ocr_result = _merge_invoice_page_ocr_results(page_results)
-    saved_files = [page["saved_file"] for page in page_results]
-    first_file = saved_files[0]
+
+@router.post("/upload-photo-live")
+async def upload_invoice_photo_live(
+    file: UploadFile = File(...),
+    venue: str | None = Form(default=None),
+    delivery_address: str | None = Form(default=None),
+    request_id: str | None = Form(default=None),
+    chat_id: str | None = Form(default=None),
+    user_id: str | None = Form(default=None),
+    create_google_sheet: bool = Form(default=True),
+    extraction_method: str | None = Form(default=None),
+    upload_trace_id: str | None = Form(default=None),
+    public_api_base_url: str | None = Form(default=None),
+):
+    target_dir = Path(settings.uploaded_invoices_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = Path(file.filename or "invoice_upload").name
+    file_path = target_dir / safe_name
+    with file_path.open("wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    trace_id = upload_trace_id or f"trace-{safe_name}-{Path(file_path).stat().st_mtime_ns}"
+    initialize_trace(trace_id)
+    append_trace_log(
+        trace_id,
+        {
+            "stage": "job_queued",
+            "status": "running",
+            "message": "Документ принят в фоновую обработку.",
+            "details": {"filename": safe_name},
+        },
+    )
+    thread = Thread(
+        target=_process_invoice_upload_background,
+        kwargs={
+            "trace_id": trace_id,
+            "file_path": str(file_path),
+            "file_name": safe_name,
+            "file_type": file.content_type or "image",
+            "venue": venue,
+            "delivery_address": delivery_address,
+            "request_id": request_id,
+            "chat_id": chat_id,
+            "user_id": user_id,
+            "create_google_sheet": create_google_sheet,
+            "extraction_method": extraction_method,
+            "public_api_base_url": public_api_base_url or settings.public_api_base_url,
+        },
+        daemon=True,
+    )
+    thread.start()
+    return {"trace_id": trace_id, "status": "processing"}
+
+
+@router.post("/upload-document-live")
+async def upload_invoice_document_live(
+    files: list[UploadFile] = File(...),
+    venue: str | None = Form(default=None),
+    delivery_address: str | None = Form(default=None),
+    request_id: str | None = Form(default=None),
+    chat_id: str | None = Form(default=None),
+    user_id: str | None = Form(default=None),
+    create_google_sheet: bool = Form(default=True),
+    extraction_method: str | None = Form(default=None),
+    upload_trace_id: str | None = Form(default=None),
+    public_api_base_url: str | None = Form(default=None),
+):
+    if not files:
+        raise HTTPException(status_code=422, detail="Нужно загрузить хотя бы одну страницу.")
+    if len(files) > settings.openai_max_image_pages:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Слишком много страниц: максимум {settings.openai_max_image_pages}.",
+        )
+    document_upload_id = f"upload-{uuid4().hex}"
+    target_dir = Path(settings.uploaded_invoices_dir) / document_upload_id
+    target_dir.mkdir(parents=True, exist_ok=True)
+    file_paths: list[str] = []
+    file_names: list[str] = []
+    file_types: list[str] = []
+    for index, file in enumerate(files, start=1):
+        safe_name = Path(file.filename or f"page-{index}").name
+        target = target_dir / f"{index:03d}-{safe_name}"
+        with target.open("wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        file_paths.append(str(target))
+        file_names.append(safe_name)
+        file_types.append(file.content_type or "image")
+
+    trace_id = upload_trace_id or f"trace-{document_upload_id}"
+    initialize_trace(trace_id)
+    append_trace_log(
+        trace_id,
+        {
+            "stage": "job_queued",
+            "status": "running",
+            "message": "Многостраничный документ принят в фоновую обработку.",
+            "details": {
+                "logical_upload_id": document_upload_id,
+                "pages": len(file_paths),
+                "filenames": file_names,
+            },
+        },
+    )
+    thread = Thread(
+        target=_process_invoice_upload_background,
+        kwargs={
+            "trace_id": trace_id,
+            "file_path": file_paths[0],
+            "file_name": file_names[0],
+            "file_type": "multipage" if len(file_paths) > 1 else file_types[0],
+            "file_paths": file_paths,
+            "file_names": file_names,
+            "file_types": file_types,
+            "venue": venue,
+            "delivery_address": delivery_address,
+            "request_id": request_id,
+            "chat_id": chat_id,
+            "user_id": user_id,
+            "create_google_sheet": create_google_sheet,
+            "extraction_method": extraction_method,
+            "public_api_base_url": public_api_base_url or settings.public_api_base_url,
+        },
+        daemon=True,
+    )
+    thread.start()
+    return {
+        "trace_id": trace_id,
+        "status": "processing",
+        "logical_upload_id": document_upload_id,
+        "pages": len(file_paths),
+    }
+
+
+@router.get("/upload-trace/{trace_id}")
+def get_upload_trace(trace_id: str):
+    trace = get_trace(trace_id)
+    if trace is None:
+        raise HTTPException(status_code=404, detail="Трассировка загрузки не найдена")
+    return trace
+
+
+def _process_invoice_upload_background(
+    *,
+    trace_id: str,
+    file_path: str,
+    file_name: str,
+    file_type: str,
+    file_paths: list[str] | None = None,
+    file_names: list[str] | None = None,
+    file_types: list[str] | None = None,
+    venue: str | None,
+    delivery_address: str | None,
+    request_id: str | None,
+    chat_id: str | None,
+    user_id: str | None,
+    create_google_sheet: bool,
+    extraction_method: str | None,
+    public_api_base_url: str,
+) -> None:
+    db = SessionLocal()
+    try:
+        response = _process_invoice_upload(
+            file_path=file_path,
+            file_name=file_name,
+            file_type=file_type,
+            file_paths=file_paths,
+            file_names=file_names,
+            file_types=file_types,
+            venue=venue,
+            delivery_address=delivery_address,
+            request_id=request_id,
+            chat_id=chat_id,
+            user_id=user_id,
+            create_google_sheet=create_google_sheet,
+            extraction_method=extraction_method,
+            public_api_base_url=public_api_base_url,
+            db=db,
+            upload_trace_id=trace_id,
+        )
+        set_trace_result(trace_id, response)
+        finalize_trace(trace_id, error_message=response.get("google_spreadsheet_error"))
+    except Exception as exc:  # noqa: BLE001 - background upload must surface fatal failures in trace
+        db_hint = describe_database_write_error(exc)
+        error_message = db_hint or str(exc)
+        append_trace_log(
+            trace_id,
+            {
+                "stage": "job_failed",
+                "status": "error",
+                "message": "Фоновая обработка документа завершилась ошибкой.",
+                "details": {"error": error_message},
+            },
+        )
+        finalize_trace(trace_id, error_message=error_message)
+    finally:
+        db.close()
+
+
+def _process_invoice_upload(
+    *,
+    file_path: str,
+    file_name: str,
+    file_type: str,
+    file_paths: list[str] | None = None,
+    file_names: list[str] | None = None,
+    file_types: list[str] | None = None,
+    venue: str | None,
+    delivery_address: str | None,
+    request_id: str | None,
+    chat_id: str | None,
+    user_id: str | None,
+    create_google_sheet: bool,
+    extraction_method: str | None,
+    public_api_base_url: str | None,
+    db: Session,
+    upload_trace_id: str | None,
+) -> dict:
+    def trace_log(log: dict) -> None:
+        if upload_trace_id:
+            append_trace_log(upload_trace_id, log)
+
+    source_paths = file_paths or [file_path]
+    source_names = file_names or [file_name]
+    if len(source_paths) == 1:
+        extraction = extract_invoice_document(
+            source_paths[0],
+            source_names[0],
+            extraction_method=extraction_method,
+            on_log=trace_log,
+        )
+    else:
+        extraction = extract_invoice_document_set(
+            source_paths,
+            source_names,
+            extraction_method=extraction_method,
+            on_log=trace_log,
+        )
+    parsed = extraction["payload"]
+    pipeline_logs = extraction.get("pipeline_logs", [])
+    evidence = extraction.get("evidence") or {}
+    trace_metadata = {
+        "logical_document_id": evidence.get("logical_document_id"),
+        "evidence_version": evidence.get("evidence_version"),
+        "pages": evidence.get("pages"),
+        "selected_method": extraction.get("selected_method"),
+        "source_files": [
+            {"page_number": index, "filename": name}
+            for index, name in enumerate(source_names, start=1)
+        ],
+    }
+    if upload_trace_id:
+        set_trace_metadata(upload_trace_id, **trace_metadata)
+    if extraction.get("stop_recommended"):
+        if upload_trace_id:
+            finalize_trace(upload_trace_id, error_message=extraction.get("error"))
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error_message": extraction.get("error")
+                or "Процесс остановлен: получен пустой или невалидный результат на одном из этапов.",
+                "pipeline_logs": pipeline_logs,
+                "retry_recommended_method": extraction.get("retry_recommended_method"),
+                "retry_recommended_label": extraction.get("retry_recommended_label"),
+            },
+        )
+    if settings.google_sheets_enabled and settings.google_target_spreadsheet_id:
+        mapping_log = {
+            "stage": "reference_mapping_start",
+            "status": "running",
+            "message": "Запускаю deterministic сопоставление со справочниками Google Sheets.",
+            "details": {},
+        }
+        pipeline_logs.append(mapping_log)
+        trace_log(mapping_log)
+        try:
+            references = load_invoice_reference_catalogs()
+            parsed = apply_reference_mapping_to_payload(
+                parsed,
+                products=references["products"],
+                packages=references["packages"],
+                conversion_exceptions=references.get("conversion_exceptions") or [],
+            )
+            mapping_complete_log = {
+                "stage": "reference_mapping_complete",
+                "status": "ok",
+                "message": "Сопоставление со справочниками Google Sheets завершено.",
+                "details": {"items_count": len(parsed.get("items") or [])},
+            }
+            pipeline_logs.append(mapping_complete_log)
+            trace_log(mapping_complete_log)
+        except Exception as exc:  # noqa: BLE001 - reference outage must remain visible but not destroy OCR output
+            parsed.setdefault("parser_notes", []).append(
+                f"Не удалось выполнить сопоставление со справочниками Google Sheets: {exc}"
+            )
+            mapping_error_log = {
+                "stage": "reference_mapping_failed",
+                "status": "error",
+                "message": "Не удалось выполнить сопоставление со справочниками Google Sheets.",
+                "details": {"error": str(exc)},
+            }
+            pipeline_logs.append(mapping_error_log)
+            trace_log(mapping_error_log)
+    _apply_duplicate_status(db, parsed)
+    parser_metadata = parsed.get("parser_metadata") or {}
+    parser_metadata["source_files"] = [
+        {"page_number": index, "filename": name}
+        for index, name in enumerate(source_names, start=1)
+    ]
+    parser_metadata["evidence_version"] = evidence.get("evidence_version")
+    parser_metadata["logical_document_id"] = evidence.get("logical_document_id")
     payload = InvoiceReviewCreateRequest(
-        file_id=", ".join(saved_file["safe_name"] for saved_file in saved_files),
-        file_type=first_file["content_type"] or "image",
-        file_url=", ".join(saved_file["path"] for saved_file in saved_files),
-        raw_text=parsed.get("raw_text") or ocr_result["raw_text"],
+        file_id="; ".join(source_names),
+        file_type=file_type,
+        file_url=file_path,
+        raw_text=extraction.get("raw_text"),
         request_id=request_id,
         supplier=parsed.get("supplier"),
         supplier_legal_name=parsed.get("supplier_legal_name"),
@@ -702,28 +1162,106 @@ async def upload_invoice_photo_real_ocr(
         user_utc_offset_minutes=user_utc_offset_minutes or None,
         multipage_invoice=len(page_results) > 1,
         items=[RecognizedInvoiceItem(**item) for item in parsed.get("items", [])],
+        parser_metadata=parser_metadata,
     )
     receiving = create_invoice_review(db, payload)
     sheet = build_review_sheet(receiving)
     csv_path = save_review_csv(receiving)
     response = _review_response(receiving, sheet, csv_path)
     response["ocr"] = {
-        "provider": ocr_result["provider"],
-        "pages": ocr_result.get("pages"),
-        "raw_text_length": len(ocr_result.get("raw_text") or ""),
+        "provider": extraction["provider"],
+        "pages": extraction.get("pages"),
+        "raw_text_length": len(extraction.get("raw_text") or ""),
+        "selected_method": extraction.get("selected_method"),
+        "selected_method_label": _extraction_method_label(extraction.get("selected_method")),
     }
-    if ocr_result.get("error"):
-        response["ocr"]["error"] = ocr_result["error"]
+    response["trace_metadata"] = trace_metadata
+    if extraction.get("error"):
+        response["ocr"]["error"] = extraction["error"]
     response["parser_notes"] = parsed.get("parser_notes", [])
     response["parser_provider"] = parsed.get("parser_provider")
+    response["pipeline_logs"] = [PipelineLogEntry(**log).model_dump(mode="json") for log in pipeline_logs]
     if create_google_sheet:
+        google_log = {
+            "stage": "google_sheet_start",
+            "status": "running",
+            "message": "Пишу результат в Google Sheets.",
+            "details": {},
+        }
+        response["pipeline_logs"].append(google_log)
+        trace_log(google_log)
         try:
             spreadsheet = create_real_google_sheet_for_review(db, receiving, public_api_base_url or settings.public_api_base_url)
             response["google_spreadsheet_id"] = spreadsheet["spreadsheet_id"]
             response["google_spreadsheet_url"] = spreadsheet["spreadsheet_url"]
+            google_ok_log = {
+                "stage": "google_sheet_complete",
+                "status": "ok",
+                "message": "Google Sheets успешно обновлен.",
+                "details": {"spreadsheet_id": spreadsheet["spreadsheet_id"]},
+            }
+            response["pipeline_logs"].append(google_ok_log)
+            trace_log(google_ok_log)
         except Exception as exc:  # noqa: BLE001 - external provider errors must be surfaced to user
             response["google_spreadsheet_error"] = str(exc)
+            google_error_log = {
+                "stage": "google_sheet_failed",
+                "status": "error",
+                "message": "Не удалось записать результат в Google Sheets.",
+                "details": {"error": str(exc)},
+            }
+            response["pipeline_logs"].append(google_error_log)
+            trace_log(google_error_log)
+    if upload_trace_id:
+        set_trace_result(upload_trace_id, response)
+        finalize_trace(upload_trace_id, error_message=response.get("google_spreadsheet_error"))
     return response
+
+
+def _extraction_method_label(value: str | None) -> str | None:
+    if value == "openai":
+        return "OpenAI vision parser (text + images)"
+    if value == "google_ocr":
+        return "Google OCR"
+    if value == "mineru":
+        return "MinerU"
+    if value == "hybrid":
+        return "Гибрид: MinerU -> Google OCR fallback"
+    return None
+
+
+def _apply_duplicate_status(db: Session, parsed: dict) -> None:
+    metadata = parsed.get("parser_metadata")
+    if not isinstance(metadata, dict):
+        return
+    document_form = str(parsed.get("document_form") or "").strip()
+    invoice_number = canonical_invoice_number(parsed.get("invoice_number"), document_form=document_form)
+    supplier = str(parsed.get("supplier") or "").strip().casefold()
+    invoice_date = str(parsed.get("invoice_date") or "").strip()
+    total_sum = parsed.get("total_sum")
+    if not invoice_number and not supplier:
+        return
+
+    possible = False
+    for document in db.query(ReceivingDocument).all():
+        existing_invoice_number = canonical_invoice_number(document.invoice_number, document_form=document_form)
+        if invoice_number and existing_invoice_number == invoice_number:
+            existing_supplier = (document.supplier_legal_name or "").strip().casefold()
+            if supplier and existing_supplier == supplier:
+                metadata.update(duplicate="Да", upload_status="Не готово", row_status="Распознано")
+                return
+            possible = True
+        if supplier and (document.supplier_legal_name or "").strip().casefold() == supplier:
+            if invoice_date and document.invoice_date == invoice_date:
+                try:
+                    stored = json.loads(document.recognized_items_json or "{}")
+                    stored_total = (stored.get("header") or {}).get("total_sum")
+                except (json.JSONDecodeError, AttributeError):
+                    stored_total = None
+                if total_sum is not None and stored_total == total_sum:
+                    possible = True
+    if possible:
+        metadata.update(duplicate="?", upload_status="Требует проверки", row_status="Распознано")
 
 
 @router.post("/upload", response_model=InvoiceReviewResponse)

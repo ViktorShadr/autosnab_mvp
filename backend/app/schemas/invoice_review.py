@@ -1,8 +1,29 @@
 from pydantic import BaseModel, Field
 
 
+class PipelineLogEntry(BaseModel):
+    stage: str
+    status: str
+    message: str
+    details: dict = Field(default_factory=dict)
+    recommendation: str | None = None
+
+
 class RecognizedInvoiceItem(BaseModel):
     name: str = Field(..., examples=["Молоко кокосовое Aroy-D 400 мл"])
+    raw_name: str | None = None
+    clean_name: str | None = None
+    normalized_name_candidate: str | None = None
+    brand_or_descriptor: str | None = None
+    package: dict = Field(default_factory=dict)
+    document_unit: str | None = None
+    quantity_document: float | None = None
+    quantity_multiplier: float | None = None
+    accounting_quantity_candidate: float | None = None
+    accounting_unit_candidate: str | None = None
+    codes: list[str] = Field(default_factory=list)
+    needs_review: bool = False
+    review_reason: str | None = None
     quantity: float = Field(..., examples=[5])
     unit: str = "шт"
     price: float = Field(..., examples=[250])
@@ -23,6 +44,19 @@ class RecognizedInvoiceItem(BaseModel):
     store_id: str | None = Field(default=None, description="iiko store/account GUID for item <store>")
     mapping_status: str | None = Field(default=None, description="ready / needs_review for automatic iiko mapping")
     mapping_error: str | None = Field(default=None, description="Human-readable mapping problem, if any")
+    correction: str | None = None
+    amount_with_vat: float | None = None
+    us_product_name: str | None = None
+    product_code: str | None = None
+    product_found: str | None = None
+    us_unit: str | None = None
+    quantity_us: float | None = None
+    price_us: float | None = None
+    conversion_factor: float | None = None
+    conversion_method: str | None = None
+    conversion_source_id: str | None = None
+    conversion_review_reason: str | None = None
+    package_reference_id: str | None = None
 
 
 class InvoiceReviewCreateRequest(BaseModel):
@@ -44,6 +78,7 @@ class InvoiceReviewCreateRequest(BaseModel):
     display_store: str | None = None
     document_form: str | None = None
     supplier_inn: str | None = None
+    shipper: str | None = None
     consignee: str | None = None
     recipient: str | None = None
     trade_point: str | None = None
@@ -59,6 +94,7 @@ class InvoiceReviewCreateRequest(BaseModel):
     user_utc_offset_minutes: int | None = None
     multipage_invoice: bool = False
     items: list[RecognizedInvoiceItem] = Field(default_factory=list)
+    parser_metadata: dict = Field(default_factory=dict)
 
 
 class InvoiceReviewUpdateRequest(BaseModel):
@@ -76,6 +112,7 @@ class InvoiceReviewUpdateRequest(BaseModel):
     display_store: str | None = None
     document_form: str | None = None
     supplier_inn: str | None = None
+    shipper: str | None = None
     consignee: str | None = None
     recipient: str | None = None
     trade_point: str | None = None
@@ -89,6 +126,7 @@ class InvoiceReviewUpdateRequest(BaseModel):
     user_utc_offset_minutes: int | None = None
     multipage_invoice: bool = False
     items: list[RecognizedInvoiceItem]
+    parser_metadata: dict = Field(default_factory=dict)
 
 
 class ConfirmSendToIikoRequest(BaseModel):
@@ -125,6 +163,7 @@ class SheetConfirmedItem(BaseModel):
 
 
 class SyncSheetAndConfirmRequest(ConfirmSendToIikoRequest):
+    upload_status: str | None = None
     supplier: str | None = None
     supplier_legal_name: str | None = None
     iiko_supplier_id: str | None = None
@@ -138,6 +177,7 @@ class SyncSheetAndConfirmRequest(ConfirmSendToIikoRequest):
     display_store: str | None = None
     document_form: str | None = None
     supplier_inn: str | None = None
+    shipper: str | None = None
     consignee: str | None = None
     recipient: str | None = None
     trade_point: str | None = None
@@ -165,4 +205,6 @@ class InvoiceReviewResponse(BaseModel):
     ocr: dict | None = None
     parser_provider: str | None = None
     parser_notes: list[str] = Field(default_factory=list)
+    pipeline_logs: list[PipelineLogEntry] = Field(default_factory=list)
+    trace_metadata: dict = Field(default_factory=dict)
     next_actions: dict

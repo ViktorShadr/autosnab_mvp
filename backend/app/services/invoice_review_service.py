@@ -10,11 +10,19 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models.accounting import AccountingExport
 from app.models.receiving import Receiving, ReceivingDocument, ReceivingItem, ReceivingItemStatus, ReceivingStatus
-from app.services.google_sheets_service import create_invoice_review_spreadsheet, serialize_sheet_result
+from app.services.google_sheets_service import (
+    SHARED_INVOICE_HEADERS,
+    create_invoice_review_spreadsheet,
+    load_invoice_reference_catalogs,
+    serialize_sheet_result,
+)
 from app.services.iiko_incoming_invoice_service import build_iiko_export_payload, build_incoming_invoice_xml
 from app.services.iiko_reference_mapping_service import auto_fill_iiko_fields, get_iiko_reference_context, invalidate_iiko_reference_cache
+from app.services.invoice_normalization_service import normalize_supplier_inn_value
+from app.services.item_normalization_service import apply_reference_mapping_to_payload
 
 REQUIRED_FIELDS = {
     "supplier": "поставщик",
@@ -27,9 +35,10 @@ REQUIRED_FIELDS = {
 INVOICE_REGISTER_SHEET_NAME = "Накладные"
 INVOICE_REGISTER_SPREADSHEET_NAME = "АвтоСнаб Накладные"
 INVOICE_REGISTER_HEADERS = [
-    "Статус строки",
-    "Корректировка",
-    "Дубль",
+    "Статус загрузки",
+    "Время загрузки документа",
+    "ID документа",
+    "Индикатор дубля документа",
     "Форма документа",
     "Загрузка",
     "Дата документа",
@@ -245,6 +254,9 @@ def build_review_sheet(receiving: Receiving) -> dict:
     meta = _document_meta(document)
     header_meta = meta.get("header", {})
     item_meta = meta.get("items", [])
+    header_meta, item_meta = _backfill_invoice_reference_mapping_if_needed(header_meta, item_meta)
+    parser_metadata = header_meta.get("parser_metadata") if isinstance(header_meta.get("parser_metadata"), dict) else {}
+    parser_items = parser_metadata.get("items") if isinstance(parser_metadata.get("items"), list) else []
     items = list(receiving.items)
     calculated_total_sum = _calculate_review_total_sum(items, item_meta)
     total_sum = header_meta.get("total_sum") if header_meta.get("total_sum") not in (None, "") else calculated_total_sum
@@ -254,10 +266,21 @@ def build_review_sheet(receiving: Receiving) -> dict:
     register_rows = [INVOICE_REGISTER_HEADERS]
     if items:
         for index, item in enumerate(items, start=1):
-            row_meta = item_meta[index - 1] if index - 1 < len(item_meta) else {}
+            row_meta = _hydrate_review_sheet_item_meta(
+                item_meta[index - 1] if index - 1 < len(item_meta) else {},
+                parser_items,
+                index,
+            )
             register_rows.append(_invoice_register_item_row(header_values, item, row_meta, index))
     else:
         register_rows.append(_invoice_register_item_row(header_values, None, {}, 1))
+    shared_rows = build_shared_invoice_rows(
+        receiving,
+        header_values=header_values,
+        item_meta=item_meta,
+        parser_items=parser_items,
+        total_sum=total_sum,
+    )
 
     return {
         "review_id": receiving.id,
@@ -271,9 +294,182 @@ def build_review_sheet(receiving: Receiving) -> dict:
             "method": "POST",
             "endpoint": f"/api/v1/invoice-review/{receiving.id}/confirm-send",
         },
+        "shared_sheet_rows": shared_rows,
         "status": "ready" if not issues else "needs_review",
         "issues": issues,
     }
+
+
+def build_shared_invoice_rows(
+    receiving: Receiving,
+    *,
+    header_values: dict[str, Any] | None = None,
+    item_meta: list[dict[str, Any]] | None = None,
+    parser_items: list[dict[str, Any]] | None = None,
+    total_sum: Any | None = None,
+) -> list[list[Any]]:
+    document = receiving.documents[-1] if receiving.documents else None
+    meta = _document_meta(document)
+    header_meta = meta.get("header", {})
+    if item_meta is None:
+        item_meta = meta.get("items", [])
+    if parser_items is None:
+        parser_metadata = header_meta.get("parser_metadata") if isinstance(header_meta.get("parser_metadata"), dict) else {}
+        parser_items = parser_metadata.get("items") if isinstance(parser_metadata.get("items"), list) else []
+    header_meta, item_meta = _backfill_invoice_reference_mapping_if_needed(header_meta, item_meta)
+    items = list(receiving.items)
+    if total_sum is None:
+        calculated_total_sum = _calculate_review_total_sum(items, item_meta)
+        total_sum = header_meta.get("total_sum") if header_meta.get("total_sum") not in (None, "") else calculated_total_sum
+    if header_values is None:
+        header_values = _invoice_register_header_values(receiving, document, header_meta, total_sum)
+
+    rows: list[list[Any]] = []
+    if items:
+        for index, item in enumerate(items, start=1):
+            row_meta = _hydrate_review_sheet_item_meta(
+                item_meta[index - 1] if index - 1 < len(item_meta) else {},
+                parser_items,
+                index,
+            )
+            rows.append(_shared_invoice_item_row(receiving, header_values, item, row_meta, index))
+    else:
+        rows.append(_shared_invoice_item_row(receiving, header_values, None, {}, 1))
+    return rows
+
+
+def _backfill_invoice_reference_mapping_if_needed(
+    header_meta: dict[str, Any],
+    item_meta: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if not item_meta:
+        return header_meta, item_meta
+    if not settings.google_sheets_enabled or not settings.google_target_spreadsheet_id:
+        return header_meta, item_meta
+    if not any(_needs_invoice_reference_backfill(item) for item in item_meta):
+        return header_meta, item_meta
+
+    parser_metadata = header_meta.get("parser_metadata") if isinstance(header_meta.get("parser_metadata"), dict) else {}
+    parser_items = parser_metadata.get("items") if isinstance(parser_metadata.get("items"), list) else []
+    enriched_items = [
+        _merge_item_with_parser_metadata(item, parser_items, index)
+        for index, item in enumerate(item_meta, start=1)
+    ]
+    payload = {
+        "items": enriched_items,
+        "parser_metadata": {
+            "review_flags": list(parser_metadata.get("review_flags", [])),
+            "item_corrections": dict(parser_metadata.get("item_corrections", {})),
+            "upload_status": parser_metadata.get("upload_status") or header_meta.get("upload_status", ""),
+            "row_status": parser_metadata.get("row_status") or header_meta.get("row_status", ""),
+            "duplicate": parser_metadata.get("duplicate") or header_meta.get("duplicate_indicator", ""),
+        },
+        "parser_notes": [],
+    }
+    try:
+        references = load_invoice_reference_catalogs()
+        mapped = apply_reference_mapping_to_payload(
+            payload,
+            products=references["products"],
+            packages=references["packages"],
+        )
+    except Exception:
+        return header_meta, item_meta
+
+    updated_header = dict(header_meta)
+    mapped_meta = mapped.get("parser_metadata") or {}
+    if mapped_meta.get("upload_status"):
+        updated_header["upload_status"] = mapped_meta["upload_status"]
+    if mapped_meta.get("row_status"):
+        updated_header["row_status"] = mapped_meta["row_status"]
+    if mapped_meta.get("duplicate"):
+        updated_header["duplicate_indicator"] = mapped_meta["duplicate"]
+    return updated_header, mapped.get("items") or item_meta
+
+
+def _needs_invoice_reference_backfill(item: dict[str, Any]) -> bool:
+    if item.get("product_found") == "Нет" and item.get("correction") != "Нет в справочнике":
+        return True
+    if item.get("product_found") == "?" and item.get("correction") not in {"Сопоставление", "Нет в справочнике"}:
+        return True
+    if item.get("us_product_name") or item.get("product_found"):
+        return False
+    return bool(item.get("name") or item.get("raw_name") or item.get("clean_name") or item.get("normalized_name_candidate"))
+
+
+def _hydrate_review_sheet_item_meta(
+    item: dict[str, Any],
+    parser_items: list[dict[str, Any]],
+    index: int,
+) -> dict[str, Any]:
+    result = _merge_item_with_parser_metadata(item, parser_items, index)
+    result["correction"] = _normalized_review_sheet_correction(result)
+    if result.get("us_product_name") in (None, ""):
+        result["us_product_name"] = _review_sheet_fallback_us_product_name(result)
+    return result
+
+
+def _merge_item_with_parser_metadata(
+    item: dict[str, Any],
+    parser_items: list[dict[str, Any]],
+    index: int,
+) -> dict[str, Any]:
+    result = dict(item)
+    parser_match = None
+    line_number = str(item.get("line_number") or index)
+    for candidate_index, candidate in enumerate(parser_items, start=1):
+        candidate_line = str(candidate.get("line_number") or candidate_index)
+        if candidate_line == line_number:
+            parser_match = candidate
+            break
+    parser_match = parser_match or {}
+
+    for key in (
+        "raw_name",
+        "clean_name",
+        "normalized_name_candidate",
+        "brand_or_descriptor",
+        "package",
+        "document_unit",
+        "quantity_document",
+        "quantity_multiplier",
+        "accounting_quantity_candidate",
+        "accounting_unit_candidate",
+        "conversion_factor",
+        "conversion_method",
+        "conversion_source_id",
+        "conversion_review_reason",
+        "price_us",
+        "codes",
+        "needs_review",
+        "review_reason",
+    ):
+        if result.get(key) in (None, "", [], {}):
+            value = parser_match.get(key)
+            if value not in (None, "", [], {}):
+                result[key] = value
+
+    if result.get("raw_name") in (None, "") and result.get("name"):
+        result["raw_name"] = result["name"]
+    return result
+
+
+def _review_sheet_fallback_us_product_name(item: dict[str, Any]) -> str:
+    for key in ("normalized_name_candidate", "clean_name", "name", "raw_name"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return re.sub(r"\s+", " ", value)
+    return ""
+
+
+def _normalized_review_sheet_correction(item: dict[str, Any]) -> str:
+    correction = str(item.get("correction") or "").strip()
+    product_found = str(item.get("product_found") or "").strip()
+    if product_found == "Нет":
+        return "Нет в справочнике"
+    if product_found == "?" and correction in {"", "Другое"}:
+        return "Сопоставление"
+    return correction
 
 
 def _invoice_register_header_values(
@@ -309,9 +505,8 @@ def _invoice_register_header_values(
         document_date = document.invoice_date if document else None
         document_date = document_date or header_meta.get("invoice_date") or header_meta.get("incoming_date")
         supplier = _sheet_display_value(receiving.supplier or (document.supplier_legal_name if document else ""))
-        consignor = _sheet_display_value(header_meta.get("consignor") or header_meta.get("shipper") or supplier)
-        consignee = _sheet_display_value(header_meta.get("consignee") or receiving.venue)
-        recipient = _sheet_display_value(header_meta.get("recipient") or header_meta.get("buyer") or consignee)
+        consignee = _sheet_display_value(header_meta.get("shipper") or "")
+        recipient = _sheet_display_value(header_meta.get("recipient") or header_meta.get("buyer") or "")
         trade_point = _sheet_display_value(header_meta.get("trade_point") or receiving.venue)
         warehouse = _sheet_display_value(
             header_meta.get("warehouse")
@@ -325,7 +520,7 @@ def _invoice_register_header_values(
         # на страницах-продолжениях ТОРГ-12 в тексте часто есть только ИНН
         # получателя/подписанта, и он не должен попадать в колонку поставщика.
         supplier_inn = _sheet_display_value(
-            header_meta.get("supplier_inn")
+            normalize_supplier_inn_value(header_meta.get("supplier_inn"))
             or _extract_first_inn(supplier)
             or ""
         )
@@ -333,12 +528,8 @@ def _invoice_register_header_values(
         duplicate_indicator = _sheet_display_value(header_meta.get("duplicate_indicator") or "")
 
     return {
-        "upload_time": _format_datetime_for_sheet(
-            (document.created_at if document else None) or receiving.created_at,
-            header_meta.get("user_timezone"),
-            header_meta.get("user_utc_offset_minutes"),
-        ),
-        "document_id": 1,
+        "upload_time": _format_datetime_for_sheet((document.created_at if document else None) or receiving.created_at),
+        "document_id": receiving.id,
         "duplicate_indicator": duplicate_indicator,
         "document_form": _sheet_display_value(header_meta.get("document_form") or _detect_document_form_from_text(raw_text) or ""),
         "document_date": _sheet_display_value(document_date),
@@ -352,13 +543,14 @@ def _invoice_register_header_values(
         "warehouse": warehouse,
         "basis": basis,
         "total_sum": total_sum,
-        "source_document_url": "",
+        "upload_status": _sheet_display_value(header_meta.get("upload_status") or ""),
+        "row_status": _sheet_display_value(header_meta.get("row_status") or ""),
     }
 
 
 def _single_value_for_first_item_row(header_values: dict[str, Any], key: str, index: int) -> Any:
     if index == 1:
-        return header_values[key]
+        return header_values.get(key, "")
     return ""
 
 
@@ -397,26 +589,28 @@ def _invoice_register_item_row(
         vat_percent = _vat_percent_for_sheet(row_meta, item.comment)
         vat_sum = row_meta.get("vat_sum") if row_meta.get("vat_sum") is not None else ""
         line_sum_with_vat = _line_sum_with_vat(line_sum, vat_sum)
-        # В пользовательскую таблицу переносим только данные, которые есть
-        # в накладной. Поля УС/справочников/ручной корректировки не
-        # заполняем автоматически, чтобы в них не попадали случайные OCR-
-        # или технические значения.
-        unit_in_us = ""
-        quantity_in_us = ""
-        price_in_us = ""
+        # Поля УС заполняются только результатом deterministic-сопоставления.
+        unit_in_us = row_meta.get("us_unit") or row_meta.get("accounting_unit_candidate") or ""
+        quantity_in_us = (
+            row_meta.get("quantity_us")
+            if row_meta.get("quantity_us") is not None
+            else row_meta.get("accounting_quantity_candidate", "")
+        )
+        price_in_us = row_meta.get("price_us") if row_meta.get("price_us") is not None else ""
         ordered_quantity = ""
         price_by_pricelist = ""
         deviation_from_pricelist = ""
         upload_to_us = ""
-        status = ""
-        manual_reason = ""
-        us_product_name = ""
-        product_found = ""
+        status = header_values.get("row_status", "") if index == 1 else ""
+        manual_reason = row_meta.get("correction") or ""
+        us_product_name = row_meta.get("us_product_name") or ""
+        product_found = row_meta.get("product_found") or ""
 
     return [
-        status,
-        manual_reason,
-        header_values["duplicate_indicator"],
+        _single_value_for_first_item_row(header_values, "upload_status", index),
+        _single_value_for_first_item_row(header_values, "upload_time", index),
+        _single_value_for_first_item_row(header_values, "document_id", index),
+        _single_value_for_first_item_row(header_values, "duplicate_indicator", index),
         _single_value_for_first_item_row(header_values, "document_form", index),
         upload_to_us,
         _single_value_for_first_item_row(header_values, "document_date", index),
@@ -454,6 +648,133 @@ def _invoice_register_item_row(
         _single_value_for_first_item_row(header_values, "document_id", index),
         "",
     ]
+
+
+def _shared_invoice_item_row(
+    receiving: Receiving,
+    header_values: dict[str, Any],
+    item: ReceivingItem | None,
+    row_meta: dict[str, Any],
+    index: int,
+) -> list[Any]:
+    if item is None:
+        item_name = ""
+        unit = ""
+        quantity = ""
+        price = ""
+        line_sum = ""
+        vat_percent = ""
+        vat_sum = ""
+        line_sum_with_vat = ""
+        unit_in_us = ""
+        quantity_in_us = ""
+        price_in_us = ""
+        date_accept = ""
+        accepted_by = ""
+        government_systems = ""
+        quantity_in_request = ""
+        price_by_pricelist = ""
+        previous_delivery_date = ""
+        previous_price = ""
+        price_deviation = ""
+        correction = ""
+        us_product_name = ""
+        product_found = ""
+    else:
+        quantity = item.received_quantity or 0
+        price = item.invoice_price or 0
+        item_name = item.item_name_from_invoice or item.item_name_from_order or ""
+        unit = item.unit
+        line_sum = row_meta.get("sum") if row_meta.get("sum") is not None else round(quantity * price, 2)
+        vat_percent = _vat_percent_for_sheet(row_meta, item.comment)
+        vat_sum = row_meta.get("vat_sum") if row_meta.get("vat_sum") is not None else ""
+        line_sum_with_vat = _line_sum_with_vat(line_sum, vat_sum)
+        unit_in_us = row_meta.get("us_unit") or row_meta.get("accounting_unit_candidate") or ""
+        quantity_in_us = (
+            row_meta.get("quantity_us")
+            if row_meta.get("quantity_us") is not None
+            else row_meta.get("accounting_quantity_candidate", "")
+        )
+        price_in_us = row_meta.get("price_us") if row_meta.get("price_us") is not None else ""
+        date_accept = ""
+        accepted_by = ""
+        government_systems = ""
+        quantity_in_request = ""
+        price_by_pricelist = ""
+        previous_delivery_date = ""
+        previous_price = ""
+        price_deviation = ""
+        correction = row_meta.get("correction") or ""
+        us_product_name = row_meta.get("us_product_name") or ""
+        product_found = row_meta.get("product_found") or ""
+
+    first_row_only_values = {
+        "Статус загрузки": header_values.get("upload_status", ""),
+        "Статус строки": header_values.get("row_status", ""),
+        "Дубль": header_values.get("duplicate_indicator", ""),
+        "Форма документа": header_values.get("document_form", ""),
+        "Дата документа": header_values.get("document_date", ""),
+        "№ Документа": header_values.get("document_number", ""),
+        "Поставщик": header_values.get("supplier", ""),
+        "ИНН Поставщика": header_values.get("supplier_inn", ""),
+        "Грузоотправитель": header_values.get("consignee", ""),
+        "Получатель": header_values.get("recipient", ""),
+        "Торговая точка": header_values.get("trade_point", ""),
+        "Склад": header_values.get("warehouse", ""),
+        "Основание": header_values.get("basis", ""),
+        "Сумма накладной": header_values.get("total_sum", ""),
+        "Время загрузки документа": header_values.get("upload_time", ""),
+        "ID документа": header_values.get("document_id", ""),
+        "Ссылка на исходный документ": (
+            (getattr(receiving, "documents", None) and getattr(receiving.documents[-1], "file_url", ""))
+            or ""
+        ),
+    }
+    row_values = {
+        "Статус загрузки": "",
+        "Статус строки": "",
+        "Корректировка": correction,
+        "Дубль": "",
+        "Форма документа": "",
+        "Загрузка": "",
+        "Дата документа": "",
+        "№ Документа": "",
+        "Поставщик": "",
+        "ИНН Поставщика": "",
+        "Грузоотправитель": "",
+        "Получатель": "",
+        "Торговая точка": "",
+        "Склад": "",
+        "Основание": "",
+        "Товар найден в справочнике": product_found,
+        "Наименование товара из документа": item_name,
+        "Наименование товара в УС": us_product_name,
+        "Ед.изм. в документе": unit,
+        "Ед.изм. в УС": unit_in_us,
+        "Кол-во в документе": quantity,
+        "Кол-во в УС": quantity_in_us,
+        "Цена за ед-цу": price,
+        "Цена в УС": price_in_us,
+        "Стоимость без НДС": line_sum,
+        "Ставка НДС": vat_percent,
+        "Сумма НДС": vat_sum,
+        "Общая стоимость": line_sum_with_vat,
+        "Сумма накладной": "",
+        "Дата приема": date_accept,
+        "Принял, Ф.И.О.": accepted_by,
+        "Госсистемы": government_systems,
+        "Кол-во в заявке": quantity_in_request,
+        "Цена по прайсу": price_by_pricelist,
+        "Предыдущая дата поставки": previous_delivery_date,
+        "Предыдущая цена": previous_price,
+        "Отклонение от цены прайса": price_deviation,
+        "Время загрузки документа": "",
+        "ID документа": "",
+        "Ссылка на исходный документ": "",
+    }
+    if index == 1:
+        row_values.update(first_row_only_values)
+    return [row_values.get(header, "") for header in SHARED_INVOICE_HEADERS]
 
 def build_review_csv(receiving: Receiving) -> str:
     sheet = build_review_sheet(receiving)
@@ -552,6 +873,7 @@ def confirm_and_send_to_iiko(db: Session, receiving_id: int, payload) -> Account
     receiving = _get_receiving(db, receiving_id)
     if not payload.approved:
         raise ValueError("Перед отправкой пользователь должен подтвердить проверку накладной")
+    ensure_upload_status_allows_send(getattr(payload, "upload_status", None))
     issues = validate_review(receiving)
     if issues and not payload.allow_with_warnings:
         raise ValueError("Накладная требует проверки: " + "; ".join(issues))
@@ -611,6 +933,13 @@ def confirm_and_send_to_iiko(db: Session, receiving_id: int, payload) -> Account
     db.commit()
     db.refresh(export)
     return export
+
+
+def ensure_upload_status_allows_send(upload_status: str | None) -> None:
+    if upload_status and upload_status != "Загрузить":
+        raise ValueError(
+            f"Накладная не может быть отправлена: статус загрузки '{upload_status}', требуется 'Загрузить'."
+        )
 
 
 def build_apps_script_sample(receiving: Receiving, public_api_base_url: str = "https://YOUR_API_HOST") -> str:
@@ -824,9 +1153,9 @@ def get_latest_google_spreadsheet_info(db: Session, receiving_id: int) -> dict[s
         "spreadsheet_url": payload.get("spreadsheet_url"),
         "spreadsheet_name": payload.get("spreadsheet_name"),
         "sheet_name": payload.get("sheet_name"),
-        "data_start_row": payload.get("data_start_row"),
-        "data_end_row": payload.get("data_end_row"),
-        "data_range": payload.get("data_range"),
+        "header_row_count": payload.get("header_row_count"),
+        "block_start_row": payload.get("block_start_row"),
+        "block_end_row": payload.get("block_end_row"),
     }
 
 
@@ -840,8 +1169,9 @@ def send_google_sheet_and_confirm_to_iiko(
     sheet_values = _read_google_sheet_values(
         spreadsheet["spreadsheet_id"],
         sheet_name=spreadsheet.get("sheet_name"),
-        data_start_row=spreadsheet.get("data_start_row"),
-        data_end_row=spreadsheet.get("data_end_row"),
+        header_row_count=spreadsheet.get("header_row_count"),
+        block_start_row=spreadsheet.get("block_start_row"),
+        block_end_row=spreadsheet.get("block_end_row"),
     )
     payload = _build_sync_payload_from_sheet(sheet_values, allow_with_warnings=allow_with_warnings, dry_run=dry_run)
     return sync_sheet_and_confirm_to_iiko(db, receiving_id, payload)
@@ -849,9 +1179,11 @@ def send_google_sheet_and_confirm_to_iiko(
 
 def _read_google_sheet_values(
     spreadsheet_id: str,
+    *,
     sheet_name: str | None = None,
-    data_start_row: int | None = None,
-    data_end_row: int | None = None,
+    header_row_count: int | None = None,
+    block_start_row: int | None = None,
+    block_end_row: int | None = None,
 ) -> dict[str, list[list[Any]]]:
     try:
         from googleapiclient.discovery import build
@@ -861,6 +1193,20 @@ def _read_google_sheet_values(
 
     credentials = get_google_user_credentials()
     sheets_service = build("sheets", "v4", credentials=credentials)
+
+    if sheet_name and block_start_row and block_end_row:
+        header_start_row = max(int(header_row_count or 1), 1)
+        target_range = f"{sheet_name}!A{header_start_row}:AL{block_end_row}"
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range=target_range,
+        ).execute()
+        return {
+            "invoices": result.get("values", []),
+            "summary": [],
+            "items": [],
+        }
+
     spreadsheet = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id, fields="sheets.properties.title").execute()
     titles = {sheet["properties"]["title"] for sheet in spreadsheet.get("sheets", [])}
     requested_ranges = []
@@ -927,6 +1273,7 @@ def _build_sync_payload_from_sheet(sheet_values: dict[str, list[list[Any]]], all
             target_warehouse_id=None,
             approved_by="Google Таблица",
             comment="Подтверждено через кнопку Google Таблицы",
+            upload_status=summary.get("Статус загрузки") or None,
             supplier=supplier,
             supplier_legal_name=supplier,
             iiko_supplier_id=None,
@@ -988,7 +1335,9 @@ def _register_items_from_sheet_rows(rows: list[list[Any]]) -> list[dict[str, Any
         name = str(row.get("Наименование товара из документа") or row.get("Наименование товара") or "").strip()
         if not name or _is_upload_disabled(row.get("Загрузка") or row.get("Загрузить в УС")):
             continue
-        vat_percent = _float_from_sheet(row.get("Ставка НДС") if row.get("Ставка НДС") not in (None, "") else row.get("Ставка НДС %"))
+        vat_percent = _float_from_sheet(row.get("Ставка НДС %"))
+        if vat_percent is None:
+            vat_percent = _float_from_sheet(row.get("Ставка НДС"))
         vat_sum = _float_from_sheet(row.get("Сумма НДС"))
         line_sum = _float_from_sheet(row.get("Стоимость без НДС"))
         total_with_vat = _float_from_sheet(row.get("Общая стоимость"))
@@ -998,6 +1347,8 @@ def _register_items_from_sheet_rows(rows: list[list[Any]]) -> list[dict[str, Any
         if quantity is None:
             quantity = _float_from_sheet(row.get("Кол-во из документа"))
         if quantity is None:
+            quantity = _float_from_sheet(row.get("Кол-во в документе"))
+        if quantity is None:
             quantity = _float_from_sheet(row.get("Количество"))
         if quantity is None:
             quantity = _float_from_sheet(row.get("Кол-во"))
@@ -1005,13 +1356,15 @@ def _register_items_from_sheet_rows(rows: list[list[Any]]) -> list[dict[str, Any
         if price is None:
             price = _float_from_sheet(row.get("Цена за единицу"))
         if price is None:
+            price = _float_from_sheet(row.get("Цена за ед-цу"))
+        if price is None:
             price = _float_from_sheet(row.get("Цена"))
         items.append(
             {
                 "line_number": index,
                 "name": name,
                 "quantity": quantity or 0,
-                "unit": str(row.get("Ед.изм. в документе") or row.get("Ед.изм.") or "шт"),
+                "unit": str(row.get("Ед.изм.") or row.get("Ед.изм. в документе") or "шт"),
                 "price": price or 0,
                 "sum": line_sum,
                 "vat_percent": vat_percent,
@@ -1473,6 +1826,7 @@ def _header_payload(payload) -> dict[str, Any]:
         "due_date": getattr(payload, "due_date", None),
         "document_form": getattr(payload, "document_form", None),
         "supplier_inn": getattr(payload, "supplier_inn", None),
+        "shipper": getattr(payload, "shipper", None),
         "consignee": getattr(payload, "consignee", None),
         "recipient": getattr(payload, "recipient", None),
         "trade_point": trade_point,
@@ -1483,9 +1837,10 @@ def _header_payload(payload) -> dict[str, Any]:
         "iiko_default_store_id": iiko_default_store_id,
         "iiko_organization": getattr(payload, "iiko_organization", None),
         "iiko_organization_id": getattr(payload, "iiko_organization_id", None),
-        "user_timezone": _normalize_timezone_name(getattr(payload, "user_timezone", None)),
-        "user_utc_offset_minutes": _normalize_utc_offset_minutes(getattr(payload, "user_utc_offset_minutes", None)),
-        "multipage_invoice": bool(getattr(payload, "multipage_invoice", False)),
+        "parser_metadata": getattr(payload, "parser_metadata", None) or {},
+        "upload_status": (getattr(payload, "parser_metadata", None) or {}).get("upload_status", ""),
+        "row_status": (getattr(payload, "parser_metadata", None) or {}).get("row_status", ""),
+        "duplicate_indicator": (getattr(payload, "parser_metadata", None) or {}).get("duplicate", ""),
     }
 
 def _item_payload(item, index: int | None = None) -> dict:
@@ -1495,6 +1850,30 @@ def _item_payload(item, index: int | None = None) -> dict:
     return {
         "line_number": item.line_number or index,
         "name": item.name,
+        "raw_name": item.raw_name or item.name,
+        "clean_name": item.clean_name,
+        "normalized_name_candidate": item.normalized_name_candidate,
+        "brand_or_descriptor": item.brand_or_descriptor,
+        "package": item.package,
+        "document_unit": item.document_unit or item.unit,
+        "quantity_document": item.quantity_document if item.quantity_document is not None else quantity,
+        "quantity_multiplier": item.quantity_multiplier,
+        "accounting_quantity_candidate": item.accounting_quantity_candidate,
+        "accounting_unit_candidate": item.accounting_unit_candidate,
+        "codes": item.codes,
+        "needs_review": item.needs_review,
+        "review_reason": item.review_reason,
+        "us_product_name": item.us_product_name,
+        "product_code": item.product_code,
+        "product_found": item.product_found,
+        "us_unit": item.us_unit,
+        "quantity_us": item.quantity_us,
+        "price_us": item.price_us,
+        "conversion_factor": item.conversion_factor,
+        "conversion_method": item.conversion_method,
+        "conversion_source_id": item.conversion_source_id,
+        "conversion_review_reason": item.conversion_review_reason,
+        "package_reference_id": item.package_reference_id,
         "iiko_product_id": item.iiko_product_id,
         "product_article": item.product_article,
         "supplier_product": item.supplier_product,
@@ -1512,6 +1891,8 @@ def _item_payload(item, index: int | None = None) -> dict:
         "mapping_error": getattr(item, "mapping_error", None),
         "comment": item.comment,
         "confidence": item.confidence,
+        "correction": getattr(item, "correction", None),
+        "amount_with_vat": getattr(item, "amount_with_vat", None),
     }
 
 

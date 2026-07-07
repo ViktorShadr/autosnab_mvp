@@ -1,11 +1,13 @@
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -41,6 +43,18 @@ def override_get_db():
 
 app.dependency_overrides[get_db] = override_get_db
 client = TestClient(app)
+
+
+def _wait_for_trace(trace_id: str, timeout: float = 2.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        response = client.get(f"/api/v1/invoice-review/upload-trace/{trace_id}")
+        assert response.status_code == 200
+        data = response.json()
+        if data.get("completed"):
+            return data
+        time.sleep(0.05)
+    raise AssertionError(f"trace {trace_id} did not complete within {timeout} seconds")
 
 
 def _start_receiving() -> int:
@@ -367,6 +381,468 @@ def test_mvp4_invoice_review_sheet_preview_and_send():
     assert "<document>" in send.json()["payload"]["iikoXml"]
 
 
+def test_upload_page_shows_extraction_method_selector():
+    response = client.get("/api/v1/invoice-review/upload-page")
+
+    assert response.status_code == 200
+    assert 'name="extraction_method"' in response.text
+    assert 'value="google_ocr"' in response.text
+    assert 'value="mineru"' in response.text
+    assert 'value="hybrid"' in response.text
+
+
+def test_upload_photo_passes_selected_extraction_method(monkeypatch, tmp_path):
+    from app.routers import invoice_review as invoice_review_router
+
+    captured = {}
+    monkeypatch.setattr(invoice_review_router.settings, "uploaded_invoices_dir", str(tmp_path))
+
+    def fake_extract(file_path, fallback_filename=None, extraction_method=None, on_log=None):
+        captured["file_path"] = file_path
+        captured["fallback_filename"] = fallback_filename
+        captured["extraction_method"] = extraction_method
+        return {
+            "provider": "mineru",
+            "selected_method": "hybrid",
+            "raw_text": "ООО Питер Кельн",
+            "pages": 1,
+            "pipeline_logs": [
+                {
+                    "stage": "mineru_complete",
+                    "status": "ok",
+                    "message": "MinerU вернул полезные данные.",
+                    "details": {"items_count": 0},
+                }
+            ],
+            "payload": {
+                "supplier": "ООО Питер Кельн",
+                "supplier_legal_name": "ООО Питер Кельн",
+                "invoice_number": "123",
+                "invoice_date": "2026-07-04",
+                "venue": "Добрая столовая",
+                "items": [],
+                "parser_provider": "mineru",
+                "parser_notes": [],
+            },
+        }
+
+    monkeypatch.setattr(invoice_review_router, "extract_invoice_document", fake_extract)
+
+    response = client.post(
+        "/api/v1/invoice-review/upload-photo",
+        files={"file": ("invoice.jpg", b"fake-image", "image/jpeg")},
+        data={
+            "create_google_sheet": "false",
+            "extraction_method": "hybrid",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["fallback_filename"] == "invoice.jpg"
+    assert captured["extraction_method"] == "hybrid"
+    assert response.json()["ocr"]["selected_method"] == "hybrid"
+    assert response.json()["pipeline_logs"]
+
+
+def test_upload_photo_stops_and_returns_pipeline_logs_for_empty_result(monkeypatch, tmp_path):
+    from app.routers import invoice_review as invoice_review_router
+
+    monkeypatch.setattr(invoice_review_router.settings, "uploaded_invoices_dir", str(tmp_path))
+
+    def fake_extract(file_path, fallback_filename=None, extraction_method=None, on_log=None):
+        return {
+            "provider": "openai_empty_evidence",
+            "selected_method": "openai",
+            "raw_text": "",
+            "pages": 0,
+            "error": "Перед OpenAI parser не удалось получить текст или structured evidence.",
+            "stop_recommended": True,
+            "retry_recommended_method": "openai",
+            "retry_recommended_label": "OpenAI structured parser",
+            "pipeline_logs": [
+                {
+                    "stage": "collect_evidence_complete",
+                    "status": "warning",
+                    "message": "Evidence для OpenAI parser пустой.",
+                    "details": {"raw_text_length": 0},
+                }
+            ],
+            "payload": {
+                "supplier": None,
+                "items": [],
+                "parser_provider": "manual_review_empty_sheet",
+                "parser_notes": [],
+            },
+        }
+
+    monkeypatch.setattr(invoice_review_router, "extract_invoice_document", fake_extract)
+
+    response = client.post(
+        "/api/v1/invoice-review/upload-photo",
+        files={"file": ("invoice.jpg", b"fake-image", "image/jpeg")},
+        data={
+            "create_google_sheet": "false",
+            "extraction_method": "openai",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["pipeline_logs"][0]["stage"] == "collect_evidence_complete"
+    assert response.json()["detail"]["retry_recommended_method"] == "openai"
+
+
+def test_upload_trace_endpoint_returns_live_trace(monkeypatch, tmp_path):
+    from app.routers import invoice_review as invoice_review_router
+
+    monkeypatch.setattr(invoice_review_router.settings, "uploaded_invoices_dir", str(tmp_path))
+
+    def fake_extract(file_path, fallback_filename=None, extraction_method=None, on_log=None):
+        if on_log:
+            on_log(
+                {
+                    "stage": "openai_request_start",
+                    "status": "running",
+                    "message": "Отправляю evidence в OpenAI parser.",
+                    "details": {"raw_text_length": 123},
+                }
+            )
+        return {
+            "provider": "openai",
+            "selected_method": "openai",
+            "raw_text": "evidence",
+            "pages": 1,
+            "evidence": {
+                "logical_document_id": "document-1",
+                "evidence_version": "1.0",
+                "pages": 1,
+            },
+            "pipeline_logs": [
+                {
+                    "stage": "openai_request_start",
+                    "status": "running",
+                    "message": "Отправляю evidence в OpenAI parser.",
+                    "details": {"raw_text_length": 123},
+                }
+            ],
+            "payload": {
+                "supplier": "ООО Питер Кельн",
+                "supplier_legal_name": "ООО Питер Кельн",
+                "invoice_number": "123",
+                "invoice_date": "2026-07-04",
+                "venue": "Добрая столовая",
+                "items": [],
+                "parser_provider": "openai",
+                "parser_notes": [],
+            },
+        }
+
+    monkeypatch.setattr(invoice_review_router, "extract_invoice_document", fake_extract)
+
+    trace_id = "test-trace-1"
+    response = client.post(
+        "/api/v1/invoice-review/upload-photo",
+        files={"file": ("invoice.jpg", b"fake-image", "image/jpeg")},
+        data={
+            "create_google_sheet": "false",
+            "extraction_method": "openai",
+            "upload_trace_id": trace_id,
+        },
+    )
+
+    assert response.status_code == 200
+    trace_data = _wait_for_trace(trace_id)
+    assert trace_data["completed"] is True
+    assert trace_data["trace_version"] == "1.0"
+    assert trace_data["metadata"]["logical_document_id"] == "document-1"
+    assert trace_data["logs"][0]["stage"] == "openai_request_start"
+
+
+def test_upload_photo_live_returns_trace_id_and_background_result(monkeypatch, tmp_path):
+    from app.routers import invoice_review as invoice_review_router
+
+    monkeypatch.setattr(invoice_review_router.settings, "uploaded_invoices_dir", str(tmp_path))
+
+    def fake_extract(file_path, fallback_filename=None, extraction_method=None, on_log=None):
+        if on_log:
+            on_log(
+                {
+                    "stage": "document_received",
+                    "status": "ok",
+                    "message": "Документ получен backend-сервисом.",
+                    "details": {"selected_method": extraction_method or "openai"},
+                }
+            )
+        return {
+            "provider": "openai",
+            "selected_method": "openai",
+            "raw_text": "evidence",
+            "pages": 1,
+            "evidence": {
+                "logical_document_id": "document-1",
+                "evidence_version": "1.0",
+                "pages": 1,
+            },
+            "pipeline_logs": [
+                {
+                    "stage": "document_received",
+                    "status": "ok",
+                    "message": "Документ получен backend-сервисом.",
+                    "details": {"selected_method": extraction_method or "openai"},
+                }
+            ],
+            "payload": {
+                "supplier": "ООО Питер Кельн",
+                "supplier_legal_name": "ООО Питер Кельн",
+                "invoice_number": "123",
+                "invoice_date": "2026-07-04",
+                "venue": "Добрая столовая",
+                "items": [],
+                "parser_provider": "openai",
+                "parser_notes": [],
+            },
+        }
+
+    monkeypatch.setattr(invoice_review_router, "extract_invoice_document", fake_extract)
+    monkeypatch.setattr(invoice_review_router, "create_real_google_sheet_for_review", lambda *args, **kwargs: {
+        "spreadsheet_id": "sheet-1",
+        "spreadsheet_url": "https://example.test/sheet-1",
+    })
+
+    response = client.post(
+        "/api/v1/invoice-review/upload-photo-live",
+        files={"file": ("invoice.jpg", b"fake-image", "image/jpeg")},
+        data={
+            "create_google_sheet": "true",
+            "extraction_method": "openai",
+            "upload_trace_id": "live-trace-1",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["trace_id"] == "live-trace-1"
+
+    trace_data = _wait_for_trace("live-trace-1")
+    assert trace_data["completed"] is True
+    assert trace_data["metadata"]["evidence_version"] == "1.0"
+    assert trace_data["result"]["google_spreadsheet_url"] == "https://example.test/sheet-1"
+    assert trace_data["result"]["trace_metadata"]["logical_document_id"] == "document-1"
+
+
+def test_upload_photo_live_surfaces_readonly_database_hint(monkeypatch, tmp_path):
+    from app.routers import invoice_review as invoice_review_router
+
+    monkeypatch.setattr(invoice_review_router.settings, "uploaded_invoices_dir", str(tmp_path))
+
+    def fake_process(**kwargs):
+        raise OperationalError(
+            "INSERT INTO receivings DEFAULT VALUES",
+            {},
+            Exception("attempt to write a readonly database"),
+        )
+
+    monkeypatch.setattr(invoice_review_router, "_process_invoice_upload", fake_process)
+
+    response = client.post(
+        "/api/v1/invoice-review/upload-photo-live",
+        files={"file": ("invoice.jpg", b"fake-image", "image/jpeg")},
+        data={
+            "create_google_sheet": "false",
+            "extraction_method": "openai",
+            "upload_trace_id": "readonly-db-trace-1",
+        },
+    )
+
+    assert response.status_code == 200
+
+    trace_data = _wait_for_trace("readonly-db-trace-1")
+    assert trace_data["completed"] is True
+    assert "SQLite database is read-only" in trace_data["error_message"]
+    assert trace_data["logs"][-1]["stage"] == "job_failed"
+    assert "SQLite database is read-only" in trace_data["logs"][-1]["details"]["error"]
+
+
+def test_upload_document_live_preserves_page_order(monkeypatch, tmp_path):
+    from app.routers import invoice_review as invoice_review_router
+
+    captured = {}
+    monkeypatch.setattr(invoice_review_router.settings, "uploaded_invoices_dir", str(tmp_path))
+
+    def fake_background(**kwargs):
+        captured.update(kwargs)
+        invoice_review_router.finalize_trace(kwargs["trace_id"])
+
+    monkeypatch.setattr(
+        invoice_review_router,
+        "_process_invoice_upload_background",
+        fake_background,
+    )
+
+    response = client.post(
+        "/api/v1/invoice-review/upload-document-live",
+        files=[
+            ("files", ("page-1.jpg", b"first", "image/jpeg")),
+            ("files", ("page-2.jpg", b"second", "image/jpeg")),
+        ],
+        data={
+            "create_google_sheet": "false",
+            "extraction_method": "openai",
+            "upload_trace_id": "multipage-trace-1",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["pages"] == 2
+    trace = _wait_for_trace("multipage-trace-1")
+    assert trace["completed"] is True
+    assert captured["file_names"] == ["page-1.jpg", "page-2.jpg"]
+    assert [Path(path).read_bytes() for path in captured["file_paths"]] == [b"first", b"second"]
+    assert captured["file_type"] == "multipage"
+
+
+def test_build_review_sheet_backfills_invoice_reference_mapping_for_old_items(monkeypatch):
+    from app.services import invoice_review_service
+    from app.schemas.invoice_review import InvoiceReviewCreateRequest, RecognizedInvoiceItem
+
+    payload = InvoiceReviewCreateRequest(
+        supplier='ООО "ВИКТОРИЯ БАЛТИЯ"',
+        supplier_legal_name='ООО "ВИКТОРИЯ БАЛТИЯ"',
+        invoice_date="2026-07-04",
+        invoice_number="0245",
+        venue="Добрая столовая",
+        items=[
+            RecognizedInvoiceItem(
+                name='3 ТОВАР : ШТ. [N+13968 КЕФИР ФЕРМЕРСКИЙ 800Г',
+                quantity=1,
+                unit="ШТ",
+                price=72.9,
+            )
+        ],
+        parser_metadata={
+            "upload_status": "Требует проверки",
+            "row_status": "Правка вручную",
+            "items": [
+                {
+                    "line_number": 1,
+                    "raw_name": '3 ТОВАР : ШТ. [N+13968 КЕФИР ФЕРМЕРСКИЙ 800Г',
+                    "clean_name": "КЕФИР ФЕРМЕРСКИЙ",
+                    "normalized_name_candidate": "Кефир Фермерский",
+                    "package": {"raw": "800Г"},
+                    "document_unit": "ШТ",
+                    "quantity_document": 1,
+                    "quantity_multiplier": 0.8,
+                    "accounting_unit_candidate": "л",
+                }
+            ],
+        },
+    )
+    db = TestingSessionLocal()
+    try:
+        receiving = invoice_review_service.create_invoice_review(db, payload)
+        monkeypatch.setattr(invoice_review_service.settings, "google_sheets_enabled", True)
+        monkeypatch.setattr(invoice_review_service.settings, "google_target_spreadsheet_id", "sheet-id")
+        monkeypatch.setattr(
+            invoice_review_service,
+            "load_invoice_reference_catalogs",
+            lambda: {
+                "products": [{"Наименование": "Кефир", "Код": "01-00017", "Ед. изм.": "л"}],
+                "packages": [],
+            },
+        )
+
+        sheet = invoice_review_service.build_review_sheet(receiving)
+        rows = sheet["sheets"][sheet["primary_sheet_name"]]
+    finally:
+        db.close()
+
+    assert rows[1][16] == "Кефир"
+    assert rows[1][17] == "Да"
+
+
+def test_build_review_sheet_falls_back_to_normalized_name_when_mapping_fields_are_missing():
+    from app.services import invoice_review_service
+    from app.schemas.invoice_review import InvoiceReviewCreateRequest, RecognizedInvoiceItem
+
+    payload = InvoiceReviewCreateRequest(
+        supplier='ООО "ВИКТОРИЯ БАЛТИЯ"',
+        supplier_legal_name='ООО "ВИКТОРИЯ БАЛТИЯ"',
+        invoice_date="2026-07-04",
+        invoice_number="0245",
+        venue="Добрая столовая",
+        items=[
+            RecognizedInvoiceItem(
+                name='3 ТОВАР : ШТ. [N+13968 КЕФИР ФЕРМЕРСКИЙ 800Г',
+                quantity=1,
+                unit="ШТ",
+                price=72.9,
+            )
+        ],
+        parser_metadata={
+            "upload_status": "Требует проверки",
+            "row_status": "Распознано",
+            "items": [
+                {
+                    "line_number": 1,
+                    "raw_name": '3 ТОВАР : ШТ. [N+13968 КЕФИР ФЕРМЕРСКИЙ 800Г',
+                    "clean_name": "КЕФИР ФЕРМЕРСКИЙ",
+                    "normalized_name_candidate": "Кефир Фермерский",
+                    "document_unit": "ШТ",
+                    "quantity_document": 1,
+                    "accounting_quantity_candidate": 0.8,
+                    "accounting_unit_candidate": "кг",
+                }
+            ],
+        },
+    )
+    db = TestingSessionLocal()
+    try:
+        receiving = invoice_review_service.create_invoice_review(db, payload)
+        sheet = invoice_review_service.build_review_sheet(receiving)
+        rows = sheet["sheets"][sheet["primary_sheet_name"]]
+    finally:
+        db.close()
+
+    assert rows[1][16] == "Кефир Фермерский"
+    assert rows[1][17] == ""
+
+
+def test_invoice_register_header_uses_receiving_id_for_document_id():
+    from app.services import invoice_review_service
+    from app.schemas.invoice_review import InvoiceReviewCreateRequest, RecognizedInvoiceItem
+
+    payload = InvoiceReviewCreateRequest(
+        supplier="ООО Поставщик",
+        supplier_legal_name="ООО Поставщик",
+        invoice_date="2026-07-04",
+        invoice_number="A-42",
+        venue="Добрая столовая",
+        items=[
+            RecognizedInvoiceItem(
+                name="Молоко",
+                quantity=1,
+                unit="шт",
+                price=100,
+            )
+        ],
+        parser_metadata={},
+    )
+    db = TestingSessionLocal()
+    try:
+        receiving = invoice_review_service.create_invoice_review(db, payload)
+        document = receiving.documents[-1] if receiving.documents else None
+        header_meta = {"document_id": 1}
+
+        header_values = invoice_review_service._invoice_register_header_values(
+            receiving,
+            document,
+            header_meta,
+            total_sum=100,
+        )
+    finally:
+        db.close()
+
+    assert header_values["document_id"] == receiving.id
+
+
 def test_mvp4_requires_manual_approval_before_send():
     response = client.post(
         "/api/v1/invoice-review/upload",
@@ -385,17 +861,26 @@ def test_mvp4_requires_manual_approval_before_send():
     assert "подтвердить" in send.json()["detail"]
 
 
-def test_mvp4_real_ocr_endpoint_falls_back_to_manual_review_without_ocr_credentials():
-    response = client.post(
-        "/api/v1/invoice-review/upload-photo",
-        files={"file": ("invoice.jpg", b"fake image bytes", "image/jpeg")},
-        data={"venue": "Добрая столовая", "create_google_sheet": "false"},
-    )
-    assert response.status_code == 200
-    data = response.json()
-    assert data["ocr"]["provider"] == "manual_review_fallback"
-    assert data["ocr"]["error"]
-    assert data["next_actions"]["open_csv"]
+def test_mvp4_real_ocr_endpoint_falls_back_to_manual_review_without_ocr_credentials(monkeypatch):
+    from app.services import document_extraction_service
+
+    def fake_ocr(_file_path):
+        raise document_extraction_service.OcrConfigurationError("OCR disabled in test")
+
+    old_backend = document_extraction_service.settings.document_extraction_backend
+    old_fallback = document_extraction_service.settings.document_extraction_fallback_to_ocr
+    document_extraction_service.settings.document_extraction_backend = "ocr"
+    document_extraction_service.settings.document_extraction_fallback_to_ocr = True
+    monkeypatch.setattr(document_extraction_service, "recognize_invoice_image", fake_ocr)
+    try:
+        result = document_extraction_service.extract_invoice_document("invoice.jpg", "invoice.jpg")
+    finally:
+        document_extraction_service.settings.document_extraction_backend = old_backend
+        document_extraction_service.settings.document_extraction_fallback_to_ocr = old_fallback
+
+    assert result["provider"] == "manual_review_fallback"
+    assert result["error"]
+    assert result["payload"]["parser_provider"] == "manual_review_empty_sheet"
 
 
 def test_mvp4_sync_sheet_corrections_before_iiko_send():
@@ -456,57 +941,72 @@ def test_mvp4_deterministic_parser_parses_ocr_text():
 
 
 def test_mvp4_upload_photo_response_can_include_parser_metadata(monkeypatch):
-    from app.services import invoice_parser_service, ocr_service
-    from app.routers import invoice_review as invoice_review_router
+    from app.services import document_extraction_service
 
-    def fake_ocr(_file_path):
-        return {
-            "provider": "fake_google_vision",
+    old_backend = document_extraction_service.settings.document_extraction_backend
+    document_extraction_service.settings.document_extraction_backend = "mineru"
+    monkeypatch.setattr(
+        document_extraction_service,
+        "_run_mineru_command",
+        lambda _file_path: {
             "raw_text": "ООО Питер Кельн\nНакладная №555 от 19.06.2026\nСахар 2 шт 100 200",
             "pages": 1,
-            "confidence": None,
-        }
-
-    def fake_parser(raw_text, fallback_filename=None):
-        return {
-            "parser_provider": "deterministic_parser",
-            "supplier": "ООО Питер Кельн",
-            "supplier_legal_name": "ООО Питер Кельн",
-            "invoice_number": "555",
-            "invoice_date": "2026-06-19",
-            "venue": None,
-            "delivery_address": None,
-            "raw_text": raw_text,
+            "confidence": 0.98,
+            "header": {
+                "supplier": "ООО Питер Кельн",
+                "invoice_number": "555",
+                "invoice_date": "2026-06-19",
+                "venue": "Добрая столовая",
+            },
             "items": [
-                {
-                    "name": "Сахар",
-                    "quantity": 2,
-                    "unit": "шт",
-                    "price": 100,
-                    "sum": 200,
-                    "vat": None,
-                    "comment": "Parser test",
-                    "confidence": 0.91,
-                }
+                {"name": "Сахар", "quantity": 2, "unit": "шт", "price": 100, "sum": 200, "confidence": 0.91}
             ],
-            "parser_notes": ["Parser test"],
-        }
-
-    monkeypatch.setattr(ocr_service, "recognize_invoice_image", fake_ocr)
-    monkeypatch.setattr(invoice_review_router, "recognize_invoice_image", fake_ocr)
-    monkeypatch.setattr(invoice_parser_service, "extract_invoice_payload_with_fallback", fake_parser)
-    monkeypatch.setattr(invoice_review_router, "extract_invoice_payload_with_fallback", fake_parser)
-
-    response = client.post(
-        "/api/v1/invoice-review/upload-photo",
-        files={"file": ("invoice.jpg", b"fake image bytes", "image/jpeg")},
-        data={"venue": "Добрая столовая", "create_google_sheet": "false"},
+        },
     )
-    assert response.status_code == 200
-    data = response.json()
-    assert data["parser_provider"] == "deterministic_parser"
-    assert data["ocr"]["provider"] == "fake_google_vision"
-    assert data["parser_notes"] == ["Parser test"]
+    try:
+        result = document_extraction_service.extract_invoice_document("invoice.jpg", "invoice.jpg")
+    finally:
+        document_extraction_service.settings.document_extraction_backend = old_backend
+
+    assert result["provider"] == "mineru"
+    assert result["payload"]["parser_provider"] == "mineru"
+    assert result["payload"]["supplier"] == "ООО Питер Кельн"
+    assert result["payload"]["items"][0]["name"] == "Сахар"
+
+
+def test_mineru_document_extraction_response_is_wired_through_upload(monkeypatch):
+    from app.services import document_extraction_service
+
+    old_backend = document_extraction_service.settings.document_extraction_backend
+    document_extraction_service.settings.document_extraction_backend = "mineru"
+    monkeypatch.setattr(
+        document_extraction_service,
+        "_run_mineru_command",
+        lambda _file_path: {
+            "raw_text": "ООО Питер Кельн\nНакладная №555 от 19.06.2026\nСахар 2 шт 100 200",
+            "pages": 2,
+            "confidence": 0.97,
+            "header": {
+                "supplier": "ООО Питер Кельн",
+                "invoice_number": "555",
+                "invoice_date": "2026-06-19",
+                "venue": "Добрая столовая",
+                "delivery_address": "ул. Тверская",
+            },
+            "items": [
+                {"name": "Сахар", "quantity": 2, "unit": "шт", "price": 100, "sum": 200, "confidence": 0.91}
+            ],
+        },
+    )
+    try:
+        result = document_extraction_service.extract_invoice_document("invoice.jpg", "invoice.jpg")
+    finally:
+        document_extraction_service.settings.document_extraction_backend = old_backend
+
+    assert result["provider"] == "mineru"
+    assert result["pages"] == 2
+    assert result["payload"]["parser_provider"] == "mineru"
+    assert result["payload"]["parser_notes"]
 
 
 
@@ -543,13 +1043,14 @@ def test_invoice_review_sheet_does_not_guess_supplier_inn_from_raw_text():
 
     assert sheet.status_code == 200
     rows = sheet.json()["sheets"]["Накладные"]
-    assert rows[1][5] == ""
-    assert rows[1][6] == ""
-    assert rows[1][7] == ""
-    assert rows[1][15] == "Окорок \"По-тамбовски\" к/в в/у"
-    assert rows[1][17] == "кг"
-    assert rows[1][24] == "7%"
-    assert rows[1][27] == 16351.45
+    values = dict(zip(rows[0], rows[1], strict=True))
+    assert values["Дата документа"] == ""
+    assert values["№ Документа"] == ""
+    assert values["Поставщик"] == ""
+    assert values["Наименование товара из документа"] == "Окорок \"По-тамбовски\" к/в в/у"
+    assert values["Ед.изм."] == "кг"
+    assert values["Ставка НДС %"] == "7%"
+    assert values["Сумма накладной"] == 16351.45
 
 def test_mvp4_auto_fills_iiko_fields_from_references(monkeypatch):
     from app.services import iiko_reference_mapping_service
@@ -588,50 +1089,61 @@ def test_mvp4_auto_fills_iiko_fields_from_references(monkeypatch):
     assert sheet.status_code == 200
     rows = sheet.json()["sheets"]["Накладные"]
     assert "Служебные поля iiko" not in sheet.json()["sheets"]
-    assert rows[0][0] == "Статус строки"
-    assert rows[0][1] == "Корректировка"
-    assert rows[0][2] == "Дубль"
-    assert rows[0][7] == "Поставщик"
-    assert rows[0][15] == "Наименование товара из документа"
-    assert rows[0][30] == "Госсистемы"
+    assert rows[0][0] == "Статус загрузки"
+    assert "Время загрузки документа" in rows[0]
+    assert "ID документа" in rows[0]
+    assert "Индикатор дубля документа" in rows[0]
+    assert "Поставщик" in rows[0]
+    assert "Наименование товара из документа" in rows[0]
+    assert "Госсистемы" in rows[0]
     assert "ЕГАИС" not in rows[0]
     assert "Меркурий" not in rows[0]
     assert "Честный знак" not in rows[0]
-    assert rows[0][19] == "Кол-во в документе"
-    assert rows[0][28] == "Дата приема"
-    assert rows[0][36] == "Время загрузки документа"
-    assert rows[0][37] == "ID документа"
-    assert rows[1][36] != ""
-    assert rows[1][37] == 1
-    assert rows[1][3] == "ТОРГ-12"
-    assert rows[1][6] == "780"
-    assert rows[1][5] == "2026-06-19"
-    assert rows[1][7] == "Питер Кельн"
-    assert rows[1][11] == "Добрая столовая"
-    assert rows[2][0] == ""
-    assert rows[2][1] == ""
-    assert rows[2][3] == ""
-    assert rows[2][5] == ""
-    assert rows[2][6] == ""
-    assert rows[2][7] == ""
-    assert rows[2][8] == ""
-    assert rows[2][9] == ""
-    assert rows[2][10] == ""
-    assert rows[2][11] == ""
-    assert rows[2][12] == ""
-    assert rows[2][13] == ""
-    assert rows[1][27] != ""
-    assert rows[2][27] == ""
+    assert "Кол-во из документа" in rows[0]
+    assert "Дата приема" in rows[0]
+    assert "Статус строки" in rows[0]
+    first = dict(zip(rows[0], rows[1], strict=True))
+    second = dict(zip(rows[0], rows[2], strict=True))
+    assert first["Время загрузки документа"] != ""
+    assert first["ID документа"] == review_id
+    assert first["Форма документа"] == "ТОРГ-12"
+    assert first["№ Документа"] == "780"
+    assert first["Дата документа"] == "2026-06-19"
+    assert first["Поставщик"] == "Питер Кельн"
+    assert first["Торговая точка"] == "Добрая столовая"
+    for field in (
+        "Статус загрузки",
+        "Время загрузки документа",
+        "ID документа",
+        "Индикатор дубля документа",
+        "Форма документа",
+        "Дата документа",
+        "№ Документа",
+        "Поставщик",
+        "ИНН Поставщика",
+        "Грузополучатель",
+        "Получатель",
+        "Торговая точка",
+        "Склад",
+        "Основание",
+        "Сумма накладной",
+    ):
+        assert second[field] == ""
+    assert first["Общая стоимость"] != ""
+    assert second["Общая стоимость"] != ""
     assert "Статус проверки" not in rows[0]
     assert "Что исправить" not in rows[0]
-    assert rows[1][15] == "Сахар ванильный"
-    assert rows[1][16] == ""
-    assert rows[1][18] == ""
-    assert rows[1][20] == ""
-    assert rows[1][22] == ""
-    assert rows[1][30] == ""
-    assert rows[1][35] == ""
-    assert rows[1][38] == ""
+    assert first["Наименование товара из документа"] == "Сахар ванильный"
+    assert first["Госсистемы"] == ""
+    assert first["Наименование товара в УС"] == "Сахар ванильный"
+    assert first["Ед.изм. в УС"] == "шт"
+    assert first["Кол-во в УС"] == 2
+    assert first["Цена в УС"] == 110
+    assert first["Последняя цена"] == ""
+    assert first["Отклонение от цены прайса"] == ""
+    assert first["Загрузить в УС"] == ""
+    assert first["Статус строки"] in {"Распознано", "Правка вручную", ""}
+    assert first["Причина ручной корректировки"] != "41"
 
     preview = client.get(f"/api/v1/invoice-review/{review_id}/preview")
     assert preview.status_code == 200
@@ -725,89 +1237,47 @@ def test_invoice_review_sheet_clears_non_visible_values_on_torg12_continuation_p
     sheet = client.get(f"/api/v1/invoice-review/{review_id}/sheet")
     assert sheet.status_code == 200
     rows = sheet.json()["sheets"]["Накладные"]
-    data_row = rows[1]
+    data_row = dict(zip(rows[0], rows[1], strict=True))
 
     # На странице-продолжении шапки документа нет, поэтому эти поля не заполняем.
-    for column_index in [2, 5, 6, 7, 8, 9, 10, 11, 12, 13]:
-        assert data_row[column_index] == ""
+    for field in (
+        "Индикатор дубля документа",
+        "Дата документа",
+        "№ Документа",
+        "Поставщик",
+        "ИНН Поставщика",
+        "Грузополучатель",
+        "Получатель",
+        "Торговая точка",
+        "Склад",
+        "Основание",
+    ):
+        assert data_row[field] == ""
 
     # Пользовательские/ручные/УС-поля не должны заполняться техническими значениями.
-    for column_index in [0, 1, 4, 14, 16, 18, 20, 22, 28, 29, 30, 31, 32, 33, 34, 35, 38]:
-        assert data_row[column_index] == ""
+    for field in (
+        "Госсистемы",
+        "Дата приема",
+        "Принял, Ф.И.О.",
+        "Кол-во в заявке",
+        "Цена по прайсу",
+        "Последняя дата поставки",
+        "Последняя цена",
+        "Отклонение от цены прайса",
+        "Загрузить в УС",
+    ):
+        assert data_row[field] == ""
+    assert data_row["Товар найден в справочнике"] != "41"
+    assert data_row["Статус строки"] != "41"
+    assert data_row["Причина ручной корректировки"] != "41"
 
-    assert data_row[3] == "ТОРГ-12"
-    assert data_row[15] == "Окорок \"По-тамбовски\" к/в в/у"
-    assert data_row[17] == "кг"
-    assert data_row[24] == "7%"
-    assert data_row[27] == 16351.45
-
-
-def test_mvp4_upload_photo_multipage_appends_items_from_next_pages(monkeypatch):
-    from app.routers import invoice_review as invoice_review_router
-
-    def fake_ocr(file_path):
-        if "page1" in file_path:
-            raw_text = "PAGE_1"
-        else:
-            raw_text = "PAGE_2"
-        return {
-            "provider": "fake_google_drive_ocr",
-            "raw_text": raw_text,
-            "pages": 1,
-            "confidence": None,
-        }
-
-    def fake_parser(raw_text, fallback_filename=None):
-        if "PAGE_1" in raw_text:
-            return {
-                "parser_provider": "deterministic_parser",
-                "parser_notes": ["page 1 parsed"],
-                "supplier": "ООО Поставщик",
-                "supplier_legal_name": "ООО Поставщик",
-                "invoice_number": "777",
-                "invoice_date": "2026-06-19",
-                "venue": "Добрая столовая",
-                "delivery_address": "Добрая столовая",
-                "raw_text": raw_text,
-                "items": [
-                    {"name": "Товар первая страница", "quantity": 1, "unit": "шт", "price": 100, "sum": 100}
-                ],
-            }
-        return {
-            "parser_provider": "deterministic_parser",
-            "parser_notes": ["page 2 parsed"],
-            "supplier": None,
-            "supplier_legal_name": None,
-            "invoice_number": None,
-            "invoice_date": None,
-            "venue": None,
-            "delivery_address": None,
-            "raw_text": raw_text,
-            "items": [
-                {"name": "Товар вторая страница", "quantity": 2, "unit": "шт", "price": 150, "sum": 300}
-            ],
-        }
-
-    monkeypatch.setattr(invoice_review_router, "recognize_invoice_image", fake_ocr)
-    monkeypatch.setattr(invoice_review_router, "extract_invoice_payload_with_fallback", fake_parser)
-
-    response = client.post(
-        "/api/v1/invoice-review/upload-photo",
-        files=[
-            ("files", ("page1.jpg", b"page 1 bytes", "image/jpeg")),
-            ("files", ("page2.jpg", b"page 2 bytes", "image/jpeg")),
-        ],
-        data={"multipage_invoice": "true", "create_google_sheet": "false"},
-    )
-
-    assert response.status_code == 200
-    data = response.json()
-    assert data["ocr"]["pages"] == 2
-    assert data["parser_notes"][0].startswith("Многостраничная накладная")
-
-    sheet = client.get(data["next_actions"]["open_sheet"]).json()
-    rows = sheet["sheets"]["Накладные"]
-    joined_rows = json.dumps(rows, ensure_ascii=False)
-    assert "Товар первая страница" in joined_rows
-    assert "Товар вторая страница" in joined_rows
-    assert "777" in joined_rows
+    assert data_row["ID документа"] == review_id
+    assert data_row["Форма документа"] == "ТОРГ-12"
+    assert data_row["Наименование товара из документа"] == "Окорок \"По-тамбовски\" к/в в/у"
+    assert data_row["Наименование товара в УС"] == "Окорок По-тамбовски"
+    assert data_row["Ед.изм."] == "кг"
+    assert data_row["Ед.изм. в УС"] == "кг"
+    assert data_row["Кол-во в УС"] == 4.058
+    assert data_row["Цена в УС"] == 702
+    assert data_row["Ставка НДС %"] == "7%"
+    assert data_row["Сумма накладной"] == 16351.45

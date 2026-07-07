@@ -1,7 +1,11 @@
 import json
 import mimetypes
 import re
+import socket
+import ssl
+import time
 from pathlib import Path
+from typing import Any, Callable
 
 from app.config import settings
 from app.services.google_oauth_service import get_google_user_credentials
@@ -9,6 +13,22 @@ from app.services.google_oauth_service import get_google_user_credentials
 
 class OcrConfigurationError(RuntimeError):
     pass
+
+
+class OcrProviderError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        operation: str,
+        attempts: int,
+        retryable: bool,
+    ) -> None:
+        super().__init__(message)
+        self.provider = "google_drive_ocr"
+        self.operation = operation
+        self.attempts = attempts
+        self.retryable = retryable
 
 
 DRIVE_OCR_SCOPES = ["https://www.googleapis.com/auth/drive"]
@@ -64,19 +84,25 @@ def recognize_invoice_with_google_drive_ocr(file_path: str) -> dict:
 
     document_id = None
     try:
-        document = drive_service.files().create(
-            body=body,
-            media_body=media,
-            fields="id,name",
-            ocrLanguage=settings.google_drive_ocr_language,
-            supportsAllDrives=True,
-        ).execute()
+        document = _execute_google_operation(
+            "create_ocr_document",
+            lambda: drive_service.files().create(
+                body=body,
+                media_body=media,
+                fields="id,name",
+                ocrLanguage=settings.google_drive_ocr_language,
+                supportsAllDrives=True,
+            ).execute(),
+        )
         document_id = document["id"]
 
-        exported = drive_service.files().export(
-            fileId=document_id,
-            mimeType=TEXT_EXPORT_MIME_TYPE,
-        ).execute()
+        exported = _execute_google_operation(
+            "export_ocr_text",
+            lambda: drive_service.files().export(
+                fileId=document_id,
+                mimeType=TEXT_EXPORT_MIME_TYPE,
+            ).execute(),
+        )
         raw_text = exported.decode("utf-8", errors="replace") if isinstance(exported, bytes) else str(exported)
     finally:
         if document_id and settings.google_drive_ocr_delete_temp_files:
@@ -89,6 +115,33 @@ def recognize_invoice_with_google_drive_ocr(file_path: str) -> dict:
         "pages": None,
         "temporary_document_id": None if settings.google_drive_ocr_delete_temp_files else document_id,
     }
+
+
+def _execute_google_operation(operation: str, call: Callable[[], Any]) -> Any:
+    attempts = max(1, settings.google_api_retry_attempts)
+    for attempt in range(1, attempts + 1):
+        try:
+            return call()
+        except Exception as exc:  # noqa: BLE001 - provider exceptions vary by transport
+            retryable = _is_retryable_google_error(exc)
+            if not retryable or attempt >= attempts:
+                raise OcrProviderError(
+                    f"Google Drive OCR operation {operation} failed after {attempt} attempt(s): {exc}",
+                    operation=operation,
+                    attempts=attempt,
+                    retryable=retryable,
+                ) from exc
+            delay = max(0.0, settings.google_api_retry_backoff_seconds) * (2 ** (attempt - 1))
+            if delay:
+                time.sleep(delay)
+    raise AssertionError("unreachable")
+
+
+def _is_retryable_google_error(exc: Exception) -> bool:
+    if isinstance(exc, (TimeoutError, socket.timeout, ssl.SSLError, ConnectionError)):
+        return True
+    status_code = getattr(getattr(exc, "resp", None), "status", None)
+    return status_code in {408, 429, 500, 502, 503, 504}
 
 
 def parse_invoice_text_to_payload(raw_text: str, fallback_filename: str | None = None) -> dict:
@@ -115,6 +168,7 @@ def parse_invoice_text_to_payload(raw_text: str, fallback_filename: str | None =
         invoice_date = None
         venue = None
         store = None
+        shipper = None
         consignee = None
         recipient = None
         supplier_inn = None
@@ -124,6 +178,7 @@ def parse_invoice_text_to_payload(raw_text: str, fallback_filename: str | None =
         invoice_date = (_extract_upd_invoice_date(lines) if is_upd_document else None) or _extract_date(joined)
         venue = _extract_delivery_point(lines)
         store = _extract_store_or_department(lines)
+        shipper = _extract_party_by_label(lines, "грузоотправитель")
         consignee = _extract_party_by_label(lines, "грузополучатель")
         recipient = _extract_recipient(lines) or consignee or venue
         supplier_inn = (
@@ -132,8 +187,17 @@ def parse_invoice_text_to_payload(raw_text: str, fallback_filename: str | None =
             else None
         ) or _extract_supplier_inn(lines, supplier)
 
-    items = _extract_items(lines)
+    extracted_items = _extract_items(lines)
+    items = _filter_reasonable_items(extracted_items)
     total_sum = _extract_invoice_total(joined, items)
+    parser_notes = [
+        "Поля распознаны автоматически через Google Drive OCR и должны быть проверены пользователем в Google Таблице.",
+        "Если товарные строки не распознаны, заполните их вручную в таблице перед отправкой.",
+    ]
+    if len(items) != len(extracted_items):
+        parser_notes.append(
+            f"Из {len(extracted_items)} распознанных товарных строк {len(items)} прошли фильтр качества OCR."
+        )
     return {
         "supplier": supplier,
         "supplier_legal_name": supplier,
@@ -141,6 +205,7 @@ def parse_invoice_text_to_payload(raw_text: str, fallback_filename: str | None =
         "invoice_date": invoice_date,
         "document_form": _extract_document_form(joined),
         "supplier_inn": supplier_inn,
+        "shipper": shipper,
         "consignee": consignee,
         "recipient": recipient,
         "trade_point": venue,
@@ -154,10 +219,7 @@ def parse_invoice_text_to_payload(raw_text: str, fallback_filename: str | None =
         "total_sum": total_sum,
         "raw_text": raw_text,
         "items": items,
-        "parser_notes": [
-            "Поля распознаны автоматически через Google Drive OCR и должны быть проверены пользователем в Google Таблице.",
-            "Если товарные строки не распознаны, заполните их вручную в таблице перед отправкой.",
-        ],
+        "parser_notes": parser_notes,
     }
 
 
@@ -1278,6 +1340,31 @@ def _extract_items(lines: list[str]) -> list[dict]:
         items = columnwise_items
 
     return items
+
+
+def _filter_reasonable_items(items: list[dict]) -> list[dict]:
+    filtered: list[dict] = []
+    for item in items:
+        name = str(item.get("name") or "").strip()
+        quantity = item.get("quantity")
+        price = item.get("price")
+        line_sum = item.get("sum")
+        if not name or not _looks_like_product_name(name):
+            continue
+        if not isinstance(quantity, (int, float)) or quantity <= 0:
+            continue
+        if not isinstance(price, (int, float)) or price <= 0:
+            continue
+        if line_sum is not None and (not isinstance(line_sum, (int, float)) or line_sum <= 0):
+            continue
+        letters = sum(1 for ch in name if ch.isalpha())
+        digits = sum(1 for ch in name if ch.isdigit())
+        if letters < 3:
+            continue
+        if digits > letters * 2:
+            continue
+        filtered.append(item)
+    return filtered
 
 
 UPD_ROW_STOP_WORDS = (
