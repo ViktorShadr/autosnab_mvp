@@ -232,6 +232,12 @@
 - This narrows the next implementation target: backend row mapping should be checked against the original workbook structure plus the existing Apps Script behavior before comparing against historical generated copies.
 - Added retry guidance in the upload UI so empty OCR/MinerU flows can recommend switching to `OpenAI structured parser`.
 
+## [2026-07-07] analysis | branch integration strategy for multi-page invoices
+
+- Compared `main` against `codex/invoice-recognition-hardening` specifically for multi-page invoice handling.
+- Confirmed that `main` still carries an older checkbox-based `multipage_invoice` upload path and TORG-12 continuation-page OCR behavior, while the current hardening branch already includes the broader logical multi-page upload/editor flow, merged page evidence, consistency warnings, and one-pass OpenAI parsing over multiple pages.
+- Conclusion: do not start with a full `main -> codex/invoice-recognition-hardening` merge for this concern; transplant only the remaining useful OCR/test details from `main` if anything is still missing.
+
 ## [2026-07-04] ui | live upload trace polling
 
 - Added a lightweight backend upload-trace store plus `/api/v1/invoice-review/upload-trace/{trace_id}` endpoint.
