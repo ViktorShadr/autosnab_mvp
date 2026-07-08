@@ -7,6 +7,7 @@ document-upload bot.
 
 - `telegram-bot-mvp.workflow.json` - importable n8n workflow scaffold
 - `telegram-bot-mvp.env.example` - environment variables expected by the workflow
+- `telegram-bot-workflow-notes.md` - practical assembly notes for the remaining multipart step
 
 ## Workflow intent
 
@@ -28,7 +29,8 @@ The workflow must not duplicate parsing or business logic from the backend.
 
 ## Current limitations
 
-- The JSON file is a scaffold, not a production-ready full flow.
-- Telegram file download and multipart assembly are represented explicitly, but
-  credentials, webhook URL, and deployment-specific IDs must be filled in by the operator.
+- The JSON file now freezes the session/status/metadata contract, but the real
+  Telegram file download and multipart file attachment still must be wired in n8n.
+- Credentials, webhook URL, data-table IDs, and deployment-specific IDs still
+  must be filled in by the operator.
 - XML / Excel / QR scenarios still depend on future backend support.

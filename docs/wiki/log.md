@@ -273,6 +273,12 @@
 - Added `telegram-bot-mvp.workflow.json` as an importable workflow skeleton covering session start, file append, finalize/upload, status polling, and reset flow.
 - Added `telegram-bot-mvp.env.example` and `n8n/README.md` so the next implementation step can move from planning into actual `n8n` assembly against the new backend contract.
 
+## [2026-07-08] implementation | n8n workflow refined toward real assembly
+
+- Reworked the workflow scaffold so it now has explicit finalize-contract assembly, upload-outcome mapping, and status-outcome mapping stages instead of one opaque placeholder chain.
+- Added `telegram-bot-workflow-notes.md` to isolate the remaining hard step: Telegram file download and multipart `files[]` upload into the bot backend endpoint.
+- Extended the env example with backend extraction/sheet options and optional default organization/point values.
+
 ## [2026-07-06] intake | original workbook registered as canonical raw source
 
 - Registered `../autosnab_mvp_raw/inbox/АвтоСнаб Кафе Ромашка  (ориг).xlsx` via `scripts/ingest_raw.py` as `src_bd91ee3517`.

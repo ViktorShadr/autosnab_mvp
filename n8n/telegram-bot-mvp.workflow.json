@@ -5,16 +5,15 @@
       "parameters": {
         "updates": [
           "message"
-        ],
-        "additionalFields": {}
+        ]
       },
       "id": "telegram-trigger",
       "name": "Telegram Trigger",
       "type": "n8n-nodes-base.telegramTrigger",
       "typeVersion": 1.2,
       "position": [
-        240,
-        300
+        220,
+        280
       ],
       "credentials": {
         "telegramApi": {
@@ -32,8 +31,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        500,
-        300
+        470,
+        280
       ]
     },
     {
@@ -44,7 +43,6 @@
               "conditions": {
                 "options": {
                   "caseSensitive": true,
-                  "leftValue": "",
                   "typeValidation": "strict",
                   "version": 2
                 },
@@ -65,7 +63,6 @@
               "conditions": {
                 "options": {
                   "caseSensitive": true,
-                  "leftValue": "",
                   "typeValidation": "strict",
                   "version": 2
                 },
@@ -86,7 +83,6 @@
               "conditions": {
                 "options": {
                   "caseSensitive": true,
-                  "leftValue": "",
                   "typeValidation": "strict",
                   "version": 2
                 },
@@ -107,7 +103,6 @@
               "conditions": {
                 "options": {
                   "caseSensitive": true,
-                  "leftValue": "",
                   "typeValidation": "strict",
                   "version": 2
                 },
@@ -128,7 +123,6 @@
               "conditions": {
                 "options": {
                   "caseSensitive": true,
-                  "leftValue": "",
                   "typeValidation": "strict",
                   "version": 2
                 },
@@ -146,16 +140,15 @@
               }
             }
           ]
-        },
-        "options": {}
+        }
       },
       "id": "route-intent",
       "name": "Route Intent",
       "type": "n8n-nodes-base.switch",
       "typeVersion": 3.2,
       "position": [
-        760,
-        300
+        730,
+        280
       ]
     },
     {
@@ -169,7 +162,11 @@
             "user_id": "={{$json.userId}}",
             "username": "={{$json.username}}",
             "status": "collecting",
-            "files_json": "=[]"
+            "files_json": "=[]",
+            "organization_name": "={{$env.DEFAULT_ORGANIZATION_NAME || ''}}",
+            "point_name": "={{$env.DEFAULT_POINT_NAME || ''}}",
+            "backend_upload_id": "=",
+            "backend_trace_id": "="
           }
         },
         "matchingColumns": [
@@ -181,22 +178,22 @@
       "type": "n8n-nodes-base.dataTable",
       "typeVersion": 1,
       "position": [
-        1030,
-        120
+        990,
+        80
       ]
     },
     {
       "parameters": {
         "chatId": "={{$json.chatId}}",
-        "text": "Новая сессия открыта. Отправьте страницы одного документа и нажмите «Готово»."
+        "text": "Новая сессия открыта. Отправьте страницы одного документа, затем нажмите «Готово»."
       },
       "id": "reply-session-opened",
       "name": "Reply Session Opened",
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
       "position": [
-        1280,
-        120
+        1230,
+        80
       ],
       "credentials": {
         "telegramApi": {
@@ -224,22 +221,72 @@
       "type": "n8n-nodes-base.dataTable",
       "typeVersion": 1,
       "position": [
-        1030,
-        240
+        990,
+        200
       ]
     },
     {
       "parameters": {
-        "jsCode": "const session = $json.data?.[0] || {};\nconst files = JSON.parse(session.files_json || '[]');\nfiles.push({ fileId: $json.fileId, fileName: $json.fileName, addedAt: new Date().toISOString() });\nreturn [{ json: { ...$json, sessionRowId: session.id, filesJson: JSON.stringify(files), filesCount: files.length } }];"
+        "jsCode": "const session = $json.data?.[0] || {};\nif (!session.id) {\n  return [{ json: { ...$json, appendError: 'Сначала откройте сессию командой Новый документ.' } }];\n}\nconst files = JSON.parse(session.files_json || '[]');\nfiles.push({ fileId: $json.fileId, fileName: $json.fileName, addedAt: new Date().toISOString() });\nreturn [{ json: { ...$json, sessionRowId: session.id, filesJson: JSON.stringify(files), filesCount: files.length } }];"
       },
       "id": "append-file-to-session",
       "name": "Append File To Session",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1280,
-        240
+        1230,
+        200
       ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$json.appendError || ''}}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "check-append-error",
+      "name": "Check Append Error",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1480,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{$json.chatId}}",
+        "text": "={{$json.appendError}}"
+      },
+      "id": "reply-append-error",
+      "name": "Reply Append Error",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1710,
+        160
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "replace-telegram-credential-id",
+          "name": "Telegram Bot"
+        }
+      }
     },
     {
       "parameters": {
@@ -259,21 +306,21 @@
       "type": "n8n-nodes-base.dataTable",
       "typeVersion": 1,
       "position": [
-        1530,
+        1710,
         240
       ]
     },
     {
       "parameters": {
         "chatId": "={{$json.chatId}}",
-        "text": "Файл добавлен в текущую сессию. Когда все страницы будут отправлены, нажмите «Готово»."
+        "text": "Файл добавлен в текущую сессию. Когда все страницы отправлены, нажмите «Готово»."
       },
       "id": "reply-file-added",
       "name": "Reply File Added",
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
       "position": [
-        1770,
+        1940,
         240
       ],
       "credentials": {
@@ -302,21 +349,21 @@
       "type": "n8n-nodes-base.dataTable",
       "typeVersion": 1,
       "position": [
-        1030,
-        380
+        990,
+        360
       ]
     },
     {
       "parameters": {
-        "jsCode": "const session = $json.data?.[0] || {};\nconst files = JSON.parse(session.files_json || '[]');\nif (!files.length) {\n  return [{ json: { ...$json, finalizeError: 'В сессии нет файлов.' } }];\n}\nreturn [{ json: { ...$json, sessionRowId: session.id, files, filesCount: files.length } }];"
+        "jsCode": "const session = $json.data?.[0] || {};\nconst files = JSON.parse(session.files_json || '[]');\nif (!session.id) {\n  return [{ json: { ...$json, finalizeError: 'Сначала откройте сессию командой Новый документ.' } }];\n}\nif (!files.length) {\n  return [{ json: { ...$json, finalizeError: 'В текущей сессии нет файлов.' } }];\n}\nconst uploadContract = {\n  source_channel: $env.BOT_SOURCE_CHANNEL || 'telegram_bot',\n  document_kind: $env.BOT_DOCUMENT_KIND || 'primary_document',\n  source_user_id: $json.userId || session.user_id,\n  source_username: $json.username || session.username || null,\n  source_chat_id: $json.chatId || session.chat_id,\n  organization_name: session.organization_name || $env.DEFAULT_ORGANIZATION_NAME || null,\n  point_name: session.point_name || $env.DEFAULT_POINT_NAME || null,\n  create_google_sheet: String($env.BACKEND_CREATE_GOOGLE_SHEET || 'false'),\n  extraction_method: $env.BACKEND_EXTRACTION_METHOD || 'openai'\n};\nreturn [{ json: { ...$json, sessionRowId: session.id, session, files, filesCount: files.length, uploadContract } }];"
       },
       "id": "prepare-finalize",
       "name": "Prepare Finalize",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1280,
-        380
+        1230,
+        360
       ]
     },
     {
@@ -324,7 +371,6 @@
         "conditions": {
           "options": {
             "caseSensitive": true,
-            "leftValue": "",
             "typeValidation": "strict",
             "version": 2
           },
@@ -346,8 +392,8 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        1530,
-        380
+        1480,
+        360
       ]
     },
     {
@@ -360,8 +406,8 @@
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
       "position": [
-        1770,
-        340
+        1710,
+        320
       ],
       "credentials": {
         "telegramApi": {
@@ -389,48 +435,79 @@
           "parameters": [
             {
               "name": "source_channel",
-              "value": "={{$env.BOT_SOURCE_CHANNEL || 'telegram_bot'}}"
+              "value": "={{$json.uploadContract.source_channel}}"
             },
             {
               "name": "document_kind",
-              "value": "={{$env.BOT_DOCUMENT_KIND || 'primary_document'}}"
+              "value": "={{$json.uploadContract.document_kind}}"
             },
             {
               "name": "source_user_id",
-              "value": "={{$json.userId}}"
+              "value": "={{$json.uploadContract.source_user_id}}"
             },
             {
               "name": "source_username",
-              "value": "={{$json.username}}"
+              "value": "={{$json.uploadContract.source_username}}"
             },
             {
               "name": "source_chat_id",
-              "value": "={{$json.chatId}}"
+              "value": "={{$json.uploadContract.source_chat_id}}"
+            },
+            {
+              "name": "organization_name",
+              "value": "={{$json.uploadContract.organization_name}}"
+            },
+            {
+              "name": "point_name",
+              "value": "={{$json.uploadContract.point_name}}"
+            },
+            {
+              "name": "create_google_sheet",
+              "value": "={{$json.uploadContract.create_google_sheet}}"
+            },
+            {
+              "name": "extraction_method",
+              "value": "={{$json.uploadContract.extraction_method}}"
             }
           ]
         },
         "options": {}
       },
-      "id": "upload-to-backend-placeholder",
-      "name": "Upload To Backend Placeholder",
+      "id": "upload-to-backend-contract",
+      "name": "Upload To Backend Contract",
+      "notesInFlow": true,
+      "notes": "Replace this node's multipart body with the real downloaded Telegram binaries. The current scaffold freezes the metadata contract and session flow, but file download + binary attachment still must be wired in the target n8n instance.",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1770,
-        430
+        1710,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const source = $json;\nconst status = source.status;\nlet replyText = 'Документ принят в обработку.';\nif (status === 'unsupported_format') {\n  replyText = source.message || 'Файл получен, но этот формат пока не поддерживается.';\n} else if (status === 'accepted_for_processing') {\n  replyText = `Документ принят в обработку. ID загрузки: ${source.upload_id}`;\n}\nreturn [{ json: { ...source, replyText } }];"
+      },
+      "id": "map-upload-outcome",
+      "name": "Map Upload Outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1950,
+        400
       ]
     },
     {
       "parameters": {
         "operation": "update",
         "tableId": "telegram_bot_sessions",
-        "rowId": "={{$json.sessionRowId}}",
+        "rowId": "={{$item(0).$node['Prepare Finalize'].json.sessionRowId}}",
         "columns": {
           "mappingMode": "defineBelow",
           "value": {
-            "status": "uploaded",
-            "backend_upload_id": "={{$json.upload_id}}",
-            "backend_trace_id": "={{$json.trace_id}}"
+            "status": "={{$json.status}}",
+            "backend_upload_id": "={{$json.upload_id || ''}}",
+            "backend_trace_id": "={{$json.trace_id || ''}}"
           }
         }
       },
@@ -439,22 +516,22 @@
       "type": "n8n-nodes-base.dataTable",
       "typeVersion": 1,
       "position": [
-        2040,
-        430
+        2190,
+        400
       ]
     },
     {
       "parameters": {
-        "chatId": "={{$json.chatId}}",
-        "text": "={{$json.status === 'unsupported_format' ? 'Файл получен, но этот формат пока не поддерживается.' : 'Документ принят в обработку. ID загрузки: ' + $json.upload_id}}"
+        "chatId": "={{$item(0).$node['Normalize Update'].json.chatId}}",
+        "text": "={{$json.replyText}}"
       },
       "id": "reply-uploaded",
       "name": "Reply Uploaded",
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
       "position": [
-        2280,
-        430
+        2430,
+        400
       ],
       "credentials": {
         "telegramApi": {
@@ -482,7 +559,7 @@
       "type": "n8n-nodes-base.dataTable",
       "typeVersion": 1,
       "position": [
-        1030,
+        990,
         520
       ]
     },
@@ -497,21 +574,34 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1280,
+        1230,
         520
       ]
     },
     {
       "parameters": {
-        "chatId": "={{$json.chatId || $item(0).$node['Normalize Update'].json.chatId}}",
-        "text": "={{$json.message + ($json.review_id ? '\\nReview ID: ' + $json.review_id : '')}}"
+        "jsCode": "const source = $json;\nlet text = source.message || 'Статус обновлен.';\nif (source.review_id) {\n  text += `\\nReview ID: ${source.review_id}`;\n}\nif (source.result_code) {\n  text += `\\nРезультат: ${source.result_code}`;\n}\nif (source.error_text) {\n  text += `\\nОшибка: ${source.error_text}`;\n}\nreturn [{ json: { ...source, replyText: text } }];"
+      },
+      "id": "map-status-outcome",
+      "name": "Map Status Outcome",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1480,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{$item(0).$node['Normalize Update'].json.chatId}}",
+        "text": "={{$json.replyText}}"
       },
       "id": "reply-status",
       "name": "Reply Status",
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
       "position": [
-        1530,
+        1710,
         520
       ],
       "credentials": {
@@ -540,8 +630,8 @@
       "type": "n8n-nodes-base.dataTable",
       "typeVersion": 1,
       "position": [
-        1030,
-        660
+        990,
+        640
       ]
     },
     {
@@ -554,8 +644,8 @@
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
       "position": [
-        1280,
-        660
+        1230,
+        640
       ],
       "credentials": {
         "telegramApi": {
@@ -653,6 +743,24 @@
       "main": [
         [
           {
+            "node": "Check Append Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Append Error": {
+      "main": [
+        [
+          {
+            "node": "Reply Append Error",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
             "node": "Store Appended File",
             "type": "main",
             "index": 0
@@ -704,14 +812,25 @@
         ],
         [
           {
-            "node": "Upload To Backend Placeholder",
+            "node": "Upload To Backend Contract",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Upload To Backend Placeholder": {
+    "Upload To Backend Contract": {
+      "main": [
+        [
+          {
+            "node": "Map Upload Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map Upload Outcome": {
       "main": [
         [
           {
@@ -748,6 +867,17 @@
       "main": [
         [
           {
+            "node": "Map Status Outcome",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Map Status Outcome": {
+      "main": [
+        [
+          {
             "node": "Reply Status",
             "type": "main",
             "index": 0
@@ -769,7 +899,7 @@
   },
   "active": false,
   "settings": {},
-  "versionId": "telegram-bot-mvp-v1",
+  "versionId": "telegram-bot-mvp-v2",
   "meta": {
     "templateCredsSetupCompleted": false
   },
