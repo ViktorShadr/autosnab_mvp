@@ -279,6 +279,59 @@
 - Added `telegram-bot-workflow-notes.md` to isolate the remaining hard step: Telegram file download and multipart `files[]` upload into the bot backend endpoint.
 - Extended the env example with backend extraction/sheet options and optional default organization/point values.
 
+## [2026-07-08] diagnosis | current bot upload failure is pre-backend n8n validation
+
+- Reviewed root screenshot `img_4.png`.
+- The visible error is not OCR/parsing failure and not a backend upload rejection; `n8n` reports that the workflow itself has issues and cannot be executed.
+- Practical meaning: attaching a scan in Telegram currently stops before the bot can call `/api/v1/invoice-review/bot/upload-document-live`, so the immediate fix target is workflow validity/completeness inside `n8n`, not invoice-processing logic.
+
+## [2026-07-08] fix | unknown bot text now has explicit fallback branch
+
+- Reviewed root screenshot `img_5.png`.
+- Confirmed that `Normalize Update` emits `intent = unknown` for arbitrary text, while the prior `Route Intent` configuration had no matching branch for that value.
+- Updated the `n8n` workflow scaffold so unknown text now routes to a direct Telegram help reply instead of terminating silently.
+
+## [2026-07-08] docs | node-by-node n8n setup guide added
+
+- Added `n8n/telegram-bot-node-setup.md` as an exact UI configuration guide for every node in the current Telegram bot workflow.
+- The guide covers Data Table creation, env prerequisites, expressions, code-node contents, and the exact field values to enter in `n8n`.
+
+## [2026-07-08] implementation | fuller self-contained n8n workflow JSON added
+
+- Added `n8n/telegram-bot-full.workflow.json` as a more self-contained workflow variant.
+- This version keeps the same bot contract but removes the earlier `Data Table` dependency by storing per-chat bot sessions in `workflow static data`.
+- The JSON now includes filled nodes for Telegram file lookup, file download, in-memory session append, finalize payload preparation, backend upload, status polling, reset, and unknown-text fallback.
+
+## [2026-07-08] fix | full n8n workflow aligned to current Code-node static-data API
+
+- Live `n8n` execution screenshot showed `ReferenceError: getWorkflowStaticData is not defined` inside `Prepare File Download`.
+- Updated all full-workflow Code nodes to use `$getWorkflowStaticData('global')`, which matches the current runtime helper exposed in this `n8n` editor.
+
+## [2026-07-08] fix | first file can auto-open session in full n8n workflow
+
+- Telegram and `n8n` execution screenshots showed that the full workflow now executes, but photo upload was still rejected at `Prepare File Download` when the operator had not sent `Новый документ` first.
+- Updated the full workflow so the first incoming file auto-creates the in-memory session for that chat, then continues through the file-download path instead of replying with a hard session-open error.
+
+## [2026-07-08] ux | bot replies now include a clearer operator menu
+
+- Updated the full workflow so user-facing Telegram replies now carry a consistent text menu with the core actions: `Новый документ`, send file, `Готово`, `Статус`, `Сбросить`.
+- Expanded command normalization at the intake step to accept common variants such as `/start`, `/menu`, `/status`, `/reset`, `/done`, and lowercase Russian command text.
+
+## [2026-07-08] ux | bot reply flow cleaned up after Telegram feedback
+
+- Telegram screenshots showed that repeating the full action list after almost every event made the interface feel noisy and misleading.
+- Refined the full workflow so start/help/reset paths still show the full instruction block, while file-accepted, upload-submitted, and status replies are now shorter and more contextual.
+
+## [2026-07-08] compatibility | direct Bot API keyboard workaround rolled back on this n8n instance
+
+- Live `n8n` execution showed `access to env vars denied` in reply nodes that built direct Telegram Bot API URLs from `$env.TELEGRAM_BOT_TOKEN`.
+- Because that instance policy blocks the workaround, the full workflow was returned to built-in Telegram reply nodes while keeping the cleaner compact text UX.
+
+## [2026-07-08] ux | Telegram bot replies tightened into a cleaner product flow
+
+- Registered the new Telegram screenshot `codex-clipboard-DhOyFN.png`; it showed that the current fallback still looked like an automation dump because of the `Не понял сообщение` opener, the repeated full instruction block, and the `n8n` attribution footer.
+- Updated `n8n/telegram-bot-full.workflow.json` so reply nodes now disable attribution, open with a shorter home screen, avoid error-style wording for ordinary unknown text, and keep each step focused on one next action instead of restating the entire menu after every message.
+
 ## [2026-07-06] intake | original workbook registered as canonical raw source
 
 - Registered `../autosnab_mvp_raw/inbox/АвтоСнаб Кафе Ромашка  (ориг).xlsx` via `scripts/ingest_raw.py` as `src_bd91ee3517`.

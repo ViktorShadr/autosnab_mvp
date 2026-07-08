@@ -138,6 +138,26 @@
                 ],
                 "combinator": "and"
               }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.intent}}",
+                    "rightValue": "unknown",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
             }
           ]
         }
@@ -653,6 +673,26 @@
           "name": "Telegram Bot"
         }
       }
+    },
+    {
+      "parameters": {
+        "chatId": "={{$json.chatId}}",
+        "text": "Не понял команду. Нажмите «Новый документ», отправьте файл накладной, либо используйте команды «Статус» и «Сбросить»."
+      },
+      "id": "reply-unknown-intent",
+      "name": "Reply Unknown Intent",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        990,
+        760
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "replace-telegram-credential-id",
+          "name": "Telegram Bot"
+        }
+      }
     }
   ],
   "connections": {
@@ -711,6 +751,13 @@
         [
           {
             "node": "Reset Session",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reply Unknown Intent",
             "type": "main",
             "index": 0
           }

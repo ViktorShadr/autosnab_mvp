@@ -9,6 +9,9 @@ The workflow is now structured around four explicit layers:
 - upload outcome mapping
 - status outcome mapping
 
+It now also contains an explicit `unknown` fallback branch, so arbitrary text
+messages no longer stop silently at `Route Intent`.
+
 That makes the next implementation step narrower: wire Telegram file download
 and binary multipart upload into the already fixed contract.
 
