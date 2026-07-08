@@ -236,6 +236,12 @@
 - Verified that the repo does not yet contain a dedicated Telegram bot implementation or any SBIS/Saby adapter, auth client, scheduler, or sync-history persistence.
 - The practical integration conclusion is to treat bot and SBIS as source/transport adapters over the existing backend contract, not as separate document-processing implementations.
 
+## [2026-07-08] verification | multi-file upload boundary confirmed
+
+- Verified in code that `/invoice-review/upload-document-live` accepts `files: list[UploadFile]`, stores them under one logical upload directory, merges page evidence through `extract_invoice_document_set(...)`, and can continue into the Google Sheets write path when `create_google_sheet=true`.
+- Verified the important boundary as well: this is a multi-page path for one logical document, not a batch import of multiple unrelated invoices in one request.
+- Verified that multi-file processing currently works only with the OpenAI parser path; non-OpenAI extraction methods are rejected for multi-page documents.
+
 ## [2026-07-08] planning | bot and SBIS implementation plan added
 
 - Registered the new root BA source `MVP Бух калькулятор.md` in `manifests/raw_sources.csv` as the active full-scope requirements document used for this planning pass.
