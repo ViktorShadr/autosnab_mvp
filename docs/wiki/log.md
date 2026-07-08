@@ -258,6 +258,25 @@
 
 - Registered the new root source `ТЗ бота.pdf` in `manifests/raw_sources.csv` before using it.
 - Reviewed the PDF and confirmed it matches the current repo direction: the bot is only an intake/status channel over the existing invoice-review backend, not a second parsing/export pipeline.
+
+## [2026-07-09] fix | full n8n workflow binary handoff corrected
+
+- Registered the new Telegram screenshot `codex-clipboard-x2c4Ho.png` in `manifests/raw_sources.csv` before using it.
+- Diagnosed the live bot failure as a workflow-level binary access bug, not a backend upload failure: `Store File In Memory` was reading the downloaded Telegram file through `$input.item`, which is not the valid input accessor in the current Code-node runtime.
+- Updated `n8n/telegram-bot-full.workflow.json` so the append-file path reads binary from `$input.first().binary` and falls back across available binary keys, matching the current `n8n` runtime behavior and unblocking photo-page accumulation in session memory.
+
+## [2026-07-09] fix | full n8n workflow moved to durable session rows
+
+- Registered the new Telegram screenshot `codex-clipboard-hhh7PL.png` in `manifests/raw_sources.csv` before using it.
+- Diagnosed the next live failure as cross-execution state loss: after the bot confirmed `Страница 1 добавлена`, the next `Готово` command could not find the same logical document anymore and returned `Нет активного документа`.
+- Reworked `n8n/telegram-bot-full.workflow.json` so the richer full bot flow no longer depends on volatile workflow-static chat state between Telegram updates.
+- The full flow now uses the durable `telegram_bot_sessions` Data Table for append/finalize/status/reset: first-file auto-open still works, appended pages are stored as serialized page payloads in `files_json`, `Готово` rebuilds multipart `files[]` from that row, backend upload IDs are written back into the same row, and `Сбросить` deletes the row explicitly.
+
+## [2026-07-09] ui | full n8n workflow now sends Telegram buttons
+
+- Updated `n8n/telegram-bot-full.workflow.json` so all bot replies are sent through direct Telegram Bot API `sendMessage` HTTP calls instead of the previous plain reply nodes.
+- Added a persistent reply keyboard with `Новый документ`, `Готово`, `Статус`, and `Сбросить`, generated once in `Normalize Update` and attached to every operator-facing reply as `reply_markup`.
+- This removes the earlier UX dependence on typing exact command texts by hand while keeping the same backend contract and multi-page document session logic.
 - Compiled the new concrete constraints into wiki: broader first-stage intake types (`jpg/png/pdf/xml/xls/xlsx/QR`), operator-facing upload statuses, explicit upload-journal fields, unsupported-format behavior, and possible organization/point selection before upload finalization.
 
 ## [2026-07-08] implementation | first bot backend contract fixed in code
