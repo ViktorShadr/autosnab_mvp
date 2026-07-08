@@ -35,6 +35,52 @@ The shortest safe path is:
 
 ## Bot Plan
 
+### Bot TOR now fixed from `ТЗ бота.pdf`
+
+The reviewed PDF confirms the bot's business role more narrowly:
+
+- bot is only an intake/status channel for primary documents;
+- parsed results must end up in the existing data-review module;
+- bot must not push data directly into the accounting system;
+- bot must not perform manual product matching or final business validation.
+
+The TOR also fixes the minimum intake surface:
+
+- images: `jpg`, `jpeg`, `png`
+- `pdf`
+- `xml`
+- `xls` / `xlsx`
+- cashier-check QR input
+
+If a format is not supported by the current backend path, the bot must return a
+clear unsupported-format response instead of failing technically.
+
+The TOR fixes minimum persisted upload metadata as well:
+
+- upload id
+- user id
+- username
+- upload timestamp
+- original filename
+- file type
+- stored raw-file link/path
+- selected organization / location
+- processing status
+- error text if present
+
+The TOR also fixes operator-visible statuses that the adapter layer must expose
+in business language:
+
+- file received
+- accepted for processing
+- processing
+- processed
+- transferred to review module
+- requires review
+- processing error
+- unsupported format
+- possible duplicate
+
 ### Phase 1. Freeze the integration boundary
 
 - Reuse the existing invoice-review backend as the only document-processing entrypoint.
@@ -46,7 +92,7 @@ The shortest safe path is:
 
 ### Phase 2. Implement the bot as a thin client
 
-- Accept images/PDF from the user.
+- Accept supported files from the user: image, PDF, XML, Excel, or receipt QR.
 - Group pages into one logical document before upload.
 - Forward the payload to the existing backend upload flow.
 - Poll trace/status until processing completes.
@@ -61,6 +107,7 @@ The shortest safe path is:
 - Show current processing status for the latest uploaded document.
 - Return a link or identifier that lets the operator continue work in the main review surface.
 - If backend exposes a safe retry action, allow bot-triggered retry for failed pre-review processing only.
+- If multiple organizations/points exist for one operator, require explicit organization/location selection before final upload.
 
 ### Phase 4. Explicit non-goals for the bot
 
@@ -154,7 +201,7 @@ Required adapter fields:
 ## Recommended delivery order
 
 1. Smoke-test the existing invoice-review backend as an external API, without new logic.
-2. Implement the bot adapter first.
+2. Freeze upload journal/storage fields so bot-originated uploads retain source/user/location provenance required by the TOR.
 3. Reuse the same adapter pattern for SBIS ingestion.
 4. Add SBIS sync history and scheduler after manual ingestion works.
 5. Only then automate larger operational loops.

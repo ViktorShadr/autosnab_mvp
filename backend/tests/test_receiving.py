@@ -699,6 +699,84 @@ def test_upload_document_live_preserves_page_order(monkeypatch, tmp_path):
     assert captured["file_type"] == "multipage"
 
 
+def test_bot_upload_returns_unsupported_format_without_crash(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.routers.invoice_review.settings.uploaded_invoices_dir", str(tmp_path))
+
+    response = client.post(
+        "/api/v1/invoice-review/bot/upload-document-live",
+        files=[("files", ("invoice.xml", b"<xml/>", "application/xml"))],
+        data={
+            "source_user_id": "tg-user-1",
+            "source_username": "operator_1",
+            "source_channel": "telegram_bot",
+            "document_kind": "primary_document",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "unsupported_format"
+    assert data["trace_id"] is None
+    assert data["unsupported_reason"]
+
+    status_response = client.get(f"/api/v1/invoice-review/bot/uploads/{data['upload_id']}")
+    assert status_response.status_code == 200
+    status_data = status_response.json()
+    assert status_data["completed"] is True
+    assert status_data["status"] == "unsupported_format"
+    assert "backend" in status_data["error_text"]
+
+
+def test_bot_upload_creates_trace_and_updates_journal(monkeypatch, tmp_path):
+    from app.routers import invoice_review as invoice_review_router
+
+    monkeypatch.setattr(invoice_review_router.settings, "uploaded_invoices_dir", str(tmp_path))
+
+    def fake_process(**kwargs):
+        response = {
+            "review_id": 55,
+            "status": "ready",
+            "issues": [],
+            "next_actions": {"open_sheet": "/api/v1/invoice-review/55/sheet"},
+            "google_spreadsheet_error": None,
+        }
+        invoice_review_router.set_trace_result(kwargs["upload_trace_id"], response)
+        invoice_review_router.finalize_trace(kwargs["upload_trace_id"])
+        return response
+
+    monkeypatch.setattr(invoice_review_router, "_process_invoice_upload", fake_process)
+
+    response = client.post(
+        "/api/v1/invoice-review/bot/upload-document-live",
+        files=[("files", ("invoice.jpg", b"fake-image", "image/jpeg"))],
+        data={
+            "source_user_id": "tg-user-2",
+            "source_username": "operator_2",
+            "source_channel": "telegram_bot",
+            "document_kind": "primary_document",
+            "create_google_sheet": "false",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "accepted_for_processing"
+    assert data["trace_id"]
+
+    trace = _wait_for_trace(data["trace_id"])
+    assert trace["completed"] is True
+    assert trace["result"]["review_id"] == 55
+
+    status_response = client.get(f"/api/v1/invoice-review/bot/uploads/{data['upload_id']}")
+    assert status_response.status_code == 200
+    status_data = status_response.json()
+    assert status_data["status"] == "transferred_to_review"
+    assert status_data["completed"] is True
+    assert status_data["review_id"] == 55
+    assert status_data["result_code"] == "transferred_to_review"
+    assert status_data["next_actions"]["review_id"] == 55
+
+
 def test_build_review_sheet_backfills_invoice_reference_mapping_for_old_items(monkeypatch):
     from app.services import invoice_review_service
     from app.schemas.invoice_review import InvoiceReviewCreateRequest, RecognizedInvoiceItem

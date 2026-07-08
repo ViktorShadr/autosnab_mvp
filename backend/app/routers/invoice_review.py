@@ -14,13 +14,24 @@ from app.db.session import SessionLocal, get_db
 from app.models.accounting import AccountingExport
 from app.models.receiving import Receiving, ReceivingDocument
 from app.schemas.invoice_review import (
+    BotUploadAcceptedResponse,
+    BotUploadStatusResponse,
     ConfirmSendToIikoRequest,
     InvoiceReviewCreateRequest,
     InvoiceReviewResponse,
-    PipelineLogEntry,
     InvoiceReviewUpdateRequest,
+    PipelineLogEntry,
     RecognizedInvoiceItem,
     SyncSheetAndConfirmRequest,
+)
+from app.services.bot_ingestion_service import (
+    build_bot_next_actions,
+    build_source_metadata,
+    classify_bot_file,
+    create_upload_journal,
+    derive_bot_result,
+    get_upload_journal,
+    update_upload_journal,
 )
 from app.services.invoice_review_service import (
     build_apps_script_sample,
@@ -965,6 +976,203 @@ def get_upload_trace(trace_id: str):
     return trace
 
 
+@router.post("/bot/upload-document-live", response_model=BotUploadAcceptedResponse)
+async def upload_invoice_document_via_bot(
+    files: list[UploadFile] = File(...),
+    source_channel: str = Form(default="telegram_bot"),
+    document_kind: str = Form(default="primary_document"),
+    source_user_id: str = Form(...),
+    source_username: str | None = Form(default=None),
+    source_chat_id: str | None = Form(default=None),
+    organization_name: str | None = Form(default=None),
+    point_name: str | None = Form(default=None),
+    create_google_sheet: bool = Form(default=True),
+    extraction_method: str | None = Form(default=None),
+    public_api_base_url: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    if not files:
+        raise HTTPException(status_code=422, detail="Нужно загрузить хотя бы один файл.")
+    if len(files) > settings.openai_max_image_pages:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Слишком много файлов: максимум {settings.openai_max_image_pages}.",
+        )
+
+    document_upload_id = f"bot-source-{uuid4().hex}"
+    target_dir = Path(settings.uploaded_invoices_dir) / document_upload_id
+    target_dir.mkdir(parents=True, exist_ok=True)
+    file_paths: list[str] = []
+    file_names: list[str] = []
+    file_types: list[str] = []
+    unsupported_reason: str | None = None
+    for index, file in enumerate(files, start=1):
+        safe_name = Path(file.filename or f"file-{index}").name
+        target = target_dir / f"{index:03d}-{safe_name}"
+        with target.open("wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        if target.stat().st_size == 0:
+            raise HTTPException(status_code=422, detail=f"Файл {safe_name} пустой.")
+        if target.stat().st_size > settings.bot_upload_max_file_bytes:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Файл {safe_name} превышает лимит {settings.bot_upload_max_file_bytes} байт.",
+            )
+        file_paths.append(str(target))
+        file_names.append(safe_name)
+        file_types.append(file.content_type or "application/octet-stream")
+        supported_now, reason, _ = classify_bot_file(
+            safe_name,
+            file.content_type,
+            document_kind=document_kind,
+        )
+        if not supported_now and unsupported_reason is None:
+            unsupported_reason = reason
+
+    primary_name = file_names[0]
+    primary_type = "multipage" if len(file_types) > 1 else file_types[0]
+    if unsupported_reason:
+        upload = create_upload_journal(
+            db,
+            source_channel=source_channel,
+            document_kind=document_kind,
+            user_id=source_user_id,
+            username=source_username,
+            chat_id=source_chat_id,
+            organization_name=organization_name,
+            point_name=point_name,
+            original_filename=primary_name,
+            file_type=primary_type,
+            raw_file_path=str(target_dir),
+            files_count=len(file_paths),
+            trace_id=None,
+            status="unsupported_format",
+            error_text=unsupported_reason,
+        )
+        return BotUploadAcceptedResponse(
+            upload_id=upload.upload_id,
+            trace_id=None,
+            status="unsupported_format",
+            message="Файл получен, но этот формат пока не поддерживается.",
+            source_channel=source_channel,
+            document_kind=document_kind,
+            files_count=len(file_paths),
+            unsupported_reason=unsupported_reason,
+        )
+
+    trace_id = f"trace-{document_upload_id}"
+    upload = create_upload_journal(
+        db,
+        source_channel=source_channel,
+        document_kind=document_kind,
+        user_id=source_user_id,
+        username=source_username,
+        chat_id=source_chat_id,
+        organization_name=organization_name,
+        point_name=point_name,
+        original_filename=primary_name,
+        file_type=primary_type,
+        raw_file_path=str(target_dir),
+        files_count=len(file_paths),
+        trace_id=trace_id,
+        status="accepted_for_processing",
+    )
+    initialize_trace(trace_id)
+    set_trace_metadata(
+        trace_id,
+        upload_id=upload.upload_id,
+        source_channel=source_channel,
+        document_kind=document_kind,
+    )
+    append_trace_log(
+        trace_id,
+        {
+            "stage": "job_queued",
+            "status": "running",
+            "message": "Документ принят в обработку от бота.",
+            "details": {
+                "upload_id": upload.upload_id,
+                "pages": len(file_paths),
+                "filenames": file_names,
+            },
+        },
+    )
+    thread = Thread(
+        target=_process_bot_upload_background,
+        kwargs={
+            "trace_id": trace_id,
+            "upload_id": upload.upload_id,
+            "file_paths": file_paths,
+            "file_names": file_names,
+            "file_types": file_types,
+            "create_google_sheet": create_google_sheet,
+            "extraction_method": extraction_method,
+            "public_api_base_url": public_api_base_url or settings.public_api_base_url,
+        },
+        daemon=True,
+    )
+    thread.start()
+    return BotUploadAcceptedResponse(
+        upload_id=upload.upload_id,
+        trace_id=trace_id,
+        status="accepted_for_processing",
+        message="Документ принят в обработку.",
+        source_channel=source_channel,
+        document_kind=document_kind,
+        files_count=len(file_paths),
+    )
+
+
+@router.get("/bot/uploads/{upload_id}", response_model=BotUploadStatusResponse)
+def get_bot_upload_status(upload_id: str, db: Session = Depends(get_db)):
+    try:
+        upload = get_upload_journal(db, upload_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    trace = get_trace(upload.trace_id) if upload.trace_id else None
+    response = trace.get("result") if trace else None
+    receiving = db.get(Receiving, upload.review_id) if upload.review_id else None
+    result_code = None
+    review_status = None
+    duplicate = False
+    next_actions = {}
+    if response:
+        result_code, _, duplicate, review_status = derive_bot_result(response, receiving=receiving)
+        next_actions = build_bot_next_actions(response)
+    completed_statuses = {
+        "unsupported_format",
+        "processing_error",
+        "processed",
+        "transferred_to_review",
+        "requires_review",
+        "possible_duplicate",
+    }
+    return BotUploadStatusResponse(
+        upload_id=upload.upload_id,
+        trace_id=upload.trace_id,
+        status=upload.status,
+        message=_bot_status_message(upload.status, upload.error_text),
+        completed=bool(trace["completed"]) if trace else upload.status in completed_statuses,
+        source_channel=upload.source_channel,
+        document_kind=upload.document_kind,
+        files_count=upload.files_count,
+        original_filename=upload.original_filename,
+        organization_name=upload.organization_name,
+        point_name=upload.point_name,
+        user_id=upload.user_id,
+        username=upload.username,
+        review_id=upload.review_id,
+        review_status=review_status,
+        result_code=result_code,
+        duplicate=duplicate,
+        error_text=upload.error_text,
+        uploaded_at=upload.created_at.isoformat() if upload.created_at else None,
+        updated_at=upload.updated_at.isoformat() if upload.updated_at else None,
+        pipeline_logs=[PipelineLogEntry(**log) for log in (trace.get("logs") or [])] if trace else [],
+        next_actions=next_actions,
+    )
+
+
 def _process_invoice_upload_background(
     *,
     trace_id: str,
@@ -1022,6 +1230,87 @@ def _process_invoice_upload_background(
         db.close()
 
 
+def _process_bot_upload_background(
+    *,
+    trace_id: str,
+    upload_id: str,
+    file_paths: list[str],
+    file_names: list[str],
+    file_types: list[str],
+    create_google_sheet: bool,
+    extraction_method: str | None,
+    public_api_base_url: str,
+) -> None:
+    db = SessionLocal()
+    try:
+        upload = get_upload_journal(db, upload_id)
+        update_upload_journal(db, upload_id, status="processing", error_text=None, trace_id=trace_id)
+        source_metadata = build_source_metadata(upload)
+        response = _process_invoice_upload(
+            file_path=file_paths[0],
+            file_name=file_names[0],
+            file_type="multipage" if len(file_paths) > 1 else file_types[0],
+            file_paths=file_paths,
+            file_names=file_names,
+            file_types=file_types,
+            venue=upload.point_name or upload.organization_name,
+            delivery_address=None,
+            request_id=upload.upload_id,
+            chat_id=upload.chat_id,
+            user_id=upload.user_id,
+            create_google_sheet=create_google_sheet,
+            extraction_method=extraction_method,
+            public_api_base_url=public_api_base_url,
+            db=db,
+            upload_trace_id=trace_id,
+            source_metadata=source_metadata,
+        )
+        review_id = response.get("review_id")
+        receiving = db.get(Receiving, review_id) if review_id else None
+        final_status, _, _, _ = derive_bot_result(response, receiving=receiving)
+        update_upload_journal(
+            db,
+            upload_id,
+            status=final_status,
+            error_text=response.get("google_spreadsheet_error"),
+            trace_id=trace_id,
+            review_id=review_id,
+        )
+    except HTTPException as exc:
+        error_detail = exc.detail
+        if isinstance(error_detail, dict):
+            error_message = error_detail.get("error_message") or str(error_detail)
+        else:
+            error_message = str(error_detail)
+        append_trace_log(
+            trace_id,
+            {
+                "stage": "job_failed",
+                "status": "error",
+                "message": "Обработка документа для бота завершилась ошибкой.",
+                "details": {"error": error_message},
+            },
+        )
+        update_upload_journal(db, upload_id, status="processing_error", error_text=error_message, trace_id=trace_id)
+        finalize_trace(trace_id, error_message=error_message)
+    except Exception as exc:  # noqa: BLE001
+        db_hint = describe_database_write_error(exc)
+        error_message = db_hint or str(exc)
+        append_trace_log(
+            trace_id,
+            {
+                "stage": "job_failed",
+                "status": "error",
+                "message": "Обработка документа для бота завершилась ошибкой.",
+                "details": {"error": error_message},
+            },
+        )
+        update_upload_journal(db, upload_id, status="processing_error", error_text=error_message, trace_id=trace_id)
+        finalize_trace(trace_id, error_message=error_message)
+    finally:
+        db.close()
+
+
 def _process_invoice_upload(
     *,
     file_path: str,
@@ -1040,6 +1329,7 @@ def _process_invoice_upload(
     public_api_base_url: str | None,
     db: Session,
     upload_trace_id: str | None,
+    source_metadata: dict | None = None,
 ) -> dict:
     def trace_log(log: dict) -> None:
         if upload_trace_id:
@@ -1128,6 +1418,8 @@ def _process_invoice_upload(
             trace_log(mapping_error_log)
     _apply_duplicate_status(db, parsed)
     parser_metadata = parsed.get("parser_metadata") or {}
+    if source_metadata:
+        parser_metadata["source_upload"] = source_metadata
     parser_metadata["source_files"] = [
         {"page_number": index, "filename": name}
         for index, name in enumerate(source_names, start=1)
@@ -1144,7 +1436,7 @@ def _process_invoice_upload(
         supplier_legal_name=parsed.get("supplier_legal_name"),
         invoice_date=parsed.get("invoice_date"),
         invoice_number=parsed.get("invoice_number"),
-        venue=venue or parsed.get("venue"),
+        venue=venue or (source_metadata or {}).get("point_name") or (source_metadata or {}).get("organization_name") or parsed.get("venue"),
         delivery_address=delivery_address or parsed.get("delivery_address"),
         display_store=parsed.get("display_store") or parsed.get("store"),
         document_form=parsed.get("document_form"),
@@ -1158,9 +1450,9 @@ def _process_invoice_upload(
         iiko_default_store_id=parsed.get("iiko_default_store_id") or parsed.get("store"),
         chat_id=chat_id,
         user_id=user_id,
-        user_timezone=user_timezone,
-        user_utc_offset_minutes=user_utc_offset_minutes or None,
-        multipage_invoice=len(page_results) > 1,
+        user_timezone=None,
+        user_utc_offset_minutes=None,
+        multipage_invoice=len(source_paths) > 1,
         items=[RecognizedInvoiceItem(**item) for item in parsed.get("items", [])],
         parser_metadata=parser_metadata,
     )
@@ -1228,6 +1520,26 @@ def _extraction_method_label(value: str | None) -> str | None:
     if value == "hybrid":
         return "Гибрид: MinerU -> Google OCR fallback"
     return None
+
+
+def _bot_status_message(status: str, error_text: str | None) -> str:
+    if status == "accepted_for_processing":
+        return "Документ принят в обработку."
+    if status == "processing":
+        return "Документ обрабатывается."
+    if status == "transferred_to_review":
+        return "Документ обработан и передан в модуль проверки данных."
+    if status == "requires_review":
+        return "Документ обработан, но требует проверки в модуле проверки данных."
+    if status == "possible_duplicate":
+        return "Документ похож на уже загруженный и требует проверки на дубль."
+    if status == "unsupported_format":
+        return error_text or "Формат файла пока не поддерживается."
+    if status == "processing_error":
+        return error_text or "Во время обработки произошла ошибка."
+    if status == "processed":
+        return "Документ обработан."
+    return error_text or "Статус загрузки обновлен."
 
 
 def _apply_duplicate_status(db: Session, parsed: dict) -> None:

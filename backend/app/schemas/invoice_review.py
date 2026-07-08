@@ -208,3 +208,40 @@ class InvoiceReviewResponse(BaseModel):
     pipeline_logs: list[PipelineLogEntry] = Field(default_factory=list)
     trace_metadata: dict = Field(default_factory=dict)
     next_actions: dict
+
+
+class BotUploadAcceptedResponse(BaseModel):
+    upload_id: str
+    trace_id: str | None = None
+    status: str
+    message: str
+    source_channel: str
+    document_kind: str
+    files_count: int
+    review_id: int | None = None
+    unsupported_reason: str | None = None
+
+
+class BotUploadStatusResponse(BaseModel):
+    upload_id: str
+    trace_id: str | None = None
+    status: str
+    message: str
+    completed: bool
+    source_channel: str
+    document_kind: str
+    files_count: int
+    original_filename: str
+    organization_name: str | None = None
+    point_name: str | None = None
+    user_id: str | None = None
+    username: str | None = None
+    review_id: int | None = None
+    review_status: str | None = None
+    result_code: str | None = None
+    duplicate: bool = False
+    error_text: str | None = None
+    uploaded_at: str | None = None
+    updated_at: str | None = None
+    pipeline_logs: list[PipelineLogEntry] = Field(default_factory=list)
+    next_actions: dict = Field(default_factory=dict)

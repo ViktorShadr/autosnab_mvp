@@ -65,6 +65,7 @@ class Settings(BaseSettings):
     openai_image_detail: str = "high"
     openai_debug_log_enabled: bool = True
     openai_debug_log_dir: str = "exports/openai_debug"
+    bot_upload_max_file_bytes: int = 20_000_000
     invoice_allow_header_only_documents: bool = False
     conversion_amount_tolerance: float = 0.01
 

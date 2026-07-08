@@ -20,6 +20,7 @@
 - [sbis-edo-integration.md](./sbis-edo-integration.md)
 - [bot-sbis-implementation-plan.md](./bot-sbis-implementation-plan.md)
 - [n8n-bot-implementation-plan.md](./n8n-bot-implementation-plan.md)
+- [bot-backend-api-contract.md](./bot-backend-api-contract.md)
 - [github-and-raw-strategy.md](./github-and-raw-strategy.md)
 - [runtime-profile.md](./runtime-profile.md)
 - [log.md](./log.md)

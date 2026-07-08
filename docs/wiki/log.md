@@ -254,6 +254,19 @@
 - Fixed the architectural boundary: Telegram plus `n8n` are only the session/orchestration layer, while invoice-review backend remains the only OCR/parsing/normalization/review core.
 - Fixed the near-term delivery order as well: freeze backend upload/status/result contracts first, then implement `n8n` workflows for Telegram routing, document session collection, finalize/upload, status polling, and result notification.
 
+## [2026-07-08] intake | bot TOR PDF reviewed and compiled
+
+- Registered the new root source `ТЗ бота.pdf` in `manifests/raw_sources.csv` before using it.
+- Reviewed the PDF and confirmed it matches the current repo direction: the bot is only an intake/status channel over the existing invoice-review backend, not a second parsing/export pipeline.
+- Compiled the new concrete constraints into wiki: broader first-stage intake types (`jpg/png/pdf/xml/xls/xlsx/QR`), operator-facing upload statuses, explicit upload-journal fields, unsupported-format behavior, and possible organization/point selection before upload finalization.
+
+## [2026-07-08] implementation | first bot backend contract fixed in code
+
+- Added a persistent `ingestion_uploads` journal table for bot-originated uploads, including upload provenance, file path, source user/channel, status, and error text.
+- Added bot-facing backend endpoints on top of the existing invoice-review pipeline: async upload entry plus durable status lookup by `upload_id`.
+- Fixed the current implementation boundary intentionally: image/PDF uploads go into the live pipeline, while `xml` / `xls` / `xlsx` / QR-specific flows return an explicit `unsupported_format` response instead of crashing.
+- Added `docs/wiki/bot-backend-api-contract.md` as the canonical repo writeback for this API shape.
+
 ## [2026-07-06] intake | original workbook registered as canonical raw source
 
 - Registered `../autosnab_mvp_raw/inbox/АвтоСнаб Кафе Ромашка  (ориг).xlsx` via `scripts/ingest_raw.py` as `src_bd91ee3517`.

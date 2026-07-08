@@ -32,6 +32,13 @@ The bot must not contain its own:
 `n8n` should only collect files, group pages, call backend APIs, poll status,
 and return short operator-facing outcomes.
 
+The reviewed `ТЗ бота.pdf` fixes the functional boundary too:
+
+- bot is an intake and notification channel only;
+- parsed results must go into the existing review module;
+- bot must not send data directly to the accounting system;
+- unsupported formats must produce a clear user message, not a technical crash.
+
 ## Required Backend Contract
 
 Before bot assembly, freeze three explicit backend capabilities.
@@ -44,6 +51,7 @@ Input:
 - one or more page files
 - source = `telegram_bot`
 - optional operator/source metadata
+- selected organization / point if that choice is required for the operator
 
 Expected output:
 
@@ -96,6 +104,20 @@ The first release should support one simple operator scenario:
 
 The bot should not try to infer document boundaries automatically in v1.
 
+Supported intake types from the TOR:
+
+- `jpg` / `jpeg` / `png`
+- `pdf`
+- `xml`
+- `xls` / `xlsx`
+- QR-based cashier-check input
+
+Important implementation note:
+
+- if the backend cannot process one of these formats yet, the bot must still
+  accept the upload attempt safely and return a plain unsupported-format
+  response instead of breaking the session flow
+
 ## Recommended n8n Workflows
 
 ### 1. Telegram Incoming Router
@@ -132,6 +154,7 @@ Persist per session:
 - collected file list
 - file order
 - started_at / updated_at
+- selected organization / point if applicable
 
 Recommended first storage:
 
@@ -163,6 +186,7 @@ Upload metadata to include:
 - `telegram_session_id`
 - original filenames
 - page order
+- bot upload id / external upload reference
 
 ### 4. Poll Backend Status
 
@@ -198,6 +222,7 @@ Suggested result texts:
 - `Документ загружен, нужна ручная проверка`
 - `Похоже на дубликат`
 - `Обработка остановилась до проверки`
+- `Файл получен, но этот формат пока не поддерживается`
 
 ### 6. Manual Support Commands
 
@@ -262,11 +287,15 @@ Important boundary:
 The bot layer must surface these failure classes clearly:
 
 - no files in session when `Готово` is pressed
+- file is empty
+- file exceeds size limit
+- user has no permission to upload
 - Telegram file download failure
 - backend upload rejection
 - backend timeout / unreachable backend
 - backend terminal failure before review creation
 - duplicate detection
+- unsupported format
 
 For each failure, save:
 
@@ -275,6 +304,20 @@ For each failure, save:
 - trace id if already assigned
 - short operator-facing error
 - raw technical error for internal logs
+
+The TOR also requires an upload journal beyond transient bot-session state. The
+implementation therefore needs a durable record with at least:
+
+- upload id
+- user id
+- username
+- upload timestamp
+- original filename
+- detected file type
+- stored raw-file link/path
+- selected organization / point
+- current processing status
+- error text if present
 
 ## Security And Operations
 
@@ -344,6 +387,9 @@ Minimum operational rules:
 - Is there already a stable review UI URL pattern for deep-linking from the bot?
 - Does backend support an explicit `source = telegram_bot` metadata field today?
 - Is safe retry available, or should retry stay manual in the web UI for now?
+- Where should the durable upload journal live: current backend DB tables or a dedicated bot-ingestion table?
+- What is the first-stage size limit per file/document?
+- Will Telegram be the first channel, or does the same contract need to be usable for a future web-bot channel too?
 
 ## Practical Conclusion
 
