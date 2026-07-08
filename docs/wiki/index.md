@@ -18,6 +18,7 @@
 - [workbook-export-3-analysis.md](./workbook-export-3-analysis.md)
 - [ocr-parser-provider-strategy.md](./ocr-parser-provider-strategy.md)
 - [sbis-edo-integration.md](./sbis-edo-integration.md)
+- [bot-sbis-implementation-plan.md](./bot-sbis-implementation-plan.md)
 - [github-and-raw-strategy.md](./github-and-raw-strategy.md)
 - [runtime-profile.md](./runtime-profile.md)
 - [log.md](./log.md)

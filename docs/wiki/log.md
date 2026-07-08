@@ -219,6 +219,29 @@
 - Added explicit `pipeline_logs` from backend extraction stages into the invoice upload response and rendered them on the upload page for operator-visible tracing.
 - Added hard stop behavior for empty pre-OpenAI evidence and empty OpenAI structured payloads: the backend now returns a structured error instead of saving an empty review document.
 
+## [2026-07-08] intake | root note and checklist screenshot reviewed
+
+- Reviewed the newly added root note `MVP Бух калькулятор (2).md`; it re-confirmed the contract that document-level statuses are first-row only, `Корректировка` stays row-local, `Проверить выбранные документы` is the gate into `Загрузить`, and `Вернуть на проверку` returns a document to the manual review loop.
+- Registered the new root screenshot `img_3.png` in `manifests/raw_sources.csv` before use.
+- Captured the screenshot's current delivery checklist: wire the bot/MVP logic around the approved TOR, finish iiko export from the table through script, complete the document-recognition handler, pull SBIS documents into the table, and then run a full system demo for Galina before client onboarding.
+
+## [2026-07-08] source-of-truth | deprecated short BA note
+
+- Marked `MVP Бух калькулятор (2).md` as obsolete after user clarification.
+- The active business-analyst baseline is now explicitly `MVP Бух калькулятор.md`; the shorter `(2)` file must not be used as the current source of truth for requirements or workflow decisions.
+
+## [2026-07-08] analysis | bot and SBIS scope checked against real code
+
+- Verified that the repo already contains the central invoice-review backend path: upload UI/API, multi-page document intake, extraction/evidence pipeline, OpenAI normalization, Google Sheets review writer, iiko reference enrichment, and iiko incoming-invoice XML preview/export.
+- Verified that the repo does not yet contain a dedicated Telegram bot implementation or any SBIS/Saby adapter, auth client, scheduler, or sync-history persistence.
+- The practical integration conclusion is to treat bot and SBIS as source/transport adapters over the existing backend contract, not as separate document-processing implementations.
+
+## [2026-07-08] planning | bot and SBIS implementation plan added
+
+- Registered the new root BA source `MVP Бух калькулятор.md` in `manifests/raw_sources.csv` as the active full-scope requirements document used for this planning pass.
+- Added `docs/wiki/bot-sbis-implementation-plan.md` as the implementation plan for the user's task scope.
+- The plan is code-aware: it assumes the existing invoice-review backend is the canonical processing core, places the bot as a thin upload/status adapter, and places SBIS as a read-only source adapter with raw artifact storage, dedupe, and sync history.
+
 ## [2026-07-06] intake | original workbook registered as canonical raw source
 
 - Registered `../autosnab_mvp_raw/inbox/АвтоСнаб Кафе Ромашка  (ориг).xlsx` via `scripts/ingest_raw.py` as `src_bd91ee3517`.
