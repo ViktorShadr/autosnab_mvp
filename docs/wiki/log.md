@@ -267,6 +267,12 @@
 - Fixed the current implementation boundary intentionally: image/PDF uploads go into the live pipeline, while `xml` / `xls` / `xlsx` / QR-specific flows return an explicit `unsupported_format` response instead of crashing.
 - Added `docs/wiki/bot-backend-api-contract.md` as the canonical repo writeback for this API shape.
 
+## [2026-07-08] implementation | n8n bot scaffold added
+
+- Added a repo-native `n8n/` directory with a first Telegram bot MVP scaffold.
+- Added `telegram-bot-mvp.workflow.json` as an importable workflow skeleton covering session start, file append, finalize/upload, status polling, and reset flow.
+- Added `telegram-bot-mvp.env.example` and `n8n/README.md` so the next implementation step can move from planning into actual `n8n` assembly against the new backend contract.
+
 ## [2026-07-06] intake | original workbook registered as canonical raw source
 
 - Registered `../autosnab_mvp_raw/inbox/АвтоСнаб Кафе Ромашка  (ориг).xlsx` via `scripts/ingest_raw.py` as `src_bd91ee3517`.

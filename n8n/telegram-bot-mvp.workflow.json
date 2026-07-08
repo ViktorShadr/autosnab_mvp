@@ -1,0 +1,777 @@
+{
+  "name": "autosnab telegram bot mvp",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "id": "telegram-trigger",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        240,
+        300
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "replace-telegram-credential-id",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const msg = $json.message || {};\nconst text = String(msg.text || '').trim();\nconst chatId = msg.chat?.id ? String(msg.chat.id) : null;\nconst userId = msg.from?.id ? String(msg.from.id) : null;\nconst username = msg.from?.username || [msg.from?.first_name, msg.from?.last_name].filter(Boolean).join(' ') || null;\nconst photo = Array.isArray(msg.photo) && msg.photo.length ? msg.photo[msg.photo.length - 1] : null;\nconst document = msg.document || null;\nconst fileId = document?.file_id || photo?.file_id || null;\nconst fileName = document?.file_name || (photo ? `telegram-photo-${photo.file_unique_id || Date.now()}.jpg` : null);\nlet intent = 'unknown';\nif (text === '/start' || text === 'Новый документ') intent = 'start_session';\nelse if (text === 'Готово') intent = 'finalize';\nelse if (text === 'Статус') intent = 'status';\nelse if (text === 'Сбросить') intent = 'reset';\nelse if (fileId) intent = 'append_file';\nreturn [{ json: { intent, text, chatId, userId, username, fileId, fileName, raw: $json } }];"
+      },
+      "id": "normalize-update",
+      "name": "Normalize Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.intent}}",
+                    "rightValue": "start_session",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.intent}}",
+                    "rightValue": "append_file",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.intent}}",
+                    "rightValue": "finalize",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.intent}}",
+                    "rightValue": "status",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.intent}}",
+                    "rightValue": "reset",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "route-intent",
+      "name": "Route Intent",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        760,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "tableId": "telegram_bot_sessions",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "chat_id": "={{$json.chatId}}",
+            "user_id": "={{$json.userId}}",
+            "username": "={{$json.username}}",
+            "status": "collecting",
+            "files_json": "=[]"
+          }
+        },
+        "matchingColumns": [
+          "chat_id"
+        ]
+      },
+      "id": "start-session-store",
+      "name": "Start Session Store",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        1030,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{$json.chatId}}",
+        "text": "Новая сессия открыта. Отправьте страницы одного документа и нажмите «Готово»."
+      },
+      "id": "reply-session-opened",
+      "name": "Reply Session Opened",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1280,
+        120
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "replace-telegram-credential-id",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "tableId": "telegram_bot_sessions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "chat_id",
+              "condition": "eq",
+              "keyValue": "={{$json.chatId}}"
+            }
+          ]
+        }
+      },
+      "id": "load-session-for-file",
+      "name": "Load Session For File",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        1030,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const session = $json.data?.[0] || {};\nconst files = JSON.parse(session.files_json || '[]');\nfiles.push({ fileId: $json.fileId, fileName: $json.fileName, addedAt: new Date().toISOString() });\nreturn [{ json: { ...$json, sessionRowId: session.id, filesJson: JSON.stringify(files), filesCount: files.length } }];"
+      },
+      "id": "append-file-to-session",
+      "name": "Append File To Session",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1280,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "tableId": "telegram_bot_sessions",
+        "rowId": "={{$json.sessionRowId}}",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "files_json": "={{$json.filesJson}}",
+            "status": "collecting"
+          }
+        }
+      },
+      "id": "store-appended-file",
+      "name": "Store Appended File",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        1530,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{$json.chatId}}",
+        "text": "Файл добавлен в текущую сессию. Когда все страницы будут отправлены, нажмите «Готово»."
+      },
+      "id": "reply-file-added",
+      "name": "Reply File Added",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1770,
+        240
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "replace-telegram-credential-id",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "tableId": "telegram_bot_sessions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "chat_id",
+              "condition": "eq",
+              "keyValue": "={{$json.chatId}}"
+            }
+          ]
+        }
+      },
+      "id": "load-session-finalize",
+      "name": "Load Session Finalize",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        1030,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const session = $json.data?.[0] || {};\nconst files = JSON.parse(session.files_json || '[]');\nif (!files.length) {\n  return [{ json: { ...$json, finalizeError: 'В сессии нет файлов.' } }];\n}\nreturn [{ json: { ...$json, sessionRowId: session.id, files, filesCount: files.length } }];"
+      },
+      "id": "prepare-finalize",
+      "name": "Prepare Finalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1280,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$json.finalizeError || ''}}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "check-finalize-error",
+      "name": "Check Finalize Error",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1530,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{$json.chatId}}",
+        "text": "={{$json.finalizeError}}"
+      },
+      "id": "reply-finalize-error",
+      "name": "Reply Finalize Error",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1770,
+        340
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "replace-telegram-credential-id",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.BACKEND_BASE_URL + '/api/v1/invoice-review/bot/upload-document-live'}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "source_channel",
+              "value": "={{$env.BOT_SOURCE_CHANNEL || 'telegram_bot'}}"
+            },
+            {
+              "name": "document_kind",
+              "value": "={{$env.BOT_DOCUMENT_KIND || 'primary_document'}}"
+            },
+            {
+              "name": "source_user_id",
+              "value": "={{$json.userId}}"
+            },
+            {
+              "name": "source_username",
+              "value": "={{$json.username}}"
+            },
+            {
+              "name": "source_chat_id",
+              "value": "={{$json.chatId}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "upload-to-backend-placeholder",
+      "name": "Upload To Backend Placeholder",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1770,
+        430
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "tableId": "telegram_bot_sessions",
+        "rowId": "={{$json.sessionRowId}}",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "uploaded",
+            "backend_upload_id": "={{$json.upload_id}}",
+            "backend_trace_id": "={{$json.trace_id}}"
+          }
+        }
+      },
+      "id": "store-backend-ids",
+      "name": "Store Backend IDs",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        2040,
+        430
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{$json.chatId}}",
+        "text": "={{$json.status === 'unsupported_format' ? 'Файл получен, но этот формат пока не поддерживается.' : 'Документ принят в обработку. ID загрузки: ' + $json.upload_id}}"
+      },
+      "id": "reply-uploaded",
+      "name": "Reply Uploaded",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2280,
+        430
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "replace-telegram-credential-id",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "tableId": "telegram_bot_sessions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "chat_id",
+              "condition": "eq",
+              "keyValue": "={{$json.chatId}}"
+            }
+          ]
+        }
+      },
+      "id": "load-session-status",
+      "name": "Load Session Status",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        1030,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.BACKEND_BASE_URL + '/api/v1/invoice-review/bot/uploads/' + ($json.data?.[0]?.backend_upload_id || '')}}",
+        "options": {}
+      },
+      "id": "poll-backend-status",
+      "name": "Poll Backend Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1280,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{$json.chatId || $item(0).$node['Normalize Update'].json.chatId}}",
+        "text": "={{$json.message + ($json.review_id ? '\\nReview ID: ' + $json.review_id : '')}}"
+      },
+      "id": "reply-status",
+      "name": "Reply Status",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1530,
+        520
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "replace-telegram-credential-id",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "delete",
+        "tableId": "telegram_bot_sessions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "chat_id",
+              "condition": "eq",
+              "keyValue": "={{$json.chatId}}"
+            }
+          ]
+        }
+      },
+      "id": "reset-session",
+      "name": "Reset Session",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        1030,
+        660
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{$json.chatId}}",
+        "text": "Текущая сессия сброшена."
+      },
+      "id": "reply-reset",
+      "name": "Reply Reset",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1280,
+        660
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "replace-telegram-credential-id",
+          "name": "Telegram Bot"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Update": {
+      "main": [
+        [
+          {
+            "node": "Route Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Intent": {
+      "main": [
+        [
+          {
+            "node": "Start Session Store",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Load Session For File",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Load Session Finalize",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Load Session Status",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reset Session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start Session Store": {
+      "main": [
+        [
+          {
+            "node": "Reply Session Opened",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Session For File": {
+      "main": [
+        [
+          {
+            "node": "Append File To Session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append File To Session": {
+      "main": [
+        [
+          {
+            "node": "Store Appended File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Appended File": {
+      "main": [
+        [
+          {
+            "node": "Reply File Added",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Session Finalize": {
+      "main": [
+        [
+          {
+            "node": "Prepare Finalize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Finalize": {
+      "main": [
+        [
+          {
+            "node": "Check Finalize Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Finalize Error": {
+      "main": [
+        [
+          {
+            "node": "Reply Finalize Error",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Upload To Backend Placeholder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload To Backend Placeholder": {
+      "main": [
+        [
+          {
+            "node": "Store Backend IDs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Backend IDs": {
+      "main": [
+        [
+          {
+            "node": "Reply Uploaded",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Session Status": {
+      "main": [
+        [
+          {
+            "node": "Poll Backend Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Poll Backend Status": {
+      "main": [
+        [
+          {
+            "node": "Reply Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reset Session": {
+      "main": [
+        [
+          {
+            "node": "Reply Reset",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {},
+  "versionId": "telegram-bot-mvp-v1",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "pinData": {}
+}
