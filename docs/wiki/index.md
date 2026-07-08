@@ -19,6 +19,7 @@
 - [ocr-parser-provider-strategy.md](./ocr-parser-provider-strategy.md)
 - [sbis-edo-integration.md](./sbis-edo-integration.md)
 - [bot-sbis-implementation-plan.md](./bot-sbis-implementation-plan.md)
+- [n8n-bot-implementation-plan.md](./n8n-bot-implementation-plan.md)
 - [github-and-raw-strategy.md](./github-and-raw-strategy.md)
 - [runtime-profile.md](./runtime-profile.md)
 - [log.md](./log.md)

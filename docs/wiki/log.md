@@ -248,6 +248,12 @@
 - Added `docs/wiki/bot-sbis-implementation-plan.md` as the implementation plan for the user's task scope.
 - The plan is code-aware: it assumes the existing invoice-review backend is the canonical processing core, places the bot as a thin upload/status adapter, and places SBIS as a read-only source adapter with raw artifact storage, dedupe, and sync history.
 
+## [2026-07-08] planning | n8n bot plan fixed as latest task
+
+- Added `docs/wiki/n8n-bot-implementation-plan.md` as the concrete delivery plan for the first bot implementation through `n8n`.
+- Fixed the architectural boundary: Telegram plus `n8n` are only the session/orchestration layer, while invoice-review backend remains the only OCR/parsing/normalization/review core.
+- Fixed the near-term delivery order as well: freeze backend upload/status/result contracts first, then implement `n8n` workflows for Telegram routing, document session collection, finalize/upload, status polling, and result notification.
+
 ## [2026-07-06] intake | original workbook registered as canonical raw source
 
 - Registered `../autosnab_mvp_raw/inbox/АвтоСнаб Кафе Ромашка  (ориг).xlsx` via `scripts/ingest_raw.py` as `src_bd91ee3517`.
@@ -266,6 +272,11 @@
 - Compared `main` against `codex/invoice-recognition-hardening` specifically for multi-page invoice handling.
 - Confirmed that `main` still carries an older checkbox-based `multipage_invoice` upload path and TORG-12 continuation-page OCR behavior, while the current hardening branch already includes the broader logical multi-page upload/editor flow, merged page evidence, consistency warnings, and one-pass OpenAI parsing over multiple pages.
 - Conclusion: do not start with a full `main -> codex/invoice-recognition-hardening` merge for this concern; transplant only the remaining useful OCR/test details from `main` if anything is still missing.
+
+## [2026-07-07] planning | colleague-repo branch merge plan fixed
+
+- Added a durable integration plan to `docs/wiki/github-and-raw-strategy.md` for merging into `AndreyGomzikov/autosnab_mvp`.
+- Fixed the recommended path: push `codex/invoice-recognition-hardening` to the author's fork, open a PR into the colleague repo, keep DB/CSV/raw artifacts out of Git, and resolve conflicts manually with the hardening branch as the architectural baseline.
 
 ## [2026-07-04] ui | live upload trace polling
 
