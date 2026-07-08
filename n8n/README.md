@@ -39,5 +39,6 @@ The workflow must not duplicate parsing or business logic from the backend.
 - In the full workflow, the first uploaded file can auto-open a chat session; the operator does not have to send `Новый документ` first.
 - The full workflow now also exposes clearer user-facing guidance, but without repeating the same long command list after every single event.
 - The full workflow now uses a compact Telegram conversation pattern as well: a short home screen, step-specific replies, and disabled `n8n` message attribution on reply nodes so the bot reads like a product flow rather than a debug chat.
+- Some `n8n` instances deny `$env` both in HTTP expressions and in Code nodes. The full workflow now keeps its runtime defaults inside `Normalize Update` instead of relying on env access there; after import, fill `telegramBotToken` and `backendBaseUrl` in that node explicitly.
 - If the `n8n` instance denies `$env` access inside node expressions, keep the safer built-in Telegram reply nodes enabled instead of the direct Bot API keyboard workaround.
 - XML / Excel / QR scenarios still depend on future backend support.

@@ -332,6 +332,11 @@
 - Registered the new Telegram screenshot `codex-clipboard-DhOyFN.png`; it showed that the current fallback still looked like an automation dump because of the `Не понял сообщение` opener, the repeated full instruction block, and the `n8n` attribution footer.
 - Updated `n8n/telegram-bot-full.workflow.json` so reply nodes now disable attribution, open with a shorter home screen, avoid error-style wording for ordinary unknown text, and keep each step focused on one next action instead of restating the entire menu after every message.
 
+## [2026-07-08] compatibility | full workflow no longer depends on env access inside Code nodes
+
+- Registered the new `n8n` editor screenshot `codex-clipboard-JVqqNR.png`; it showed `Prepare File Download` failing on `$env.DEFAULT_ORGANIZATION_NAME` / `$env.DEFAULT_POINT_NAME` with `access to env vars denied`.
+- Updated the full workflow so runtime defaults now live inside `Normalize Update` and flow through item JSON, removing `$env` reads from Code nodes and replacing URL expressions with JSON-backed config values.
+
 ## [2026-07-06] intake | original workbook registered as canonical raw source
 
 - Registered `../autosnab_mvp_raw/inbox/АвтоСнаб Кафе Ромашка  (ориг).xlsx` via `scripts/ingest_raw.py` as `src_bd91ee3517`.
