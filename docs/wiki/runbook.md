@@ -191,10 +191,15 @@ leaving Docker running locally.
    `GOOGLE_DRIVE_OCR_*`). An existing `GOOGLE_OAUTH_REFRESH_TOKEN` can be
    reused as-is — Google refresh tokens are not tied to the redirect URI, only
    the original authorization step was.
-3. Optionally copy the MinerU model cache from the current machine's
-   `autosnab_hf_cache` Docker volume to the VPS's same-named volume, to avoid
-   re-downloading ~2.5 GB. Otherwise the first MinerU run on the VPS will
-   download it automatically the same way it did locally — **do not**
+3. On a small/shared VPS (limited RAM, or already running other services),
+   skip MinerU entirely: don't run `mineru.cli.models_download`, and leave
+   `DOCUMENT_EXTRACTION_FALLBACK_TO_OCR=true`. `mineru_health()` reports
+   unready with no model cache, and the pipeline already falls back to
+   Google Drive OCR cleanly for that case — this avoids ever loading MinerU's
+   CPU inference models (1GB+ RAM) into a box with little to spare. On a
+   dedicated/larger box, optionally copy the MinerU model cache from the
+   current machine's `autosnab_hf_cache` Docker volume to avoid
+   re-downloading ~2.5 GB — but if you do download it fresh, **do not**
    `docker compose up --build` again while that download is in progress, or
    it can leave a corrupted partial model directory (hit and fixed once
    already; see `docs/wiki/log.md`, 2026-07-09 MinerU entry).
@@ -202,32 +207,43 @@ leaving Docker running locally.
    [nip.io](https://nip.io) hostname, e.g. `203.0.113.5` ->
    `203-0-113-5.nip.io` (dashes or dots both work; nip.io resolves either
    form straight back to the embedded IP — no DNS record to create).
-5. Set in `.env` on the VPS:
+5. Check whether port 443 is already in use on the VPS
+   (`ss -tlnp | grep :443`) — a box already running another public-facing
+   service (e.g. an existing VPN/proxy stack) commonly has it taken. If so,
+   set `CADDY_HTTPS_HOST_PORT` to a free port instead (e.g. `8443`) and
+   include it in every public URL below. Port 80 must stay free/mapped as-is
+   either way — Let's Encrypt's HTTP-01 challenge always validates against
+   port 80 specifically, independent of which port ends up serving traffic.
+6. Set in `.env` on the VPS (add the `:PORT` suffix everywhere only if you
+   set `CADDY_HTTPS_HOST_PORT` in the previous step):
 
 ```env
 PUBLIC_DOMAIN=203-0-113-5.nip.io
-PUBLIC_API_BASE_URL=https://203-0-113-5.nip.io
-GOOGLE_OAUTH_REDIRECT_URI=https://203-0-113-5.nip.io/api/v1/google-oauth/callback
+CADDY_HTTPS_HOST_PORT=8443
+PUBLIC_API_BASE_URL=https://203-0-113-5.nip.io:8443
+GOOGLE_OAUTH_REDIRECT_URI=https://203-0-113-5.nip.io:8443/api/v1/google-oauth/callback
 BOT_API_SHARED_SECRET=<generate a strong value — /bot/* is now genuinely public>
+# Optional, recommended if the VPS is small or shared with other services:
+BACKEND_MEM_LIMIT=700m
 ```
 
-6. Open inbound ports `80` and `443` on the VPS firewall (Caddy needs them to
-   complete the Let's Encrypt HTTP-01 challenge and serve HTTPS).
-7. Start both the backend and the `caddy` reverse-proxy profile:
+7. Open inbound port `80` and whichever port serves HTTPS (`443`, or your
+   `CADDY_HTTPS_HOST_PORT` override) on the VPS firewall.
+8. Start both the backend and the `caddy` reverse-proxy profile:
 
 ```bash
 docker compose --profile public-ip up --build -d
 ```
 
-8. Verify from *outside* the VPS (not `curl localhost`, an actual external
-   client) that `https://203-0-113-5.nip.io/health/runtime` returns
+9. Verify from *outside* the VPS (not `curl localhost`, an actual external
+   client) that `https://203-0-113-5.nip.io:8443/health/runtime` returns
    `{"status": "ok", ...}` with a valid certificate, no `-k`/insecure flag
    needed.
-9. In cloud `n8n`, set `Workflow Config -> backendBaseUrl` to the same
-   `https://203-0-113-5.nip.io` value.
-10. Re-run Google OAuth authorization only if the refresh token from step 2
+10. In cloud `n8n`, set `Workflow Config -> backendBaseUrl` to the same
+    public URL used above.
+11. Re-run Google OAuth authorization only if the refresh token from step 2
     doesn't work (`/api/v1/google-oauth/status` will show it); otherwise skip.
-11. Send the business analyst only the Telegram bot chat link — nothing else
+12. Send the business analyst only the Telegram bot chat link — nothing else
     to install on her side.
 
 Notes:
@@ -235,7 +251,7 @@ Notes:
 - Caddy's certificate is stored in the `autosnab_caddy_data` volume, so
   restarts do not re-request from Let's Encrypt and burn its rate limits.
 - If the VPS's public IP ever changes (e.g. re-provisioned instance), repeat
-  steps 4-5,9 with the new IP — nip.io needs no account or DNS changes either
+  steps 4,6,9 with the new IP — nip.io needs no account or DNS changes either
   way, so this is a five-minute fix, not a redeploy.
 - This profile replaces `public-tunnel`/ngrok for this deployment, not the
   local dev flow — a developer's own machine can still use `ngrok` for

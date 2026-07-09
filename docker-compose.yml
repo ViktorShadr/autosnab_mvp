@@ -3,6 +3,10 @@ services:
     build: .
     container_name: autosnab_backend_mvp4
     restart: unless-stopped
+    # Optional cap for small/shared VPS deploys (e.g. a box that also runs
+    # other services) so a memory spike here cannot OOM-kill anything else
+    # on the host. Leave BACKEND_MEM_LIMIT unset on a dedicated machine.
+    mem_limit: ${BACKEND_MEM_LIMIT:-0}
     ports:
       - "8000:8000"
     env_file:
@@ -64,7 +68,13 @@ services:
       PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-set-PUBLIC_DOMAIN-in-.env.invalid}
     ports:
       - "80:80"
-      - "443:443"
+      # Port 80 must stay mapped as-is: Let's Encrypt's HTTP-01 challenge
+      # always validates against the well-known port 80, regardless of what
+      # port the certificate ends up serving traffic on. If the host's 443
+      # is already taken by another service, override CADDY_HTTPS_HOST_PORT
+      # (e.g. 8443) - Caddy inside the container still just serves its
+      # normal 443, only the host-side mapping changes.
+      - "${CADDY_HTTPS_HOST_PORT:-443}:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - autosnab_caddy_data:/data
