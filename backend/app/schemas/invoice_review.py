@@ -222,6 +222,17 @@ class BotUploadAcceptedResponse(BaseModel):
     unsupported_reason: str | None = None
 
 
+class BotDocumentSummary(BaseModel):
+    supplier: str | None = None
+    invoice_number: str | None = None
+    invoice_date: str | None = None
+    document_form: str | None = None
+    total_sum: float | None = None
+    items_count: int = 0
+    pages_count: int = 0
+    duplicate_indicator: str | None = None
+
+
 class BotUploadStatusResponse(BaseModel):
     upload_id: str
     trace_id: str | None = None
@@ -243,5 +254,8 @@ class BotUploadStatusResponse(BaseModel):
     error_text: str | None = None
     uploaded_at: str | None = None
     updated_at: str | None = None
+    google_spreadsheet_url: str | None = None
+    google_spreadsheet_error: str | None = None
+    document_summary: BotDocumentSummary | None = None
     pipeline_logs: list[PipelineLogEntry] = Field(default_factory=list)
     next_actions: dict = Field(default_factory=dict)

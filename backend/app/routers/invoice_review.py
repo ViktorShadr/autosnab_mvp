@@ -15,6 +15,7 @@ from app.models.accounting import AccountingExport
 from app.models.receiving import Receiving, ReceivingDocument
 from app.schemas.invoice_review import (
     BotUploadAcceptedResponse,
+    BotDocumentSummary,
     BotUploadStatusResponse,
     ConfirmSendToIikoRequest,
     InvoiceReviewCreateRequest,
@@ -25,6 +26,7 @@ from app.schemas.invoice_review import (
     SyncSheetAndConfirmRequest,
 )
 from app.services.bot_ingestion_service import (
+    build_bot_document_summary,
     build_bot_next_actions,
     build_source_metadata,
     classify_bot_file,
@@ -1205,9 +1207,16 @@ def get_bot_upload_status(upload_id: str, db: Session = Depends(get_db)):
     review_status = None
     duplicate = False
     next_actions = {}
+    document_summary = None
+    google_spreadsheet_url = None
+    google_spreadsheet_error = upload.error_text
     if response:
         result_code, _, duplicate, review_status = derive_bot_result(response, receiving=receiving)
         next_actions = build_bot_next_actions(response)
+        google_spreadsheet_url = response.get("google_spreadsheet_url")
+        google_spreadsheet_error = response.get("google_spreadsheet_error") or google_spreadsheet_error
+    if receiving:
+        document_summary = build_bot_document_summary(receiving)
     completed_statuses = {
         "unsupported_format",
         "processing_error",
@@ -1237,6 +1246,9 @@ def get_bot_upload_status(upload_id: str, db: Session = Depends(get_db)):
         error_text=upload.error_text,
         uploaded_at=upload.created_at.isoformat() if upload.created_at else None,
         updated_at=upload.updated_at.isoformat() if upload.updated_at else None,
+        google_spreadsheet_url=google_spreadsheet_url,
+        google_spreadsheet_error=google_spreadsheet_error,
+        document_summary=BotDocumentSummary(**document_summary) if document_summary else None,
         pipeline_logs=[PipelineLogEntry(**log) for log in (trace.get("logs") or [])] if trace else [],
         next_actions=next_actions,
     )

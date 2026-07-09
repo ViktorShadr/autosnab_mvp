@@ -142,6 +142,47 @@ def build_bot_next_actions(response: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def build_bot_document_summary(receiving: Receiving | None) -> dict[str, Any] | None:
+    if receiving is None:
+        return None
+
+    document = receiving.documents[-1] if receiving.documents else None
+    if document and document.recognized_items_json:
+        try:
+            stored = json.loads(document.recognized_items_json)
+        except json.JSONDecodeError:
+            stored = {}
+    else:
+        stored = {}
+
+    header = stored.get("header") or {}
+    items = stored.get("items")
+    source_files = (header.get("parser_metadata") or {}).get("source_files") or []
+    supplier = document.supplier_legal_name if document else None
+    invoice_number = document.invoice_number if document else receiving.order_number
+    invoice_date = document.invoice_date if document else None
+    total_sum = header.get("total_sum")
+
+    if total_sum in ("", None):
+        total_sum = None
+    elif isinstance(total_sum, str):
+        try:
+            total_sum = float(total_sum)
+        except ValueError:
+            total_sum = None
+
+    return {
+        "supplier": supplier or receiving.supplier or None,
+        "invoice_number": invoice_number or None,
+        "invoice_date": invoice_date or None,
+        "document_form": header.get("document_form") or None,
+        "total_sum": total_sum,
+        "items_count": len(items) if isinstance(items, list) and items else len(receiving.items),
+        "pages_count": len(source_files) if isinstance(source_files, list) else 0,
+        "duplicate_indicator": header.get("duplicate_indicator") or None,
+    }
+
+
 def build_source_metadata(
     upload: IngestionUpload,
 ) -> dict[str, Any]:

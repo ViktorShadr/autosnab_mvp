@@ -36,7 +36,6 @@ Current input shape:
 - `organization_name` - optional
 - `point_name` - optional
 - `create_google_sheet` - optional
-- `extraction_method` - optional
 
 Current behavior:
 
@@ -44,6 +43,8 @@ Current behavior:
 - unsupported-but-planned formats (`xml`, `xls`, `xlsx`, QR-specific flow) do
   not crash the endpoint and return `unsupported_format`;
 - the durable journal is written before any long-running processing starts.
+- the bot workflow may omit `extraction_method` completely; backend remains the
+  only place that decides how the document will be parsed.
 
 Immediate response fields:
 
@@ -86,8 +87,22 @@ Current response fields:
 - `error_text`
 - `uploaded_at`
 - `updated_at`
+- `google_spreadsheet_url`
+- `google_spreadsheet_error`
+- `document_summary`
 - `pipeline_logs`
 - `next_actions`
+
+Current `document_summary` shape:
+
+- `supplier`
+- `invoice_number`
+- `invoice_date`
+- `document_form`
+- `total_sum`
+- `items_count`
+- `pages_count`
+- `duplicate_indicator`
 
 ## Durable upload journal
 
@@ -158,8 +173,8 @@ That means:
 - OCR/MinerU/OpenAI parsing stays in the existing backend;
 - Google Sheets review write stays in the existing backend;
 - duplicate detection stays in the existing backend;
-- the bot stores provenance and projects statuses, but does not own business
-  review logic.
+- the bot stores provenance and projects statuses plus a short document summary,
+  but does not own business review logic or parser selection.
 
 ## Remaining gaps before production bot launch
 
