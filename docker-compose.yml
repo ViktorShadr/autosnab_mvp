@@ -42,11 +42,41 @@ services:
     ports:
       - "4040:4040"
 
+  # For a VPS deploy with a stable public HTTPS address but no purchased
+  # domain: set PUBLIC_DOMAIN to a nip.io hostname that resolves to the
+  # server's own public IP (e.g. 203-0-113-5.nip.io for 203.0.113.5), and
+  # Caddy will obtain a real, browser-trusted Let's Encrypt certificate for
+  # it automatically. Requires inbound ports 80/443 open on the VPS.
+  caddy:
+    image: caddy:2-alpine
+    container_name: autosnab_backend_caddy
+    restart: unless-stopped
+    profiles:
+      - public-ip
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      # A plain default (not a required `:?` var) on purpose: compose
+      # interpolates every service's env block up front regardless of which
+      # profile is active, so a required var here would break `docker
+      # compose up` even when only the default/public-tunnel profile runs.
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:-set-PUBLIC_DOMAIN-in-.env.invalid}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - autosnab_caddy_data:/data
+      - autosnab_caddy_config:/config
+
 volumes:
   autosnab_data:
   autosnab_uploads:
   autosnab_exports:
   autosnab_hf_cache:
+  autosnab_caddy_data:
+  autosnab_caddy_config:
 
 networks:
   default:
