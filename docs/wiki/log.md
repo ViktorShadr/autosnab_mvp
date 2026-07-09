@@ -658,3 +658,12 @@
 - Root cause: Docker's default bridge network MTU (1500) exceeded this machine's actual outbound path MTU (1376, from active VPN interface `amn0`), so larger multipart packets were silently dropped instead of fragmented. Fixed by adding a `networks.default` block to `docker-compose.yml` with `driver_opts: com.docker.network.driver.mtu: 1376`, then recreating the stack. Verified fixed with the same raw `curl` reproduction (`200 OK`, page accepted) before touching n8n again.
 - Separately hit and fixed a `401 Неверный или отсутствующий X-Bot-Api-Key` on the same node: confirmed via `sha256sum` that the backend-side secret matched the value already given to the user, so the mismatch was in the n8n `Backend URL` HTTP Header Auth credential not being saved with the current value. Fixed by having the user re-enter and explicitly save it.
 - User confirmed the bot works end to end again after both fixes.
+
+## [2026-07-09] ux | attribution footer removed and started-reply ordering fixed
+
+- Registered `img_7.png` in `manifests/raw_sources.csv` before diagnosis.
+- Diagnosed two defects from the screenshot: every bot reply carried n8n's default "This message was sent automatically with n8n" footer/link; and the `Принял, обрабатываю документ...` message arrived *after* the final parsing result instead of before it.
+- Root cause of the ordering bug: `Reply Processing Started` fanned out in parallel to both `Send Reply` and `Prepare Poll`. The poll-loop branch contains a `Wait` node, and n8n's execution scheduling let that entire branch (stage updates + final result) complete before the parallel `Send Reply` call for the "started" text actually fired.
+- Fixed both in `n8n/telegram-bot-mvp.workflow.json` (now 35 nodes): set `additionalFields.appendAttribution: false` on all three outgoing Telegram send nodes (`Send Reply`, `Send Stage Update`, and the new `Send Started Reply`); split the "started" reply into its own dedicated node wired strictly in sequence (`Reply Processing Started` → `Send Started Reply` → `Prepare Poll`) instead of a parallel fan-out, so the poll loop can no longer start before that message is actually sent.
+- Verified with a local JSON/graph check (no live n8n access): 35 unique node names, all connection edges resolve, all three send nodes confirmed `appendAttribution: false`.
+- Updated `n8n/telegram-bot-node-setup.md` with a new section explaining both changes.

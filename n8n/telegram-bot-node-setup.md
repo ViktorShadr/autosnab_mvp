@@ -56,6 +56,26 @@ the bot waits for processing to finish before telling the user to check
 `Статус` later — raise it if OpenAI/MinerU runs are consistently slower than
 that on your machine.
 
+## 4a. Attribution footer disabled, and a dedicated "started" reply node
+
+Every outgoing Telegram send node (`Send Reply`, `Send Stage Update`, and the
+new `Send Started Reply`) now sets `additionalFields.appendAttribution: false`,
+which removes the `This message was sent automatically with n8n` footer n8n
+adds by default.
+
+`Reply Processing Started` ("Принял, обрабатываю документ...") used to fan out
+in parallel to both `Send Reply` and `Prepare Poll`. In practice this let the
+poll-loop branch (which includes a `Wait` node) finish and send the *final*
+result before the "started" message actually reached Telegram, so operators
+saw the processing message arrive *after* the result — confusing. Fixed by
+giving that one reply its own dedicated node, `Send Started Reply` (same
+config as `Send Reply`, including the keyboard), wired strictly in sequence:
+`Reply Processing Started` → `Send Started Reply` → `Prepare Poll`. This
+guarantees the "started" message is actually sent before the poll loop
+begins, since `Prepare Poll` now depends on that node's output instead of
+racing it. `Send Reply` itself is unchanged and still used by every other
+reply path.
+
 ## 5. Notes on a few node shapes
 
 - **Send Page To Backend** (multipart body): the `file` field is a Body
