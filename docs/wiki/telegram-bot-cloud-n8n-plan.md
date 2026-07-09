@@ -256,9 +256,46 @@ Reply texts (kept short, no automation-sounding wording):
 
 ## Open follow-ups (not blocking today)
 
-- Organization/point selection before upload, if the business requires it
-  (`bot-backend-api-contract.md` already lists this as an open gap).
 - Static `ngrok` domain if backend restarts prove disruptive.
-- XML/Excel/QR intake per the original TOR, once backend parsing exists.
 - SBIS adapter, per `docs/wiki/bot-sbis-implementation-plan.md`, after the bot
   is stable.
+
+## Confirmed ТЗ gaps (2026-07-09 audit)
+
+Direct re-check of `ТЗ бота.pdf` against the current code (see
+`docs/wiki/log.md`, entry "audit | ТЗ бота.pdf re-checked directly against
+code") found the core contract sound but left four ТЗ requirements
+unimplemented. These are the concrete backlog items for the bot track, in
+rough priority order:
+
+1. **XML / XLS / XLSX parsing.** ТЗ §1/§3 lists these as first-stage formats.
+   `classify_bot_file(...)` in `bot_ingestion_service.py` already recognizes
+   the extensions but returns `unsupported_format` with the message "Формат
+   файла входит в ТЗ бота, но его backend-разбор еще не реализован." — no
+   parser exists yet. Needs a dedicated XML parser and an Excel/XLSX parser
+   feeding into the same evidence contract OCR/MinerU use today.
+2. **Receipt QR-code scenario.** ТЗ §1/§3/§6 explicitly asks for a QR-first
+   path for кассовые чеки, separate from photo OCR, because receipt print
+   quality/format varies too much for reliable OCR. There is currently no QR
+   decoding anywhere in the codebase — a receipt photo just goes through
+   generic image OCR like any накладная. Needs: QR decode (e.g. `pyzbar` or
+   similar) → receipt lookup via the decoded QR payload/API instead of vision
+   parsing, then the same evidence-to-review pipeline as today.
+3. **Organization/point selection.** ТЗ §4: "если в системе несколько
+   организаций/точек, пользователь должен выбрать нужную организацию или
+   точку". `organization_name`/`point_name` already exist as optional fields
+   on `POST /bot/drafts/pages` and are persisted on `IngestionUpload`, but
+   nothing in the n8n workflow ever asks the user to pick one — the fields are
+   simply never populated. Needs a selection step (inline keyboard or a
+   `/organization` command) before the first page is accepted, gated on
+   whether the business actually has more than one organization/point today.
+4. **Per-user upload authorization.** ТЗ §4: "пользователь имеет право
+   загружать документы". The only auth today is the single shared
+   `X-Bot-Api-Key` secret, which authenticates the n8n↔backend channel as a
+   whole, not individual Telegram users — any Telegram user who reaches the
+   bot can upload. Needs an explicit allow-list or role check keyed on
+   `source_user_id`/`chat_id` before a draft is opened.
+
+Items 1 and 3 were already listed in `docs/wiki/bot-backend-api-contract.md`
+under "Remaining gaps before production bot launch" and "Current support
+boundary" respectively; items 2 and 4 are newly made explicit here.
