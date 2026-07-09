@@ -289,54 +289,9 @@ def test_extract_invoice_document_openai_stops_on_header_only_payload(monkeypatc
     assert "неполный результат" in result["error"]
 
 
-def test_collect_openai_evidence_records_mineru_failure_and_ocr_success(monkeypatch, tmp_path):
-    source = tmp_path / "invoice.jpg"
-    source.write_bytes(b"image")
-    attempts = []
-    monkeypatch.setattr(
-        document_extraction_service,
-        "prepare_document_page",
-        lambda _path: {
-            "prepared_path": None,
-            "transformations": [],
-            "quality": {},
-        },
-    )
-    monkeypatch.setattr(
-        document_extraction_service,
-        "_extract_with_mineru",
-        lambda *_args: (_ for _ in ()).throw(RuntimeError("cv2 import failed")),
-    )
-    monkeypatch.setattr(
-        document_extraction_service,
-        "_extract_with_ocr",
-        lambda *_args: {
-            "provider": "google_drive_ocr",
-            "raw_text": "recognized invoice",
-            "pages": 1,
-        },
-    )
-
-    evidence = document_extraction_service._collect_openai_evidence(
-        str(source),
-        source.name,
-        on_attempt=attempts.append,
-    )
-
-    assert evidence["evidence_version"] == "1.0"
-    assert evidence["logical_document_id"].startswith("document-")
-    completed_attempts = [attempt for attempt in attempts if attempt["status"] != "running"]
-    assert [attempt["provider"] for attempt in completed_attempts] == [
-        "image_preparation",
-        "mineru",
-        "google_drive_ocr",
-    ]
-    assert completed_attempts[1]["status"] == "error"
-    assert completed_attempts[2]["status"] == "success"
-    assert evidence["raw_text"] == "recognized invoice"
-
-
-def test_collect_openai_evidence_skips_unhealthy_mineru_and_uses_ocr(monkeypatch, tmp_path):
+def test_collect_openai_evidence_never_attempts_mineru_when_ocr_succeeds(monkeypatch, tmp_path):
+    """Google Drive OCR now runs first; a successful OCR result must return
+    immediately without ever touching the slower MinerU provider."""
     source = tmp_path / "invoice.jpg"
     source.write_bytes(b"image")
     attempts = []
@@ -348,14 +303,6 @@ def test_collect_openai_evidence_skips_unhealthy_mineru_and_uses_ocr(monkeypatch
             "prepared_path": None,
             "transformations": [],
             "quality": {},
-        },
-    )
-    monkeypatch.setattr(
-        document_extraction_service,
-        "mineru_health",
-        lambda: {
-            "ready": False,
-            "reason": "MinerU model cache is incomplete: missing models/TabRec/UnetStructure/unet.onnx",
         },
     )
     monkeypatch.setattr(
@@ -379,17 +326,116 @@ def test_collect_openai_evidence_skips_unhealthy_mineru_and_uses_ocr(monkeypatch
         on_attempt=attempts.append,
     )
 
+    assert evidence["evidence_version"] == "1.0"
+    assert evidence["logical_document_id"].startswith("document-")
     completed_attempts = [attempt for attempt in attempts if attempt["status"] != "running"]
     assert [attempt["provider"] for attempt in completed_attempts] == [
         "image_preparation",
-        "mineru",
         "google_drive_ocr",
     ]
-    assert completed_attempts[1]["status"] == "skipped"
-    assert "model cache is incomplete" in completed_attempts[1]["error_message"]
-    assert mineru_calls == []
+    assert completed_attempts[1]["status"] == "success"
     assert evidence["raw_text"] == "recognized invoice"
+    assert mineru_calls == []
+
+
+def test_collect_openai_evidence_falls_back_to_mineru_after_empty_ocr(monkeypatch, tmp_path):
+    source = tmp_path / "invoice.jpg"
+    source.write_bytes(b"image")
+    attempts = []
+    monkeypatch.setattr(
+        document_extraction_service,
+        "prepare_document_page",
+        lambda _path: {
+            "prepared_path": None,
+            "transformations": [],
+            "quality": {},
+        },
+    )
+    monkeypatch.setattr(
+        document_extraction_service,
+        "_extract_with_ocr",
+        lambda *_args: {"provider": "google_drive_ocr", "raw_text": "", "pages": None},
+    )
+    monkeypatch.setattr(
+        document_extraction_service,
+        "_extract_with_mineru",
+        lambda *_args: {
+            "raw_text": "mineru text",
+            "pages": 1,
+            "structured_document": None,
+            "payload": {"items": [{"name": "x"}]},
+        },
+    )
+
+    evidence = document_extraction_service._collect_openai_evidence(
+        str(source),
+        source.name,
+        on_attempt=attempts.append,
+    )
+
+    completed_attempts = [attempt for attempt in attempts if attempt["status"] != "running"]
+    assert [attempt["provider"] for attempt in completed_attempts] == [
+        "image_preparation",
+        "google_drive_ocr",
+        "mineru",
+    ]
+    assert completed_attempts[1]["status"] == "skipped"
+    assert completed_attempts[2]["status"] == "success"
+    assert evidence["raw_text"] == "mineru text"
+    assert evidence["extraction_method"] == "mineru"
+
+
+def test_collect_openai_evidence_skips_unhealthy_mineru_after_empty_ocr(monkeypatch, tmp_path):
+    source = tmp_path / "invoice.jpg"
+    source.write_bytes(b"image")
+    attempts = []
+    mineru_calls = []
+    monkeypatch.setattr(
+        document_extraction_service,
+        "prepare_document_page",
+        lambda _path: {
+            "prepared_path": None,
+            "transformations": [],
+            "quality": {},
+        },
+    )
+    monkeypatch.setattr(
+        document_extraction_service,
+        "_extract_with_ocr",
+        lambda *_args: {"provider": "google_drive_ocr", "raw_text": "", "pages": None},
+    )
+    monkeypatch.setattr(
+        document_extraction_service,
+        "mineru_health",
+        lambda: {
+            "ready": False,
+            "reason": "MinerU model cache is incomplete: missing models/TabRec/UnetStructure/unet.onnx",
+        },
+    )
+    monkeypatch.setattr(
+        document_extraction_service,
+        "_extract_with_mineru",
+        lambda *_args: mineru_calls.append(_args),
+    )
+
+    evidence = document_extraction_service._collect_openai_evidence(
+        str(source),
+        source.name,
+        on_attempt=attempts.append,
+    )
+
+    completed_attempts = [attempt for attempt in attempts if attempt["status"] != "running"]
+    assert [attempt["provider"] for attempt in completed_attempts] == [
+        "image_preparation",
+        "google_drive_ocr",
+        "mineru",
+    ]
+    assert completed_attempts[2]["status"] == "skipped"
+    assert "model cache is incomplete" in completed_attempts[2]["error_message"]
+    assert mineru_calls == []
+    assert evidence["raw_text"] == ""
     assert any("model cache is incomplete" in error for error in evidence["errors"])
+    assert any("не вернули текст" in warning for warning in evidence["consistency_warnings"])
 
 
 def test_collect_openai_evidence_surfaces_image_quality_warnings(monkeypatch, tmp_path):
@@ -409,6 +455,11 @@ def test_collect_openai_evidence_surfaces_image_quality_warnings(monkeypatch, tm
     )
     monkeypatch.setattr(
         document_extraction_service,
+        "_extract_with_ocr",
+        lambda *_args: {"provider": "google_drive_ocr", "raw_text": "", "pages": None},
+    )
+    monkeypatch.setattr(
+        document_extraction_service,
         "_extract_with_mineru",
         lambda *_args: {
             "raw_text": "mineru text",
@@ -424,6 +475,41 @@ def test_collect_openai_evidence_surfaces_image_quality_warnings(monkeypatch, tm
         "Страница 1: На изображении мало текстовых областей после подготовки.",
         "Страница 1: Качество страницы слишком низкое для надежного извлечения.",
     ]
+
+
+def test_collect_openai_evidence_flags_review_when_ocr_returns_empty_for_image(monkeypatch, tmp_path):
+    """When Drive OCR genuinely fails/empties out (confirmed live: the same
+    file can exhaust retries and still come back empty), the image itself
+    still counts as evidence, so the pipeline does not stop - but it must not
+    look like an ordinary successful run either.
+    """
+    source = tmp_path / "invoice.jpg"
+    source.write_bytes(b"image")
+    monkeypatch.setattr(
+        document_extraction_service,
+        "prepare_document_page",
+        lambda _path: {
+            "prepared_path": str(source),
+            "transformations": [],
+            "quality": {},
+        },
+    )
+    monkeypatch.setattr(
+        document_extraction_service,
+        "mineru_health",
+        lambda: {"ready": False, "reason": "MinerU model cache is incomplete"},
+    )
+    monkeypatch.setattr(
+        document_extraction_service,
+        "_extract_with_ocr",
+        lambda *_args: {"provider": "google_drive_ocr", "raw_text": "", "pages": None},
+    )
+
+    evidence = document_extraction_service._collect_openai_evidence(str(source), source.name)
+
+    assert evidence["raw_text"] == ""
+    assert any("не вернули текст" in warning for warning in evidence["consistency_warnings"])
+    assert document_extraction_service._evidence_has_content(evidence) is True
 
 
 def test_multipage_openai_merges_pages_before_single_parse(monkeypatch, tmp_path):

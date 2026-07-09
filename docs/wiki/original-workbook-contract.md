@@ -125,6 +125,51 @@ use for column lookup.
 | AJ | `Предыдущая цена` | matched against `Заявка` using `R` (`Наименование товара в УС`) |
 | AK | `Отклонение от цены прайса` | formula: `(W - AH) / AH * 100%` |
 
+## Data-validation dropdowns (ground truth for exact enum values)
+
+Extracted from `ws.data_validations` in the original workbook (not just row-1/2
+text). These are the exact strings and casing Google Sheets enforces — the
+backend must produce values matching these exactly, not paraphrase them.
+
+| Col | Field | Allowed values (exact) |
+| --- | --- | --- |
+| A | `Статус загрузки` | `Проверить, Загрузить, Загружено, Не готово, Требует проверки` |
+| B | `Статус строки` | `Распознано, Правка вручную, Отправлено в УС, Ошибка загрузки, Возврат на проверку, Готов к загрузке` |
+| C | `Корректировка` | `Сопоставление, Исключение, Нет в справочнике, Другое, Ошибка OCR` |
+| D | `Дубль` | `Да, ?` |
+| E | `Форма документа` | `Торг-12, УПД, Кассовый чек, Акт закупа, Акт приема-передачи, Транспортная накладная, Расходно-приходная накладная, Накладная` |
+| P | `Товар найден в справочнике` | `Да, Нет` |
+
+`Форма документа` is mixed-case `"Торг-12"`, not `"ТОРГ-12"`, and has no
+`"Счет-фактура"`/`"Чек"` option — a 2026-07-09 backend fix (`ТОРГ-12`,
+invented `Чек`/`Счет-фактура`) got this wrong on the first pass; corrected in
+`invoice_normalization_service.py`'s `_normalize_document_form(...)`,
+`ocr_service.py`'s `_extract_document_form(...)`, and
+`invoice_review_service.py`'s `_detect_document_form_from_text(...)`. See
+`docs/wiki/log.md` for the full trace.
+
+The other five checked dropdowns already matched the backend's constants and
+the Apps Script's `LOAD_STATUS`/`ROW_STATUS` exactly.
+
+Helper columns AP:AS (41-44) carry a duplicate legend of these same status/
+correction values for human documentation purposes — confirmed still not
+part of the write contract, consistent with the AO:AU note above.
+
+## Manually-filled example rows (ground truth for row shape)
+
+Rows 3-16 contain five hand-filled example documents (mix of `Торг-12` and
+`УПД`, various `Корректировка` states, several unit conversions: `бан→кг`,
+`пак→л`, `уп→кг`, `кега→л`, `бут→л`/`бут`). Confirmed useful as a reference
+for expected row shape:
+
+- `Грузоотправитель` and `Получатель` are genuinely different companies in
+  row 3 (`ООО "Балтика"` vs `ООО "Восток"`) — never the same value. Rows 7
+  and 10 legitimately leave `Грузоотправитель` blank when the source
+  document has no separate such line, rather than defaulting it to anything.
+- `Получатель` is consistently `ООО "Восток"` (our own receiving entity)
+  across all five examples, matching the interpretation that this column is
+  the печатный `Грузополучатель`, not a copy of `Поставщик`/`Продавец`.
+
 ## Backend consequences
 
 - row 2 remains the only stable binding for column lookup

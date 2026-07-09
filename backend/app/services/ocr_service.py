@@ -95,15 +95,7 @@ def recognize_invoice_with_google_drive_ocr(file_path: str) -> dict:
             ).execute(),
         )
         document_id = document["id"]
-
-        exported = _execute_google_operation(
-            "export_ocr_text",
-            lambda: drive_service.files().export(
-                fileId=document_id,
-                mimeType=TEXT_EXPORT_MIME_TYPE,
-            ).execute(),
-        )
-        raw_text = exported.decode("utf-8", errors="replace") if isinstance(exported, bytes) else str(exported)
+        raw_text = _export_ocr_text_with_retry(drive_service, document_id)
     finally:
         if document_id and settings.google_drive_ocr_delete_temp_files:
             _delete_drive_file_safely(drive_service, document_id)
@@ -115,6 +107,40 @@ def recognize_invoice_with_google_drive_ocr(file_path: str) -> dict:
         "pages": None,
         "temporary_document_id": None if settings.google_drive_ocr_delete_temp_files else document_id,
     }
+
+
+def _export_ocr_text_with_retry(drive_service: Any, document_id: str) -> str:
+    """Export the OCR'd Google Doc as text, retrying while it looks unfinished.
+
+    `files().create(..., ocrLanguage=...)` queues Drive's OCR conversion but
+    does not block until it finishes: an `export()` called immediately after
+    can return a document whose body is still empty (only a UTF-8 BOM),
+    because the conversion is still running server-side. This previously
+    caused the exact same file to sometimes yield full OCR text and sometimes
+    yield almost nothing across back-to-back uploads, with no error raised.
+    """
+    attempts = max(1, settings.google_drive_ocr_export_retry_attempts)
+    delay = max(0.0, settings.google_drive_ocr_export_retry_delay_seconds)
+    raw_text = ""
+    for attempt in range(1, attempts + 1):
+        exported = _execute_google_operation(
+            "export_ocr_text",
+            lambda: drive_service.files().export(
+                fileId=document_id,
+                mimeType=TEXT_EXPORT_MIME_TYPE,
+            ).execute(),
+        )
+        decoded = exported.decode("utf-8", errors="replace") if isinstance(exported, bytes) else str(exported)
+        raw_text = decoded.lstrip("﻿")
+        if _has_meaningful_ocr_text(raw_text):
+            return raw_text
+        if attempt < attempts:
+            time.sleep(delay)
+    return raw_text
+
+
+def _has_meaningful_ocr_text(value: str) -> bool:
+    return len(value.strip()) >= settings.google_drive_ocr_min_text_length
 
 
 def _execute_google_operation(operation: str, call: Callable[[], Any]) -> Any:
@@ -225,13 +251,15 @@ def parse_invoice_text_to_payload(raw_text: str, fallback_filename: str | None =
 
 
 def _extract_document_form(text: str) -> str | None:
+    # Values and casing match the live sheet's own "Форма документа" dropdown
+    # (E3:E16 data validation in `АвтоСнаб Кафе Ромашка (ориг).xlsx`):
+    # "Торг-12,УПД,Кассовый чек,...". "Счет-фактура" is not one of the
+    # allowed dropdown values, so it is intentionally not returned here.
     lowered = (text or "").lower()
     if "универсаль" in lowered and "передаточ" in lowered:
         return "УПД"
     if "торг-12" in lowered or "товарная накладная" in lowered:
-        return "ТОРГ-12"
-    if "счет-фактура" in lowered or "счёт-фактура" in lowered:
-        return "Счет-фактура"
+        return "Торг-12"
     if "накладная" in lowered:
         return "Накладная"
     return None

@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     google_drive_ocr_language: str = "ru"
     google_drive_ocr_folder_id: str | None = None
     google_drive_ocr_delete_temp_files: bool = True
+    google_drive_ocr_export_retry_attempts: int = 6
+    google_drive_ocr_export_retry_delay_seconds: float = 4.0
+    google_drive_ocr_min_text_length: int = 20
     google_api_retry_attempts: int = 3
     google_api_retry_backoff_seconds: float = 0.5
     public_api_base_url: str = "https://YOUR_API_HOST"

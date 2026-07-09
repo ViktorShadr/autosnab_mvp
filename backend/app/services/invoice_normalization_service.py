@@ -31,7 +31,7 @@ def normalize_invoice_result(
         result.normalization_log,
     )
     result.document.document_number = _clean_text(result.document.document_number)
-    result.document.document_form = _clean_text(result.document.document_form)
+    result.document.document_form = _normalize_document_form(result.document.document_form)
     result.document.shipper = _clean_text(result.document.shipper)
     result.document.receiver = _clean_text(result.document.receiver)
     result.document.basis = _normalize_basis(
@@ -227,6 +227,37 @@ def _normalize_date(
         changes.append("document.document_date normalized")
         return russian_date
     flags.append(InvoiceReviewFlag(scope="document", field="document_date", reason="Дата документа имеет неизвестный формат.", severity="error"))
+    return cleaned
+
+
+# Canonical labels and matching order come from the live sheet's own E3:E16
+# data-validation dropdown in `АвтоСнаб Кафе Ромашка (ориг).xlsx`
+# ("Торг-12,УПД,Кассовый чек,Акт закупа,Акт приема-передачи,Транспортная
+# накладная,Расходно-приходная накладная,Накладная") — that exact wording and
+# casing is what the Google Sheet dropdown itself expects, not a value we get
+# to invent. УПД is checked before "Торг-12"/"товарная накладная" because a
+# УПД's own printed text also contains "счет-фактура", which could otherwise
+# cause it to be misclassified.
+_DOCUMENT_FORM_CANONICAL: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("УПД", ("универсальный передаточный документ", "упд")),
+    ("Торг-12", ("торг-12", "товарная накладная")),
+    ("Кассовый чек", ("кассовый чек", "чек")),
+)
+
+
+def _normalize_document_form(value: str) -> str:
+    """Collapse model wording variance (e.g. "Торг-12" vs "ТОВАРНАЯ
+    НАКЛАДНАЯ" for the identical form) into the exact label the live sheet's
+    dropdown expects, so the same physical document always gets the same
+    value regardless of how the model phrased it on a given run.
+    """
+    cleaned = _clean_text(value)
+    if not cleaned:
+        return ""
+    lowered = cleaned.lower()
+    for canonical, markers in _DOCUMENT_FORM_CANONICAL:
+        if any(marker in lowered for marker in markers):
+            return canonical
     return cleaned
 
 

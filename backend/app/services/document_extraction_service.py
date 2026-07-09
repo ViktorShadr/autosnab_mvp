@@ -603,71 +603,6 @@ def _collect_openai_evidence(
             evidence.extraction_method = "pdf_text"
             return evidence.model_dump(mode="json")
 
-    _notify_evidence_attempt_start("mineru", on_attempt)
-    started = time.perf_counter()
-    health = mineru_health()
-    if not health["ready"]:
-        mineru_result = None
-        error_message = str(health["reason"])
-        _add_evidence_attempt(
-            evidence,
-            EvidenceProviderAttempt(
-                provider="mineru",
-                status="skipped",
-                duration_ms=_duration_ms(started),
-                error_message=error_message,
-            ),
-            on_attempt,
-        )
-        evidence.errors.append(error_message)
-    else:
-        try:
-            mineru_result = _extract_with_mineru(evidence_input_path, fallback_filename)
-        except Exception as exc:  # noqa: BLE001 - OCR remains the evidence fallback
-            mineru_result = None
-            error_message = str(exc)
-            evidence.errors.append(error_message)
-            _add_evidence_attempt(
-                evidence,
-                EvidenceProviderAttempt(
-                    provider="mineru",
-                    status="error",
-                    duration_ms=_duration_ms(started),
-                    error_type=type(exc).__name__,
-                    error_message=error_message,
-                ),
-                on_attempt,
-            )
-    if mineru_result and (mineru_result.get("raw_text") or "").strip():
-        raw_text = mineru_result.get("raw_text") or ""
-        _add_evidence_attempt(
-            evidence,
-            EvidenceProviderAttempt(
-                provider="mineru",
-                status="success",
-                duration_ms=_duration_ms(started),
-                raw_text_length=len(raw_text),
-                pages=mineru_result.get("pages"),
-            ),
-            on_attempt,
-        )
-        evidence.raw_text = raw_text
-        evidence.extraction_method = "mineru"
-        evidence.structured_document = mineru_result.get("structured_document")
-        evidence.pages = mineru_result.get("pages")
-        return evidence.model_dump(mode="json")
-    if mineru_result:
-        _add_evidence_attempt(
-            evidence,
-            EvidenceProviderAttempt(
-                provider="mineru",
-                status="skipped",
-                duration_ms=_duration_ms(started),
-                error_message="MinerU returned no text evidence.",
-            ),
-            on_attempt,
-        )
-
     _notify_evidence_attempt_start("google_drive_ocr", on_attempt)
     started = time.perf_counter()
     ocr_result = _extract_with_ocr(evidence_input_path, fallback_filename)
@@ -688,13 +623,97 @@ def _collect_openai_evidence(
         ),
         on_attempt,
     )
+    if ocr_error:
+        evidence.errors.append(ocr_error)
+    if raw_text.strip():
+        evidence.raw_text = raw_text
+        evidence.extraction_method = ocr_result.get("provider") or "google_drive_ocr"
+        evidence.ocr_used = True
+        evidence.pages = ocr_result.get("pages")
+        return evidence.model_dump(mode="json")
+
+    _notify_evidence_attempt_start("mineru", on_attempt)
+    started = time.perf_counter()
+    health = mineru_health()
+    if not health["ready"]:
+        mineru_result = None
+        error_message = str(health["reason"])
+        _add_evidence_attempt(
+            evidence,
+            EvidenceProviderAttempt(
+                provider="mineru",
+                status="skipped",
+                duration_ms=_duration_ms(started),
+                error_message=error_message,
+            ),
+            on_attempt,
+        )
+        evidence.errors.append(error_message)
+    else:
+        try:
+            mineru_result = _extract_with_mineru(evidence_input_path, fallback_filename)
+        except Exception as exc:  # noqa: BLE001 - OCR result above remains the evidence fallback
+            mineru_result = None
+            error_message = str(exc)
+            evidence.errors.append(error_message)
+            _add_evidence_attempt(
+                evidence,
+                EvidenceProviderAttempt(
+                    provider="mineru",
+                    status="error",
+                    duration_ms=_duration_ms(started),
+                    error_type=type(exc).__name__,
+                    error_message=error_message,
+                ),
+                on_attempt,
+            )
+    if mineru_result and (mineru_result.get("raw_text") or "").strip():
+        mineru_text = mineru_result.get("raw_text") or ""
+        _add_evidence_attempt(
+            evidence,
+            EvidenceProviderAttempt(
+                provider="mineru",
+                status="success",
+                duration_ms=_duration_ms(started),
+                raw_text_length=len(mineru_text),
+                pages=mineru_result.get("pages"),
+            ),
+            on_attempt,
+        )
+        evidence.raw_text = mineru_text
+        evidence.extraction_method = "mineru"
+        evidence.structured_document = mineru_result.get("structured_document")
+        evidence.pages = mineru_result.get("pages")
+        return evidence.model_dump(mode="json")
+    if mineru_result:
+        _add_evidence_attempt(
+            evidence,
+            EvidenceProviderAttempt(
+                provider="mineru",
+                status="skipped",
+                duration_ms=_duration_ms(started),
+                error_message="MinerU returned no text evidence.",
+            ),
+            on_attempt,
+        )
+
+    # Neither Google Drive OCR nor MinerU produced usable text.
     evidence.raw_text = raw_text
     evidence.extraction_method = ocr_result.get("provider") or "google_drive_ocr"
     evidence.ocr_used = True
     evidence.pages = ocr_result.get("pages")
     if ocr_error:
         evidence.error = ocr_error
-        evidence.errors.append(ocr_error)
+    elif source_type == "image":
+        # Both providers came back genuinely empty (not an exception).
+        # Evidence still counts as "non-empty" because the source image
+        # exists, so parsing continues on vision input alone - but that is a
+        # real quality degradation the operator should see, not a silent
+        # normal run.
+        evidence.consistency_warnings.append(
+            "Google Drive OCR и MinerU не вернули текст; распознавание "
+            "опирается только на изображение без OCR-текста."
+        )
     return evidence.model_dump(mode="json")
 
 

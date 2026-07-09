@@ -34,9 +34,53 @@ Google Sheets.
 
 ## Current blockers
 
-1. Docker MinerU cannot start because OpenCV cannot load `libxcb.so.1`.
+1. **(Fixed 2026-07-09) Docker MinerU model cache.** Originally blocked
+   because OpenCV could not load `libxcb.so.1` (fixed earlier by installing
+   the missing system libs). Superseded by a second finding the same day: the
+   live container's MinerU model cache was missing
+   `models/TabRec/UnetStructure/unet.onnx` entirely, so MinerU was skipped on
+   every single request via the existing health guard — not a rare failure,
+   a permanently disabled provider, leaving Google Drive OCR as the *only*
+   evidence provider in production. Repaired via
+   `python3 -m mineru.cli.models_download -s huggingface -m pipeline` against
+   the persistent `autosnab_hf_cache` volume; hit and fixed a second-order
+   issue where an interrupted first download attempt left
+   `models/MFR/unimernet_hf_small_2503` corrupted (config files present,
+   weights missing) and the downloader's directory-exists check silently
+   skipped re-fetching it — `mineru_health()` reported `ready: true` while a
+   real document still failed. Deleting that one model directory and
+   re-running the downloader fixed it for real, confirmed by an actual
+   extraction call returning 3466 characters of structured text. MinerU is
+   now a genuine fallback provider again, not just formally "ready" — see
+   `docs/wiki/log.md` entry "fix | MinerU model cache repaired, real fallback
+   provider restored" for the full trace. `mineru_health()`'s single-file
+   check is still shallow relative to the real multi-model surface and could
+   mask a future partial-cache corruption the same way; not hardened yet.
 2. Google Drive OCR can fail with a TLS handshake timeout and currently leaves
    OpenAI with empty evidence.
+3. **(Fixed 2026-07-09) Google Drive OCR export race condition.** Root-caused
+   the user's report of identical repeated uploads producing different parsed
+   results: `recognize_invoice_with_google_drive_ocr` called `files().export()`
+   immediately after `files().create(..., ocrLanguage=...)`, but Drive's OCR
+   conversion is asynchronous — the export can return a document that is still
+   just a UTF-8 BOM, before the OCR text has actually been written server-side.
+   Confirmed directly from production debug logs (`exports/openai_debug/`):
+   the same file `file_110.jpg` uploaded three times in a row produced
+   `raw_text` of length 1 (BOM only), length 1 again, then length 2351 (real
+   text) on the third try — with all three provider attempts logged as
+   `status: "success"`, because `"﻿".strip()` is truthy in Python, so the
+   near-empty result was never flagged as a failure. Fixed in
+   `backend/app/services/ocr_service.py`: `_export_ocr_text_with_retry` now
+   polls `export()` (`GOOGLE_DRIVE_OCR_EXPORT_RETRY_ATTEMPTS=4`,
+   `GOOGLE_DRIVE_OCR_EXPORT_RETRY_DELAY_SECONDS=2.0` between attempts) until
+   the decoded text is at least `GOOGLE_DRIVE_OCR_MIN_TEXT_LENGTH=20`
+   characters after stripping the BOM, and the BOM is now stripped from the
+   text returned to the rest of the pipeline either way. Covered by
+   `backend/tests/test_ocr_provider.py::test_export_ocr_text_retries_past_empty_bom_only_export`
+   (replays the exact empty/empty/real sequence from the production logs) and
+   `..._gives_up_after_exhausting_retries`. Not yet redeployed to the running
+   container — needs a rebuild/restart of `autosnab_backend_mvp4` to take
+   effect, then a re-test with the same repeated-upload scenario.
 3. The `openai` path sends only OCR/MinerU text and structure, not the source
    image, although the configured model supports image input and Structured
    Outputs.
