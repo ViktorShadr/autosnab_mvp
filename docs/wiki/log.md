@@ -519,3 +519,10 @@
 - Resolved the only semantic conflicts in favor of the newer env-only credential model by keeping `.env` and `backend/secrets/oauth-token.json` out of Git on the merged branch.
 - Added a small compatibility fix in the first-row header helper so missing newer keys such as `consignor` from older payload shapes now yield empty sheet values instead of `KeyError`.
 - Verified the merged branch with targeted backend tests: `backend/tests/test_google_oauth_service.py`, `backend/tests/test_document_extraction_service.py`, and `backend/tests/test_google_sheets_service.py` all pass.
+
+## [2026-07-09] integration | upstream over_version merged into active bot branch
+
+- Merged `upstream/over_version` into `codex/bot-sbis-plan` with a single manual conflict resolution in `backend/app/routers/invoice_review.py`.
+- Kept both change lines in the resolved upload flow: the bot ingestion/journal endpoints stay intact, and the newer colleague upload behavior also stays intact, including explicit `multipage_invoice` gating, client timezone propagation, compact selected-file UI, and upload polling UX changes.
+- Explicitly dropped the tracked `autosnab_mvp.db` file from the merge result so branch-local SQLite contents were not inherited as if they were source code.
+- Re-ran targeted verification after the merge: `pytest backend/tests/test_google_sheets_service.py -q` passed with 7 tests, and `python3 -m py_compile` succeeded for `backend/app/routers/invoice_review.py`, `backend/app/services/google_sheets_service.py`, and `backend/app/services/invoice_review_service.py`.

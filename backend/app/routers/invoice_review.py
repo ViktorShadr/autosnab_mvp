@@ -115,11 +115,26 @@ def upload_invoice_page():
     }
     .selected-files-title { font-weight: 700; margin-bottom: 8px; }
     .selected-files ol { margin: 0; padding-left: 0; list-style: none; }
-    .selected-files li { margin: 6px 0; line-height: 1.35; }
+    .selected-files li {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      margin: 6px 0;
+      line-height: 1.35;
+    }
+    .selected-file-name { min-width: 0; overflow-wrap: anywhere; }
+    .selected-file-actions {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      flex-shrink: 0;
+    }
     .file-size { color: #6b7280; font-size: 13px; }
-    .remove-file-btn {
+    .remove-file-btn,
+    .move-file-btn {
       min-width: auto;
-      margin-left: 8px;
       padding: 4px 8px;
       border-radius: 8px;
       background: #e5e7eb;
@@ -221,76 +236,6 @@ def upload_invoice_page():
     .result-actions {
       text-align: center;
     }
-    .preview-shell {
-      display: none;
-      margin-top: 14px;
-      border: 1px solid #d1d5db;
-      border-radius: 14px;
-      background: #f9fafb;
-      overflow: hidden;
-    }
-    .preview-shell.visible {
-      display: block;
-    }
-    .preview-meta {
-      padding: 12px 14px;
-      border-bottom: 1px solid #e5e7eb;
-      font-size: 14px;
-      color: #4b5563;
-      background: #fff;
-    }
-    .preview-frame {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 240px;
-      max-height: 520px;
-      background: #f3f4f6;
-    }
-    .preview-frame img,
-    .preview-frame iframe {
-      width: 100%;
-      height: 520px;
-      border: 0;
-      object-fit: contain;
-      background: #fff;
-    }
-    .preview-item {
-      border-top: 1px solid #e5e7eb;
-      background: #fff;
-    }
-    .preview-item:first-child {
-      border-top: 0;
-    }
-    .preview-item-toolbar {
-      display: flex;
-      justify-content: space-between;
-      gap: 10px;
-      align-items: center;
-      padding: 10px 14px;
-      border-bottom: 1px solid #e5e7eb;
-      background: #fff;
-      font-size: 14px;
-    }
-    .preview-item-actions {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-    .preview-item-actions button {
-      min-width: 0;
-      padding: 8px 10px;
-      font-size: 13px;
-      border-radius: 10px;
-      background: #e5e7eb;
-      color: #111827;
-    }
-    .preview-empty {
-      padding: 28px;
-      text-align: center;
-      color: #6b7280;
-      line-height: 1.5;
-    }
     .loading {
       margin-top: 22px;
       padding: 16px;
@@ -391,14 +336,17 @@ def upload_invoice_page():
       </div>
       <form id="uploadForm">
         <div class="field">
-          <label for="file">Страницы накладной</label>
-          <input id="file" name="files" type="file" accept="image/*,.pdf" capture="environment" multiple required />
-          <div class="hint">Можно менять порядок страниц и удалять лишние до отправки.</div>
-          <div id="filePreview" class="preview-shell" aria-live="polite">
-            <div id="filePreviewMeta" class="preview-meta"></div>
-            <div id="filePreviewFrame" class="preview-frame">
-              <div class="preview-empty">Выберите один или несколько файлов в порядке страниц.</div>
-            </div>
+          <label class="checkbox-label" for="multipageInvoice">
+            <input id="multipageInvoice" name="multipage_invoice" type="checkbox" />
+            <span>Многостраничная накладная</span>
+          </label>
+          <label for="file">Файл накладной</label>
+          <input id="file" name="files" type="file" accept="image/*,.pdf" capture="environment" />
+          <div class="hint" id="fileHint">Если накладная одностраничная, выберите один файл.</div>
+          <div class="duplicate-hint" id="duplicateHint"></div>
+          <div class="selected-files" id="selectedFilesBox" hidden>
+            <div class="selected-files-title">Выбранные файлы:</div>
+            <ol id="selectedFilesList"></ol>
           </div>
         </div>
         <div class="field">
@@ -426,18 +374,29 @@ def upload_invoice_page():
     const output = document.getElementById('output');
     const button = document.getElementById('submitBtn');
     const fileInput = document.getElementById('file');
+    const multipageCheckbox = document.getElementById('multipageInvoice');
+    const fileHint = document.getElementById('fileHint');
+    const duplicateHint = document.getElementById('duplicateHint');
+    const selectedFilesBox = document.getElementById('selectedFilesBox');
+    const selectedFilesList = document.getElementById('selectedFilesList');
     const extractionMethodInput = document.getElementById('extractionMethod');
-    const previewShell = document.getElementById('filePreview');
-    const previewMeta = document.getElementById('filePreviewMeta');
-    const previewFrame = document.getElementById('filePreviewFrame');
     const googleAuthStatus = document.getElementById('googleAuthStatus');
     const googleAuthBtn = document.getElementById('googleAuthBtn');
     const googleAuthRefreshBtn = document.getElementById('googleAuthRefreshBtn');
 
-    let previewUrls = [];
+    const sheetWindowName = 'autosnab_google_sheet';
+    const submitButtonDefaultText = button.textContent;
+    let sheetWindow = null;
     let activeTraceId = null;
     let tracePollTimer = null;
     let selectedFiles = [];
+    let uploadInProgress = false;
+
+    function setUploadButtonBusy(isBusy) {
+      uploadInProgress = Boolean(isBusy);
+      button.disabled = uploadInProgress;
+      button.textContent = submitButtonDefaultText;
+    }
 
     const methodLabels = {
       openai: 'OpenAI vision parser (text + images)',
@@ -451,6 +410,43 @@ def upload_invoice_page():
         '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
       }[ch]));
     }
+
+    function getUserTimezone() {
+      try {
+        return Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+      } catch (error) {
+        return '';
+      }
+    }
+
+    function getUserUtcOffsetMinutes() {
+      try {
+        return String(-new Date().getTimezoneOffset());
+      } catch (error) {
+        return '';
+      }
+    }
+
+    function openSheetInSingleTab(url) {
+      const targetUrl = String(url || '').trim();
+      if (!targetUrl) {
+        return false;
+      }
+      sheetWindow = window.open(targetUrl, sheetWindowName);
+      if (sheetWindow) {
+        sheetWindow.focus();
+      }
+      return false;
+    }
+
+    output.addEventListener('click', (event) => {
+      const link = event.target.closest('[data-google-sheet-url]');
+      if (!link) {
+        return;
+      }
+      event.preventDefault();
+      openSheetInSingleTab(link.getAttribute('data-google-sheet-url'));
+    });
 
     function renderPipelineLogs(logs) {
       if (!Array.isArray(logs) || !logs.length) {
@@ -481,12 +477,8 @@ def upload_invoice_page():
         return '';
       }
       const hasGoogleSheet = Boolean(result.google_spreadsheet_url);
-      const methodInfo = result.ocr && result.ocr.selected_method_label
-        ? `<div>Метод распознавания: <b>${escapeHtml(result.ocr.selected_method_label)}</b></div>`
-        : '';
-      const traceMeta = result.trace_metadata
-        ? `<div>Логический документ: <b>${escapeHtml(result.trace_metadata.logical_document_id || '')}</b> · evidence: <b>${escapeHtml(result.trace_metadata.evidence_version || '')}</b></div>`
-        : '';
+      const methodInfo = '';
+      const traceMeta = '';
       const ocrError = result.ocr && result.ocr.error ? `<div>⚠️ OCR не сработал: ${escapeHtml(result.ocr.error)}</div>` : '';
       const sheetError = result.google_spreadsheet_error ? `<div>Ошибка Google Таблицы: ${escapeHtml(result.google_spreadsheet_error)}</div>` : '';
       if (hasGoogleSheet) {
@@ -497,7 +489,7 @@ def upload_invoice_page():
             ${methodInfo}
             ${traceMeta}
             ${ocrError}
-            <div class="result-actions"><a class="secondary-btn" href="${escapeHtml(result.google_spreadsheet_url)}" target="_blank" rel="noopener">Открыть таблицу заведения</a></div>
+            <div class="result-actions"><a class="secondary-btn" href="${escapeHtml(result.google_spreadsheet_url)}" data-google-sheet-url="${escapeHtml(result.google_spreadsheet_url)}">Открыть таблицу заведения</a></div>
           </div>
           ${renderPipelineLogs(result.pipeline_logs)}
         `;
@@ -535,11 +527,11 @@ def upload_invoice_page():
         if (data.completed && data.result) {
           output.innerHTML = renderTraceResult(data.result);
         } else {
-          const existingLogBox = renderPipelineLogs(data.logs || []);
-          output.innerHTML = '<div class="loading">Документ обрабатывается. Логи обновляются автоматически...</div>' + existingLogBox;
+          output.innerHTML = renderPipelineLogs(data.logs || []);
         }
         if (data.completed) {
           stopTracePolling();
+          setUploadButtonBusy(false);
         }
       } catch (error) {
         // Ignore transient polling errors; final upload response remains source of truth.
@@ -565,12 +557,8 @@ def upload_invoice_page():
       return (size / (1024 * 1024)).toFixed(2) + ' МБ';
     }
 
-    function resetPreview() {
-      previewUrls.forEach(url => URL.revokeObjectURL(url));
-      previewUrls = [];
-      previewShell.classList.remove('visible');
-      previewMeta.textContent = '';
-      previewFrame.innerHTML = '<div class="preview-empty">Выберите один или несколько файлов в порядке страниц.</div>';
+    function getFileKey(file) {
+      return [file.name, file.size, file.lastModified, file.type].join('::');
     }
 
     function syncFileInputFromSelection() {
@@ -582,6 +570,71 @@ def upload_invoice_page():
       fileInput.files = transfer.files;
     }
 
+    function renderUploadSelection() {
+      syncFileInputFromSelection();
+      renderSelectedFiles();
+    }
+
+    function resetSelectedFiles() {
+      selectedFiles = [];
+      duplicateHint.textContent = '';
+      fileInput.value = '';
+      renderUploadSelection();
+    }
+
+    function handleSelectedFiles(files) {
+      duplicateHint.textContent = '';
+      if (!files.length) {
+        renderUploadSelection();
+        return;
+      }
+      if (!multipageCheckbox.checked) {
+        selectedFiles = [files[0]];
+        if (files.length > 1) {
+          duplicateHint.textContent = 'Для одностраничной накладной выбран только первый файл.';
+        }
+        renderUploadSelection();
+        return;
+      }
+      const existingKeys = new Set(selectedFiles.map(getFileKey));
+      const skippedNames = [];
+      for (const file of files) {
+        const key = getFileKey(file);
+        if (existingKeys.has(key)) {
+          skippedNames.push(file.name);
+        } else {
+          selectedFiles.push(file);
+          existingKeys.add(key);
+        }
+      }
+      if (skippedNames.length) {
+        duplicateHint.textContent = `Повторно выбранные файлы не добавлены: ${skippedNames.join(', ')}`;
+      }
+      renderUploadSelection();
+    }
+
+    function renderSelectedFiles() {
+      selectedFilesBox.hidden = selectedFiles.length === 0;
+      selectedFilesList.innerHTML = selectedFiles.map((file, index) => {
+        const sizeText = formatFileSize(file.size);
+        const pageText = `Страница ${index + 1}: `;
+        const fileText = `${pageText}${file.name}`;
+        return `
+          <li>
+            <span class="selected-file-name">
+              ${escapeHtml(fileText)}
+              ${sizeText ? `<span class="file-size">(${escapeHtml(sizeText)})</span>` : ''}
+            </span>
+            <span class="selected-file-actions">
+              <button class="move-file-btn" type="button" data-move-file-index="${index}" data-move-file-direction="-1" ${index === 0 ? 'disabled' : ''}>↑</button>
+              <button class="move-file-btn" type="button" data-move-file-index="${index}" data-move-file-direction="1" ${index === selectedFiles.length - 1 ? 'disabled' : ''}>↓</button>
+              <button class="remove-file-btn" type="button" data-remove-file-index="${index}">Удалить</button>
+            </span>
+          </li>
+        `;
+      }).join('');
+    }
+
     function moveSelectedFile(index, direction) {
       const nextIndex = index + direction;
       if (nextIndex < 0 || nextIndex >= selectedFiles.length) {
@@ -591,61 +644,14 @@ def upload_invoice_page():
       const [file] = copy.splice(index, 1);
       copy.splice(nextIndex, 0, file);
       selectedFiles = copy;
-      syncFileInputFromSelection();
-      renderFilePreviews(selectedFiles);
+      duplicateHint.textContent = '';
+      renderUploadSelection();
     }
 
     function removeSelectedFile(index) {
       selectedFiles = selectedFiles.filter((_, current) => current !== index);
-      syncFileInputFromSelection();
-      renderFilePreviews(selectedFiles);
-    }
-
-    function bindPreviewActions() {
-      previewFrame.querySelectorAll('[data-move]').forEach(node => {
-        node.addEventListener('click', () => {
-          moveSelectedFile(Number(node.dataset.index), Number(node.dataset.move));
-        });
-      });
-      previewFrame.querySelectorAll('[data-remove]').forEach(node => {
-        node.addEventListener('click', () => {
-          removeSelectedFile(Number(node.dataset.index));
-        });
-      });
-    }
-
-    function renderFilePreviews(files) {
-      resetPreview();
-      if (!files || !files.length) {
-        return;
-      }
-
-      previewShell.classList.add('visible');
-      previewMeta.textContent = files.length + ' стр. · ' + Array.from(files)
-        .map(file => file.name + ' (' + formatFileSize(file.size) + ')')
-        .join(' · ');
-      previewFrame.innerHTML = Array.from(files).map((file, index) => {
-        const url = URL.createObjectURL(file);
-        previewUrls.push(url);
-        const toolbar = `
-          <div class="preview-item-toolbar">
-            <span>Страница ${index + 1}: ${escapeHtml(file.name)}</span>
-            <div class="preview-item-actions">
-              <button type="button" data-index="${index}" data-move="-1" ${index === 0 ? 'disabled' : ''}>↑</button>
-              <button type="button" data-index="${index}" data-move="1" ${index === files.length - 1 ? 'disabled' : ''}>↓</button>
-              <button type="button" data-index="${index}" data-remove="1">Удалить</button>
-            </div>
-          </div>
-        `;
-        if (file.type.startsWith('image/')) {
-          return '<div class="preview-item">' + toolbar + '<img alt="Страница ' + (index + 1) + '" src="' + url + '" /></div>';
-        }
-        if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
-          return '<div class="preview-item">' + toolbar + '<iframe title="PDF страница ' + (index + 1) + '" src="' + url + '#view=FitH"></iframe></div>';
-        }
-        return '<div class="preview-item">' + toolbar + '<div class="preview-empty">Превью недоступно.</div></div>';
-      }).join('');
-      bindPreviewActions();
+      duplicateHint.textContent = '';
+      renderUploadSelection();
     }
 
     async function refreshGoogleAuthStatus() {
@@ -674,9 +680,39 @@ def upload_invoice_page():
     }
 
     fileInput.addEventListener('change', () => {
-      selectedFiles = Array.from(fileInput.files || []);
-      syncFileInputFromSelection();
-      renderFilePreviews(selectedFiles);
+      handleSelectedFiles(Array.from(fileInput.files || []));
+      fileInput.value = '';
+      output.innerHTML = '';
+    });
+
+    selectedFilesList.addEventListener('click', (event) => {
+      const moveButton = event.target.closest('[data-move-file-index]');
+      if (moveButton) {
+        moveSelectedFile(
+          Number(moveButton.getAttribute('data-move-file-index')),
+          Number(moveButton.getAttribute('data-move-file-direction'))
+        );
+        return;
+      }
+
+      const removeButton = event.target.closest('[data-remove-file-index]');
+      if (removeButton) {
+        removeSelectedFile(Number(removeButton.getAttribute('data-remove-file-index')));
+      }
+    });
+
+    multipageCheckbox.addEventListener('change', () => {
+      fileInput.multiple = multipageCheckbox.checked;
+      if (multipageCheckbox.checked) {
+        fileInput.removeAttribute('capture');
+      } else {
+        fileInput.setAttribute('capture', 'environment');
+      }
+      resetSelectedFiles();
+      output.innerHTML = '';
+      fileHint.textContent = multipageCheckbox.checked
+        ? 'Выбирайте файлы страниц одной накладной в правильном порядке. Повторно выбранный файл не будет добавлен и загружен.'
+        : 'Если накладная одностраничная, выберите один файл.';
     });
 
     googleAuthBtn.addEventListener('click', () => {
@@ -703,31 +739,43 @@ def upload_invoice_page():
 
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
+      if (uploadInProgress) {
+        return;
+      }
       const selectedMethod = extractionMethodInput.value || 'hybrid';
       const selectedMethodLabel = methodLabels[selectedMethod] || selectedMethod;
-      const traceId = (window.crypto && window.crypto.randomUUID)
-        ? window.crypto.randomUUID()
-        : ('trace-' + Date.now() + '-' + Math.random().toString(16).slice(2));
-      startTracePolling(traceId);
-      output.innerHTML = '<div class="loading">Файл загружается. Метод распознавания: <b>' + escapeHtml(selectedMethodLabel) + '</b>. Подождите...</div>';
-      button.disabled = true;
-
+      const isMultipage = multipageCheckbox.checked;
       const formData = new FormData();
       if (!selectedFiles.length) {
         output.innerHTML = '<div class="error"><b>Ошибка:</b> выберите файл накладной.</div>';
-        button.disabled = false;
+        setUploadButtonBusy(false);
         return;
       }
-      if (selectedFiles.length > 1 && selectedMethod !== 'openai') {
+      if (!isMultipage && selectedFiles.length > 1) {
+        output.innerHTML = '<div class="error"><b>Ошибка:</b> для одностраничной накладной выберите один файл или включите галочку «Многостраничная накладная».</div>';
+        setUploadButtonBusy(false);
+        return;
+      }
+      if (isMultipage && selectedFiles.length > 1 && selectedMethod !== 'openai') {
         output.innerHTML = '<div class="error"><b>Ошибка:</b> многостраничная загрузка доступна только в режиме OpenAI vision parser.</div>';
-        button.disabled = false;
-        stopTracePolling();
+        setUploadButtonBusy(false);
         return;
       }
+      const traceId = (window.crypto && window.crypto.randomUUID)
+        ? window.crypto.randomUUID()
+        : ('trace-' + Date.now() + '-' + Math.random().toString(16).slice(2));
+      let backgroundJobAccepted = false;
+      startTracePolling(traceId);
+      output.innerHTML = '';
+      setUploadButtonBusy(true);
+
       selectedFiles.forEach(file => formData.append('files', file));
+      formData.append('multipage_invoice', isMultipage ? 'true' : 'false');
       formData.append('create_google_sheet', 'true');
       formData.append('extraction_method', selectedMethod);
       formData.append('upload_trace_id', traceId);
+      formData.append('user_timezone', getUserTimezone());
+      formData.append('user_utc_offset_minutes', getUserUtcOffsetMinutes());
 
       try {
         const response = await fetch('/api/v1/invoice-review/upload-document-live', {
@@ -746,7 +794,8 @@ def upload_invoice_page():
           throw new Error(detail);
         }
         if (data && data.trace_id) {
-          output.innerHTML = '<div class="loading">Документ принят в обработку. Логи обновляются автоматически...</div>';
+          backgroundJobAccepted = true;
+          output.innerHTML = '';
           return;
         }
         stopTracePolling();
@@ -778,7 +827,9 @@ def upload_invoice_page():
           output.innerHTML = `<div class="error"><b>Ошибка загрузки:</b> ${escapeHtml(error.message)}</div>`;
         }
       } finally {
-        button.disabled = false;
+        if (!backgroundJobAccepted) {
+          setUploadButtonBusy(false);
+        }
       }
     });
 
@@ -806,6 +857,8 @@ async def upload_invoice_photo_real_ocr(
     request_id: str | None = Form(default=None),
     chat_id: str | None = Form(default=None),
     user_id: str | None = Form(default=None),
+    user_timezone: str | None = Form(default=None),
+    user_utc_offset_minutes: str | None = Form(default=None),
     create_google_sheet: bool = Form(default=True),
     extraction_method: str | None = Form(default=None),
     upload_trace_id: str | None = Form(default=None),
@@ -827,6 +880,8 @@ async def upload_invoice_photo_real_ocr(
         request_id=request_id,
         chat_id=chat_id,
         user_id=user_id,
+        user_timezone=user_timezone,
+        user_utc_offset_minutes=user_utc_offset_minutes,
         create_google_sheet=create_google_sheet,
         extraction_method=extraction_method,
         public_api_base_url=public_api_base_url,
@@ -843,6 +898,8 @@ async def upload_invoice_photo_live(
     request_id: str | None = Form(default=None),
     chat_id: str | None = Form(default=None),
     user_id: str | None = Form(default=None),
+    user_timezone: str | None = Form(default=None),
+    user_utc_offset_minutes: str | None = Form(default=None),
     create_google_sheet: bool = Form(default=True),
     extraction_method: str | None = Form(default=None),
     upload_trace_id: str | None = Form(default=None),
@@ -878,6 +935,8 @@ async def upload_invoice_photo_live(
             "request_id": request_id,
             "chat_id": chat_id,
             "user_id": user_id,
+            "user_timezone": user_timezone,
+            "user_utc_offset_minutes": user_utc_offset_minutes,
             "create_google_sheet": create_google_sheet,
             "extraction_method": extraction_method,
             "public_api_base_url": public_api_base_url or settings.public_api_base_url,
@@ -896,6 +955,9 @@ async def upload_invoice_document_live(
     request_id: str | None = Form(default=None),
     chat_id: str | None = Form(default=None),
     user_id: str | None = Form(default=None),
+    multipage_invoice: bool = Form(default=False),
+    user_timezone: str | None = Form(default=None),
+    user_utc_offset_minutes: str | None = Form(default=None),
     create_google_sheet: bool = Form(default=True),
     extraction_method: str | None = Form(default=None),
     upload_trace_id: str | None = Form(default=None),
@@ -903,6 +965,11 @@ async def upload_invoice_document_live(
 ):
     if not files:
         raise HTTPException(status_code=422, detail="Нужно загрузить хотя бы одну страницу.")
+    if len(files) > 1 and not multipage_invoice:
+        raise HTTPException(
+            status_code=400,
+            detail="Для нескольких файлов включите галочку «Многостраничная накладная».",
+        )
     if len(files) > settings.openai_max_image_pages:
         raise HTTPException(
             status_code=422,
@@ -930,7 +997,7 @@ async def upload_invoice_document_live(
         {
             "stage": "job_queued",
             "status": "running",
-            "message": "Многостраничный документ принят в фоновую обработку.",
+            "message": "Документ принят в фоновую обработку.",
             "details": {
                 "logical_upload_id": document_upload_id,
                 "pages": len(file_paths),
@@ -953,6 +1020,8 @@ async def upload_invoice_document_live(
             "request_id": request_id,
             "chat_id": chat_id,
             "user_id": user_id,
+            "user_timezone": user_timezone,
+            "user_utc_offset_minutes": user_utc_offset_minutes,
             "create_google_sheet": create_google_sheet,
             "extraction_method": extraction_method,
             "public_api_base_url": public_api_base_url or settings.public_api_base_url,
@@ -1187,7 +1256,9 @@ def _process_invoice_upload_background(
     request_id: str | None,
     chat_id: str | None,
     user_id: str | None,
-    create_google_sheet: bool,
+    user_timezone: str | None = None,
+    user_utc_offset_minutes: str | None = None,
+    create_google_sheet: bool = True,
     extraction_method: str | None,
     public_api_base_url: str,
 ) -> None:
@@ -1205,6 +1276,8 @@ def _process_invoice_upload_background(
             request_id=request_id,
             chat_id=chat_id,
             user_id=user_id,
+            user_timezone=user_timezone,
+            user_utc_offset_minutes=user_utc_offset_minutes,
             create_google_sheet=create_google_sheet,
             extraction_method=extraction_method,
             public_api_base_url=public_api_base_url,
@@ -1324,7 +1397,9 @@ def _process_invoice_upload(
     request_id: str | None,
     chat_id: str | None,
     user_id: str | None,
-    create_google_sheet: bool,
+    user_timezone: str | None = None,
+    user_utc_offset_minutes: str | None = None,
+    create_google_sheet: bool = True,
     extraction_method: str | None,
     public_api_base_url: str | None,
     db: Session,
@@ -1450,8 +1525,8 @@ def _process_invoice_upload(
         iiko_default_store_id=parsed.get("iiko_default_store_id") or parsed.get("store"),
         chat_id=chat_id,
         user_id=user_id,
-        user_timezone=None,
-        user_utc_offset_minutes=None,
+        user_timezone=user_timezone,
+        user_utc_offset_minutes=user_utc_offset_minutes or None,
         multipage_invoice=len(source_paths) > 1,
         items=[RecognizedInvoiceItem(**item) for item in parsed.get("items", [])],
         parser_metadata=parser_metadata,

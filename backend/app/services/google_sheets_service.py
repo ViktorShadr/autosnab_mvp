@@ -364,6 +364,7 @@ def _add_invoice_bottom_separator(
     spreadsheet_id: str,
     sheet_id: int,
     end_row: int,
+    end_column_index: int | None = None,
 ) -> None:
     if end_row < 2:
         return
@@ -379,10 +380,10 @@ def _add_invoice_bottom_separator(
                             "startRowIndex": end_row - 1,
                             "endRowIndex": end_row,
                             "startColumnIndex": 0,
-                            "endColumnIndex": INVOICE_REGISTER_COLUMN_COUNT,
+                            "endColumnIndex": end_column_index or INVOICE_REGISTER_COLUMN_COUNT,
                         },
                         "bottom": {
-                            "style": "SOLID_MEDIUM",
+                            "style": "SOLID",
                             "color": DOCUMENT_SEPARATOR_BORDER_COLOR,
                         },
                     }
@@ -679,6 +680,11 @@ def _insert_into_existing_spreadsheet(
         }
     ]
     target_column_count = (target_sheet.get("gridProperties") or {}).get("columnCount", 0)
+    border_column_count = _invoice_separator_column_count(
+        target_column_count=target_column_count,
+        document_column_count=column_count,
+        target_headers=target_headers,
+    )
     if target_column_count >= 47:
         template_row_start = insert_end_index
         inserted_rows = {
@@ -724,6 +730,13 @@ def _insert_into_existing_spreadsheet(
         valueInputOption="RAW",
         body={"values": rows_to_insert},
     ).execute()
+    _add_invoice_bottom_separator(
+        sheets_service=sheets_service,
+        spreadsheet_id=spreadsheet_id,
+        sheet_id=target_sheet["sheetId"],
+        end_row=last_document_row_number,
+        end_column_index=border_column_count,
+    )
 
     return {
         "spreadsheet_id": spreadsheet_id,
@@ -742,6 +755,20 @@ def _insert_into_existing_spreadsheet(
             "message": "Кнопка-ссылка 'Отправить в iiko' на листе общего реестра не создаётся.",
         },
     }
+
+
+def _invoice_separator_column_count(
+    *,
+    target_column_count: int,
+    document_column_count: int,
+    target_headers: list[str],
+) -> int:
+    preferred_column_count = max(document_column_count, len(target_headers), INVOICE_REGISTER_COLUMN_COUNT)
+    if target_column_count >= 47:
+        preferred_column_count = max(preferred_column_count, 47)
+    if target_column_count > 0:
+        preferred_column_count = min(preferred_column_count, target_column_count)
+    return max(preferred_column_count, 1)
 
 
 def _read_target_headers(

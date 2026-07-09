@@ -505,7 +505,8 @@ def _invoice_register_header_values(
         document_date = document.invoice_date if document else None
         document_date = document_date or header_meta.get("invoice_date") or header_meta.get("incoming_date")
         supplier = _sheet_display_value(receiving.supplier or (document.supplier_legal_name if document else ""))
-        consignee = _sheet_display_value(header_meta.get("shipper") or "")
+        consignor = _sheet_display_value(header_meta.get("shipper") or header_meta.get("consignor") or "")
+        consignee = _sheet_display_value(header_meta.get("consignee") or "")
         recipient = _sheet_display_value(header_meta.get("recipient") or header_meta.get("buyer") or "")
         trade_point = _sheet_display_value(header_meta.get("trade_point") or receiving.venue)
         warehouse = _sheet_display_value(
@@ -717,7 +718,7 @@ def _shared_invoice_item_row(
         "№ Документа": header_values.get("document_number", ""),
         "Поставщик": header_values.get("supplier", ""),
         "ИНН Поставщика": header_values.get("supplier_inn", ""),
-        "Грузоотправитель": header_values.get("consignee", ""),
+        "Грузоотправитель": header_values.get("consignor", ""),
         "Получатель": header_values.get("recipient", ""),
         "Торговая точка": header_values.get("trade_point", ""),
         "Склад": header_values.get("warehouse", ""),

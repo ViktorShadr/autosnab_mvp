@@ -481,3 +481,14 @@ def test_insert_into_existing_spreadsheet_prepends_block_and_separator():
     assert written[1][20] == "20"
     assert written[1][39] == ""
     assert written[2] == [""] * 40
+
+    border_update = fake_service.spreadsheets_resource.batch_updates[1]
+    border_request = border_update["body"]["requests"][0]["updateBorders"]
+    assert border_request["range"] == {
+        "sheetId": 321,
+        "startRowIndex": 3,
+        "endRowIndex": 4,
+        "startColumnIndex": 0,
+        "endColumnIndex": 47,
+    }
+    assert border_request["bottom"]["style"] == "SOLID"
