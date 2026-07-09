@@ -3,10 +3,17 @@ title: n8n Bot Implementation Plan
 source: session
 created: 2026-07-08
 tags: [plan, bot, n8n, telegram]
-status: draft
+status: superseded
 ---
 
 # n8n Bot Implementation Plan
+
+> Superseded on 2026-07-09 by `docs/wiki/telegram-bot-cloud-n8n-plan.md`. All
+> previous `n8n` workflow JSON artifacts were deleted and the bot is being
+> rebuilt with backend-owned draft/session state instead of an `n8n` Data
+> Table. The UX wording, supported-format list, and error-handling checklist
+> below are still valid reference material; the session-storage design
+> (section "Recommended n8n Workflows" #2) is not.
 
 ## Purpose
 

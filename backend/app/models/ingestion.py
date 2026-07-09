@@ -16,7 +16,7 @@ class IngestionUpload(Base):
     document_kind: Mapped[str] = mapped_column(String(64), default="primary_document")
     user_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     username: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    chat_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    chat_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     organization_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     point_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     original_filename: Mapped[str] = mapped_column(String(255))

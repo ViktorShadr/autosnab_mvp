@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -14,6 +15,8 @@ SUPPORTED_EXTENSIONS_NOW = {".jpg", ".jpeg", ".png", ".pdf"}
 SUPPORTED_EXTENSIONS_LATER = {".xml", ".xls", ".xlsx"}
 SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "application/pdf"}
 SUPPORTED_DOCUMENT_KINDS_NOW = {"primary_document"}
+
+DRAFT_STATUS = "collecting"
 
 
 def create_upload_journal(
@@ -89,6 +92,54 @@ def get_upload_journal(db: Session, upload_id: str) -> IngestionUpload:
 
 def build_upload_id() -> str:
     return f"bot-upload-{uuid4().hex[:12]}"
+
+
+def get_active_draft(db: Session, chat_id: str) -> IngestionUpload | None:
+    return (
+        db.query(IngestionUpload)
+        .filter(IngestionUpload.chat_id == chat_id, IngestionUpload.status == DRAFT_STATUS)
+        .order_by(IngestionUpload.created_at.desc())
+        .first()
+    )
+
+
+def list_draft_files(upload: IngestionUpload) -> list[Path]:
+    draft_dir = Path(upload.raw_file_path)
+    if not draft_dir.is_dir():
+        return []
+    return sorted(path for path in draft_dir.iterdir() if path.is_file())
+
+
+def draft_display_name(path: Path) -> str:
+    """Recover the original filename from a `NNN-<name>` draft page path."""
+    return path.name.split("-", 1)[1] if "-" in path.name else path.name
+
+
+def append_draft_file(db: Session, upload: IngestionUpload, *, filename: str) -> IngestionUpload:
+    upload.files_count += 1
+    upload.original_filename = filename if upload.files_count == 1 else upload.original_filename
+    upload.file_type = "multipage" if upload.files_count > 1 else upload.file_type
+    db.add(upload)
+    db.commit()
+    db.refresh(upload)
+    return upload
+
+
+def delete_draft(db: Session, upload: IngestionUpload) -> None:
+    draft_dir = Path(upload.raw_file_path)
+    if draft_dir.is_dir():
+        shutil.rmtree(draft_dir, ignore_errors=True)
+    db.delete(upload)
+    db.commit()
+
+
+def get_latest_upload_for_chat(db: Session, chat_id: str) -> IngestionUpload | None:
+    return (
+        db.query(IngestionUpload)
+        .filter(IngestionUpload.chat_id == chat_id, IngestionUpload.status != DRAFT_STATUS)
+        .order_by(IngestionUpload.created_at.desc())
+        .first()
+    )
 
 
 def classify_bot_file(

@@ -259,6 +259,22 @@
 - Registered the new root source `ТЗ бота.pdf` in `manifests/raw_sources.csv` before using it.
 - Reviewed the PDF and confirmed it matches the current repo direction: the bot is only an intake/status channel over the existing invoice-review backend, not a second parsing/export pipeline.
 
+## [2026-07-09] fix | n8n 2.3.6 workflow import artifact added
+
+- Added `n8n/telegram-bot-mvp.workflow.hardcoded-fixed.n8n-2.3.6.json` as a separate import artifact for the user's current self-hosted `n8n 2.3.6` runtime.
+- Rewrote the `Data Table` nodes from the newer `tableId`/`rowId` export shape to the older runtime's `dataTableId` plus explicit upsert/filter configuration, so session upserts no longer fail with `At least one condition is required`.
+- Corrected reply nodes that were reading post-`Data Table` outputs instead of the original workflow state, and reconnected upload polling to branch from the normalized backend response rather than the Telegram `sendMessage` response.
+
+## [2026-07-09] operations | cloud n8n session-table CSV template added
+
+- Added `n8n/telegram_bot_sessions.csv` as a header-only import template for the `telegram_bot_sessions` Data Table used by the Telegram bot workflow.
+- Updated the `n8n` setup note so cloud-workspace setup can import the session-table structure instead of creating each column manually.
+
+## [2026-07-09] operations | cloud n8n fixed workflow artifact added
+
+- Added `n8n/telegram-bot-mvp.workflow.fixed.json` as a ready-to-import cloud `n8n` workflow variant.
+- Kept the user's current hardcoded Telegram credential/token/backend URL intact while preserving the corrected session-table contract: start/append/finalize/status/reset all key by `chatId -> chat_id`, upserts match on `chat_id`, reset deletes only the current chat row, and post-upload/final-status writes update the specific stored row.
+
 ## [2026-07-09] operations | cloud n8n public-backend path added
 
 - Updated `docker-compose.yml` so `PUBLIC_API_BASE_URL` is no longer hardcoded to `http://localhost:8000` inside the backend container; Docker now respects the configured public base URL from `.env`.
@@ -549,3 +565,69 @@
 - Filled the local `n8n` Data Table layer directly in SQLite: table `telegram_bot_sessions` now exists with the expected bot-session columns and its backing storage table, so the MVP workflow can run without manual table creation in the UI.
 - Imported the rebuilt Telegram MVP workflow into the same local `n8n` instance as draft `autosnab telegram bot mvp`, which means the next task can continue by editing the live workflow in the editor rather than only the JSON file in Git.
 - Confirmed runtime connectivity across the intended local topology: the backend is reachable at `http://host.docker.internal:8000` from inside the `n8n` container and returns healthy status for the bot-facing endpoints.
+
+## [2026-07-09] review | backend and bot coupling checked against real code
+
+- Reviewed the actual backend/bot boundary in code instead of relying on the planning docs: `invoice_review.py`, `bot_ingestion_service.py`, `upload_trace_service.py`, and `n8n/telegram-bot-mvp.workflow.json`.
+- Confirmed the main reason the structure feels too complex: one logical bot upload currently lives in three overlapping state stores at once, namely `ingestion_uploads`, the RAM-only upload trace, and `telegram_bot_sessions`.
+- Confirmed that the "durable bot contract" is still only partial in runtime terms because final status enrichment depends on a daemon thread plus the in-memory trace store, while `n8n` also keeps full page binaries in its own Data Table row before finalize.
+- Captured the concrete simplification target in `docs/wiki/backend-bot-integration-review.md`: move draft assembly and durable progress into backend, keep `n8n` as a thin Telegram transport/session router, and extract shared upload orchestration away from the monolithic router.
+
+## [2026-07-09] cleanup | all n8n workflow artifacts deleted for a fresh rebuild
+
+- Deleted the entire `n8n/` directory at the user's request: all workflow JSON variants, `README.md`, `telegram-bot-node-setup.md`, and `telegram_bot_sessions.csv`. Three of the JSON variants and the CSV were untracked, so this removal is not recoverable through Git history.
+- Confirmed via `git log -- n8n/` that the tracked files' history remains available if needed, but the working tree now has no bot workflow at all.
+
+## [2026-07-09] planning | fresh cloud-n8n bot plan with backend-owned draft state
+
+- Added `docs/wiki/telegram-bot-cloud-n8n-plan.md` as the concrete plan for today's priority: a Telegram bot that replaces the web upload page for single/multi-page invoice scans, with all business logic staying in the FastAPI backend.
+- Key architectural change from the deleted workflows: session/draft state is no longer stored in an `n8n` Data Table. It reuses the existing `ingestion_uploads` table with a new `collecting` status, so `n8n` needs zero business state and becomes a stateless Telegram router.
+- Planned new backend endpoints: `POST /bot/drafts/pages`, `GET /bot/drafts/status`, `POST /bot/drafts/reset`, `POST /bot/drafts/finalize`, `GET /bot/uploads/latest`, all built on the existing `bot_ingestion_service.py` helpers and the existing `_process_bot_upload_background` pipeline.
+- Flagged a real gap to close before going live: `/bot/*` endpoints have no auth today, and the deployment plan requires exposing them through a public `ngrok` tunnel; the plan adds a shared-secret header check.
+- Marked `docs/wiki/n8n-bot-implementation-plan.md` as superseded for its session-storage design while keeping its UX/format sections as valid reference.
+- This session produced a plan only; no backend code, tests, or `n8n` workflow were implemented yet.
+
+## [2026-07-09] implementation | backend draft-session endpoints for the bot rebuild
+
+- Implemented the backend half of `docs/wiki/telegram-bot-cloud-n8n-plan.md`: reused `ingestion_uploads` with a new `collecting` status instead of adding a new table.
+- Added `backend/app/services/bot_ingestion_service.py` helpers `get_active_draft`, `list_draft_files`, `draft_display_name`, `append_draft_file`, `delete_draft`, `get_latest_upload_for_chat`.
+- Added five router endpoints in `backend/app/routers/invoice_review.py` under `/bot/`: `POST drafts/pages`, `GET drafts/status`, `POST drafts/reset`, `POST drafts/finalize`, `GET uploads/latest`. Refactored shared logic out of the existing bulk endpoint into `_start_bot_processing(...)` and `_build_bot_upload_status_response(...)` so both old and new endpoints share one code path.
+- Added `settings.bot_api_shared_secret` plus a `require_bot_api_key` dependency applied to all `/bot/*` routes (including the two pre-existing ones); documented the new `BOT_API_SHARED_SECRET` env var in `.env.example`. This closes the previously-flagged no-auth gap before exposing the backend through `ngrok`.
+- Added an index on `IngestionUpload.chat_id` since it is now queried on every bot interaction.
+- Added 8 new tests in `backend/tests/test_receiving.py` covering draft accumulation, per-chat isolation, reset, empty-finalize rejection, finalize-then-visible-via-`latest`, unsupported format, and 404-with-no-history. All pass. Confirmed via `git stash` that the file's pre-existing 10 failures are unchanged and unrelated to this work.
+- Updated `docs/wiki/bot-backend-api-contract.md` with the new endpoint contracts and auth section.
+- Not done yet: the actual cloud `n8n` workflow, local Docker + `ngrok` bring-up, and the smoke tests from the plan page.
+
+## [2026-07-09] implementation | fresh stateless n8n workflow built against the draft-session backend contract
+
+- Recreated `n8n/` and added `n8n/telegram-bot-mvp.workflow.json`: a single 29-node importable cloud-n8n workflow, hand-authored directly against the new `/bot/drafts/pages|status|reset|finalize` and `/bot/uploads/latest` endpoints.
+- Design choices made for robustness across n8n versions, since this could not be test-imported live: every `IF` node uses one boolean-expression condition compared to `true` instead of relying on specific string/exists operator names; every text-reply step is a small `Code` node instead of a `Set` node, to avoid guessing at Set/Edit-Fields schema differences; `Finalize Draft` and `Check Latest Upload` use `onError: continueErrorOutput` for their error branch instead of a separate `IF` node; a single `Workflow Config` Code node is the only place the `ngrok` backend URL is hardcoded, referenced everywhere else via `$('Workflow Config').item.json.backendBaseUrl`.
+- The workflow holds no session state itself: page uploads, the finalize step, and the bounded ~2-minute poll loop (`Prepare Poll` → `Wait Before Poll` → `Check Upload Status` → `If Poll Done`) all key off `chat_id` against the backend, matching the plan's "n8n as stateless router" goal.
+- Added `n8n/telegram-bot-node-setup.md` (import steps, the two credentials to create — `Telegram Bot` and `Bot API Key` header-auth — and a checklist of parameters to verify after import) and a short `n8n/README.md` pointing back to the wiki plan/contract pages.
+- Verified only what's checkable without a live n8n instance: valid JSON, 29 unique node names, and every `connections` edge resolves to an existing node. Real import/credential-wiring/execution has not been tested from this environment.
+- Confirmed via `scripts/untracked_raw_check.py` that these new `n8n/*` files are correctly treated as code artifacts, not raw sources requiring manifest registration.
+
+## [2026-07-09] verification | bot confirmed working end to end on cloud n8n
+
+- The user brought up `docker compose --profile public-tunnel up --build`, retrieved the `ngrok` URL, imported `n8n/telegram-bot-mvp.workflow.json` into cloud `n8n`, and ran a real two-page invoice upload through Telegram.
+- Backend logs and a direct `/bot/uploads/{upload_id}` check confirmed a clean run: 2 pages merged into 1 logical document, `google_drive_ocr` evidence collected (MinerU cleanly skipped due to incomplete local model cache, not an error), OpenAI structured parsing succeeded, reference mapping ran, and the Google Sheet was updated with a real spreadsheet URL. `completed: true`, `result_code: requires_review`.
+- This is the first live confirmation that the backend draft/finalize/poll contract and the hand-authored n8n workflow work together correctly outside this environment.
+
+## [2026-07-09] ux | stage-progress messages and a no-typing reply keyboard added to the bot
+
+- User feedback: the bot should not require the operator to type anything, and should show intermediate processing status so a long-running upload doesn't look stuck.
+- Added a persistent Telegram reply keyboard (`Готово` / `Статус` / `Сбросить`) to the workflow's shared **Send Reply** node — every bot reply now carries it, so the operator only ever taps buttons; typed text still works identically as a fallback.
+- Added a 4-node stage-tracking sub-loop inside the existing poll (`Compute Stage` → `If Stage Changed` → `Set Stage Reply Text` → `Send Stage Update`, now 33 nodes total in `n8n/telegram-bot-mvp.workflow.json`) that turns the backend's existing `pipeline_logs` into one extra Telegram message whenever the coarse stage changes: принят в обработку → выгружаем данные → обрабатываем через ИИ → загружаем в таблицу → final result. No new backend state was needed; this reads the same `/bot/uploads/{id}` payload already used for polling, and the "last stage sent" is carried across loop iterations via `$('Set Stage Reply Text')` self-reference, the same n8n technique already used for the poll-attempt counter.
+- Updated `n8n/telegram-bot-node-setup.md` with the new credential attachment (`Send Stage Update` also needs the `Telegram Bot` credential), an explanation of the stage-message sequence, and a flagged manual-fallback path for the reply-keyboard node, since its exact parameter schema is the one part of this change not yet confirmed against a live n8n import.
+
+## [2026-07-09] fix | hand-authored reply-keyboard JSON removed after failed import
+
+- Re-importing the updated workflow failed with `Could not find property option`, confirming the risk already flagged when the reply keyboard was added: the Telegram node's `replyMarkup`/`replyKeyboard` fields were placed as top-level node parameters in the JSON, which is not where that node type actually exposes them.
+- Removed the guessed `replyMarkup`/`replyKeyboard` block from **Send Reply** in `n8n/telegram-bot-mvp.workflow.json` entirely rather than re-guessing the correct nesting; the workflow now imports clean (33 nodes, same stage-tracking sub-loop from the previous entry untouched).
+- Updated `n8n/telegram-bot-node-setup.md` with exact manual steps to add the reply keyboard through the n8n editor UI (Additional Fields → Reply Markup → Reply Keyboard → two rows: `Готово`/`Статус`, then `Сбросить`), since the editor UI cannot produce invalid parameter JSON the way hand-authoring blind can.
+
+## [2026-07-09] bot | separate hardcoded fixed workflow artifact saved
+
+- Registered the new Telegram screenshot `codex-clipboard-jumBaw.png` in `manifests/raw_sources.csv` before using it for diagnosis.
+- Confirmed from that screenshot that the current editor workflow had imported broken Data Table settings: `Persist Session Row` lost its `chat_id` upsert match and failed with `At least one condition is required`.
+- Saved a separate handoff artifact `n8n/telegram-bot-mvp.workflow.hardcoded-fixed.json` as a copy of the validated fixed workflow so the user can import a known-good bot JSON without losing the current hardcoded Telegram token, backend URL, or Telegram credential binding.

@@ -1,1871 +1,661 @@
 {
-  "name": "autosnab telegram bot mvp",
+  "name": "Autosnab Telegram Bot MVP (Cloud n8n)",
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
   "nodes": [
     {
-      "parameters": {
-        "updates": [
-          "message"
-        ]
-      },
-      "id": "telegram-trigger",
+      "id": "tg-trigger-1",
       "name": "Telegram Trigger",
       "type": "n8n-nodes-base.telegramTrigger",
-      "typeVersion": 1.2,
-      "position": [
-        220,
-        360
-      ],
+      "typeVersion": 1.1,
+      "position": [-1200, 300],
+      "parameters": {
+        "updates": ["message"]
+      },
       "credentials": {
         "telegramApi": {
-          "id": "replace-telegram-credential-id",
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
           "name": "Telegram Bot"
         }
       }
     },
     {
-      "parameters": {
-        "jsCode": "const config = {\n  telegramBotToken: 'replace_me_telegram_bot_token',\n  backendBaseUrl: 'https://replace_me_public_backend_url',\n  botSourceChannel: 'telegram_bot',\n  botDocumentKind: 'primary_document',\n  createGoogleSheet: 'true',\n  defaultOrganizationName: '',\n  defaultPointName: '',\n  maxDocumentPages: 12,\n  pollIntervalSeconds: 5,\n  pollMaxAttempts: 60,\n};\n\nconst ui = {\n  startText: [\n    'АвтоСнаб Документы',\n    '',\n    'Отправьте фото, скан или PDF одного документа.',\n    'Если у документа несколько страниц, отправляйте их по очереди.',\n    'После последней страницы нажмите «Продолжить».',\n  ].join('\\n'),\n  collectingText: 'Будут ещё страницы этого документа? Если да, отправьте следующую страницу. Если нет, нажмите «Продолжить».',\n  processingText: 'Документ отправлен в backend. Обработка уже началась. Когда результат будет готов, я пришлю его сюда автоматически.',\n  resetText: 'Черновик документа очищен. Отправьте новый файл, чтобы начать заново.',\n  unknownText: 'Отправьте фото, скан или PDF документа. После последней страницы нажмите «Продолжить».',\n};\n\nconst replyKeyboard = JSON.stringify({\n  keyboard: [\n    [{ text: 'Продолжить' }, { text: 'Статус' }],\n    [{ text: 'Новый документ' }, { text: 'Сбросить' }],\n  ],\n  resize_keyboard: true,\n  is_persistent: true,\n  input_field_placeholder: 'Отправьте файл или выберите действие',\n});\n\nreturn [{ json: { ...$json, config, ui, replyKeyboard } }];"
-      },
-      "id": "workflow-config",
+      "id": "cfg-1",
       "name": "Workflow Config",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        460,
-        360
-      ]
+      "position": [-960, 300],
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    ...$input.item.json,\n    backendBaseUrl: 'https://REPLACE-WITH-NGROK-URL',\n    maxPollAttempts: 24,\n  }\n}];"
+      }
     },
     {
-      "parameters": {
-        "jsCode": "const msg = $json.message || {};\nconst text = String(msg.text || '').trim();\nconst normalizedText = text.toLowerCase();\nconst chatId = msg.chat?.id ? String(msg.chat.id) : null;\nconst userId = msg.from?.id ? String(msg.from.id) : null;\nconst username = msg.from?.username || [msg.from?.first_name, msg.from?.last_name].filter(Boolean).join(' ') || null;\nconst photo = Array.isArray(msg.photo) && msg.photo.length ? msg.photo[msg.photo.length - 1] : null;\nconst document = msg.document || null;\nconst fileId = document?.file_id || photo?.file_id || null;\nconst fileName = document?.file_name || (photo ? `telegram-photo-${photo.file_unique_id || Date.now()}.jpg` : null);\nconst mimeType = document?.mime_type || (photo ? 'image/jpeg' : null);\n\nlet intent = 'unknown';\nif (['/start', '/menu', '/help', 'новый документ', 'новый'].includes(normalizedText)) intent = 'start_session';\nelse if (normalizedText === 'продолжить') intent = 'finalize';\nelse if (normalizedText === 'статус' || normalizedText === '/status') intent = 'status';\nelse if (normalizedText === 'сбросить' || normalizedText === '/reset') intent = 'reset';\nelse if (fileId) intent = 'append_file';\n\nreturn [{\n  json: {\n    ...$json,\n    intent,\n    text,\n    normalizedText,\n    chatId,\n    userId,\n    username,\n    fileId,\n    fileName,\n    mimeType,\n  }\n}];"
-      },
-      "id": "normalize-update",
+      "id": "normalize-1",
       "name": "Normalize Update",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        700,
-        360
-      ]
+      "position": [-720, 300],
+      "parameters": {
+        "jsCode": "const update = $input.item.json;\nconst message = update.message || update.edited_message || {};\nconst chatId = message.chat ? message.chat.id : null;\nconst userId = message.from ? message.from.id : null;\nconst username = message.from ? message.from.username : null;\nconst text = (message.text || '').trim();\nconst normalizedText = text.toLowerCase();\n\nlet intent = 'unknown';\nlet fileId = null;\nlet filename = null;\nlet mimeType = null;\n\nif (message.photo && message.photo.length) {\n  const largest = message.photo[message.photo.length - 1];\n  fileId = largest.file_id;\n  filename = `photo-${largest.file_unique_id}.jpg`;\n  mimeType = 'image/jpeg';\n  intent = 'file';\n} else if (message.document) {\n  fileId = message.document.file_id;\n  filename = message.document.file_name || `document-${message.document.file_unique_id}`;\n  mimeType = message.document.mime_type || 'application/octet-stream';\n  intent = 'file';\n} else if (['готово', '/done', 'done'].includes(normalizedText)) {\n  intent = 'done';\n} else if (['статус', '/status', 'status'].includes(normalizedText)) {\n  intent = 'status';\n} else if (['сбросить', '/reset', 'reset'].includes(normalizedText)) {\n  intent = 'reset';\n} else if (['/start', 'start', 'меню', '/menu', 'menu'].includes(normalizedText)) {\n  intent = 'start';\n}\n\nreturn [{\n  json: {\n    chat_id: chatId !== null ? String(chatId) : null,\n    user_id: userId !== null ? String(userId) : null,\n    username: username || null,\n    intent,\n    file_id: fileId,\n    filename,\n    mime_type: mimeType,\n  }\n}];"
+      }
     },
     {
+      "id": "if-is-file-1",
+      "name": "If Is File",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-480, 300],
       "parameters": {
-        "rules": {
-          "values": [
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "typeValidation": "strict",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "leftValue": "={{$json.intent}}",
-                    "rightValue": "start_session",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    }
-                  }
-                ],
-                "combinator": "and"
-              }
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "typeValidation": "strict",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "leftValue": "={{$json.intent}}",
-                    "rightValue": "append_file",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    }
-                  }
-                ],
-                "combinator": "and"
-              }
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "typeValidation": "strict",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "leftValue": "={{$json.intent}}",
-                    "rightValue": "finalize",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    }
-                  }
-                ],
-                "combinator": "and"
-              }
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "typeValidation": "strict",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "leftValue": "={{$json.intent}}",
-                    "rightValue": "status",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    }
-                  }
-                ],
-                "combinator": "and"
-              }
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "typeValidation": "strict",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "leftValue": "={{$json.intent}}",
-                    "rightValue": "reset",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    }
-                  }
-                ],
-                "combinator": "and"
-              }
-            },
-            {
-              "conditions": {
-                "options": {
-                  "caseSensitive": true,
-                  "typeValidation": "strict",
-                  "version": 2
-                },
-                "conditions": [
-                  {
-                    "leftValue": "={{$json.intent}}",
-                    "rightValue": "unknown",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    }
-                  }
-                ],
-                "combinator": "and"
-              }
-            }
-          ]
-        }
-      },
-      "id": "route-intent",
-      "name": "Route Intent",
-      "type": "n8n-nodes-base.switch",
-      "typeVersion": 3.2,
-      "position": [
-        940,
-        360
-      ]
-    },
-    {
-      "parameters": {
-        "operation": "upsert",
-        "tableId": "telegram_bot_sessions",
-        "columns": {
-          "mappingMode": "defineBelow",
-          "value": {
-            "chat_id": "={{$json.chatId}}",
-            "user_id": "={{$json.userId}}",
-            "username": "={{$json.username}}",
-            "status": "collecting",
-            "files_json": "=[]",
-            "organization_name": "={{$json.config.defaultOrganizationName || ''}}",
-            "point_name": "={{$json.config.defaultPointName || ''}}",
-            "backend_upload_id": "=",
-            "backend_trace_id": "="
-          }
-        },
-        "matchingColumns": [
-          "chat_id"
-        ]
-      },
-      "id": "start-session-store",
-      "name": "Start Session Store",
-      "type": "n8n-nodes-base.dataTable",
-      "typeVersion": 1,
-      "position": [
-        1200,
-        80
-      ]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "=https://api.telegram.org/bot{{$json.config.telegramBotToken}}/sendMessage",
-        "sendBody": true,
-        "contentType": "form-urlencoded",
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "chat_id",
-              "value": "={{$json.chatId}}"
-            },
-            {
-              "name": "text",
-              "value": "={{$json.ui.startText}}"
-            },
-            {
-              "name": "reply_markup",
-              "value": "={{$json.replyKeyboard}}"
-            }
-          ]
-        }
-      },
-      "id": "reply-start",
-      "name": "Reply Start",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        1440,
-        80
-      ]
-    },
-    {
-      "parameters": {
-        "operation": "delete",
-        "tableId": "telegram_bot_sessions",
-        "filters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "typeValidation": "loose" },
+          "combinator": "and",
           "conditions": [
             {
-              "keyName": "chat_id",
-              "condition": "eq",
-              "keyValue": "={{$json.chatId}}"
+              "id": "c1",
+              "leftValue": "={{$json.intent === 'file'}}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
             }
           ]
-        }
-      },
-      "id": "reset-session-store",
-      "name": "Reset Session Store",
-      "type": "n8n-nodes-base.dataTable",
-      "typeVersion": 1,
-      "position": [
-        1200,
-        860
-      ]
+        },
+        "options": {}
+      }
     },
     {
+      "id": "get-file-1",
+      "name": "Get Telegram File",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [-240, 120],
       "parameters": {
-        "method": "POST",
-        "url": "=https://api.telegram.org/bot{{$json.config.telegramBotToken}}/sendMessage",
-        "sendBody": true,
-        "contentType": "form-urlencoded",
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "chat_id",
-              "value": "={{$json.chatId}}"
-            },
-            {
-              "name": "text",
-              "value": "={{$json.ui.resetText}}"
-            },
-            {
-              "name": "reply_markup",
-              "value": "={{$json.replyKeyboard}}"
-            }
-          ]
-        }
-      },
-      "id": "reply-reset",
-      "name": "Reply Reset",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        1440,
-        860
-      ]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "=https://api.telegram.org/bot{{$json.config.telegramBotToken}}/sendMessage",
-        "sendBody": true,
-        "contentType": "form-urlencoded",
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "chat_id",
-              "value": "={{$json.chatId}}"
-            },
-            {
-              "name": "text",
-              "value": "={{$json.ui.unknownText}}"
-            },
-            {
-              "name": "reply_markup",
-              "value": "={{$json.replyKeyboard}}"
-            }
-          ]
-        }
-      },
-      "id": "reply-unknown",
-      "name": "Reply Unknown",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        1200,
-        980
-      ]
-    },
-    {
-      "parameters": {
+        "resource": "file",
         "operation": "get",
-        "tableId": "telegram_bot_sessions",
-        "filters": {
-          "conditions": [
-            {
-              "keyName": "chat_id",
-              "condition": "eq",
-              "keyValue": "={{$json.chatId}}"
-            }
-          ]
+        "fileId": "={{$json.file_id}}"
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Telegram Bot"
         }
-      },
-      "id": "load-session-for-file",
-      "name": "Load Session For File",
-      "type": "n8n-nodes-base.dataTable",
-      "typeVersion": 1,
-      "position": [
-        1200,
-        260
-      ]
+      }
     },
     {
-      "parameters": {
-        "jsCode": "const config = $json.config || {};\nif (!$json.chatId) {\n  return [{ json: { ...$json, appendError: 'Не найден chatId для текущего сообщения.' } }];\n}\nif (!$json.fileId) {\n  return [{ json: { ...$json, appendError: 'Telegram не передал файл в сообщении.' } }];\n}\nconst sessionRow = $json.data?.[0] || null;\nconst shouldResetSession = !sessionRow || sessionRow.status !== 'collecting';\nconst sessionFilesJson = shouldResetSession ? '[]' : (sessionRow.files_json || '[]');\nconst organizationName = sessionRow?.organization_name || config.defaultOrganizationName || '';\nconst pointName = sessionRow?.point_name || config.defaultPointName || '';\nreturn [{ json: { ...$json, sessionRowId: sessionRow?.id || '', sessionFilesJson, organizationName, pointName, sessionAutoOpened: shouldResetSession } }];"
-      },
-      "id": "prepare-file-download",
-      "name": "Prepare File Download",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        1440,
-        260
-      ]
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "typeValidation": "strict",
-            "version": 2
-          },
-          "conditions": [
-            {
-              "leftValue": "={{$json.appendError || ''}}",
-              "rightValue": "",
-              "operator": {
-                "type": "string",
-                "operation": "notEmpty"
-              }
-            }
-          ],
-          "combinator": "and"
-        }
-      },
-      "id": "check-append-error",
-      "name": "Check Append Error",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [
-        1680,
-        260
-      ]
-    },
-    {
+      "id": "send-page-1",
+      "name": "Send Page To Backend",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [0, 120],
       "parameters": {
         "method": "POST",
-        "url": "=https://api.telegram.org/bot{{$json.config.telegramBotToken}}/sendMessage",
-        "sendBody": true,
-        "contentType": "form-urlencoded",
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "chat_id",
-              "value": "={{$json.chatId}}"
-            },
-            {
-              "name": "text",
-              "value": "={{$json.appendError}}"
-            },
-            {
-              "name": "reply_markup",
-              "value": "={{$json.replyKeyboard}}"
-            }
-          ]
-        }
-      },
-      "id": "reply-append-error",
-      "name": "Reply Append Error",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        1920,
-        180
-      ]
-    },
-    {
-      "parameters": {
-        "method": "GET",
-        "url": "=https://api.telegram.org/bot{{$json.config.telegramBotToken}}/getFile?file_id={{$json.fileId}}",
-        "responseFormat": "json",
-        "options": {
-          "ignoreResponseCode": true,
-          "fullResponse": true
-        }
-      },
-      "id": "telegram-get-file",
-      "name": "Telegram Get File",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        1920,
-        320
-      ]
-    },
-    {
-      "parameters": {
-        "jsCode": "const response = $json.body ? $json : { statusCode: 200, body: $json };\nconst body = response.body || {};\nconst result = body.result || {};\nconst source = $('Prepare File Download').first().json;\nif (Number(response.statusCode || 200) >= 400 || !result.file_path) {\n  const detail = body.description || body.message || 'Telegram не вернул путь к файлу.';\n  return [{ json: { ...source, downloadError: detail } }];\n}\nreturn [{ json: { ...source, telegramFilePath: result.file_path } }];"
-      },
-      "id": "map-telegram-file-path",
-      "name": "Map Telegram File Path",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        2160,
-        320
-      ]
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "typeValidation": "strict",
-            "version": 2
-          },
-          "conditions": [
-            {
-              "leftValue": "={{$json.downloadError || ''}}",
-              "rightValue": "",
-              "operator": {
-                "type": "string",
-                "operation": "notEmpty"
-              }
-            }
-          ],
-          "combinator": "and"
-        }
-      },
-      "id": "check-download-error",
-      "name": "Check Download Error",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [
-        2400,
-        320
-      ]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "=https://api.telegram.org/bot{{$json.config.telegramBotToken}}/sendMessage",
-        "sendBody": true,
-        "contentType": "form-urlencoded",
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "chat_id",
-              "value": "={{$json.chatId}}"
-            },
-            {
-              "name": "text",
-              "value": "={{'Не удалось скачать файл из Telegram: ' + $json.downloadError}}"
-            },
-            {
-              "name": "reply_markup",
-              "value": "={{$json.replyKeyboard}}"
-            }
-          ]
-        }
-      },
-      "id": "reply-download-error",
-      "name": "Reply Download Error",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        2640,
-        240
-      ]
-    },
-    {
-      "parameters": {
-        "method": "GET",
-        "url": "=https://api.telegram.org/file/bot{{$json.config.telegramBotToken}}/{{$json.telegramFilePath}}",
-        "responseFormat": "file",
-        "outputPropertyName": "uploadedFile",
-        "options": {
-          "ignoreResponseCode": true
-        }
-      },
-      "id": "download-telegram-file-binary",
-      "name": "Download Telegram File Binary",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        2640,
-        380
-      ]
-    },
-    {
-      "parameters": {
-        "jsCode": "const inputItem = $input.first();\nconst binaryMap = inputItem?.binary || {};\nconst binary = binaryMap.uploadedFile || binaryMap.data || Object.values(binaryMap)[0] || null;\nif (!binary?.data) {\n  return [{ json: { ...$json, storeError: 'Не удалось получить бинарные данные файла из Telegram.' } }];\n}\nlet files = [];\ntry {\n  const parsed = JSON.parse($json.sessionFilesJson || '[]');\n  files = Array.isArray(parsed) ? parsed : [];\n} catch {\n  return [{ json: { ...$json, storeError: 'Не удалось прочитать сохранённые страницы документа.' } }];\n}\nconst maxPages = Number($json.config?.maxDocumentPages || 12);\nif (files.length >= maxPages) {\n  return [{ json: { ...$json, storeError: `В одном документе сейчас можно отправить не больше ${maxPages} страниц.` } }];\n}\nfiles.push({\n  fileId: $json.fileId,\n  fileName: $json.fileName || binary.fileName || `page-${files.length + 1}`,\n  mimeType: binary.mimeType || $json.mimeType || 'application/octet-stream',\n  data: binary.data,\n  addedAt: new Date().toISOString(),\n});\nreturn [{\n  json: {\n    ...$json,\n    filesCount: files.length,\n    filesJson: JSON.stringify(files),\n    statusToPersist: 'collecting',\n    backendUploadId: '',\n    backendTraceId: '',\n  }\n}];"
-      },
-      "id": "store-file-in-memory",
-      "name": "Store File In Memory",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        2880,
-        380
-      ]
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "typeValidation": "strict",
-            "version": 2
-          },
-          "conditions": [
-            {
-              "leftValue": "={{$json.storeError || ''}}",
-              "rightValue": "",
-              "operator": {
-                "type": "string",
-                "operation": "notEmpty"
-              }
-            }
-          ],
-          "combinator": "and"
-        }
-      },
-      "id": "check-store-error",
-      "name": "Check Store Error",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [
-        3120,
-        380
-      ]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "=https://api.telegram.org/bot{{$json.config.telegramBotToken}}/sendMessage",
-        "sendBody": true,
-        "contentType": "form-urlencoded",
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "chat_id",
-              "value": "={{$json.chatId}}"
-            },
-            {
-              "name": "text",
-              "value": "={{$json.storeError}}"
-            },
-            {
-              "name": "reply_markup",
-              "value": "={{$json.replyKeyboard}}"
-            }
-          ]
-        }
-      },
-      "id": "reply-store-error",
-      "name": "Reply Store Error",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        3360,
-        300
-      ]
-    },
-    {
-      "parameters": {
-        "operation": "upsert",
-        "tableId": "telegram_bot_sessions",
-        "columns": {
-          "mappingMode": "defineBelow",
-          "value": {
-            "chat_id": "={{$json.chatId}}",
-            "user_id": "={{$json.userId}}",
-            "username": "={{$json.username}}",
-            "status": "={{$json.statusToPersist}}",
-            "files_json": "={{$json.filesJson}}",
-            "organization_name": "={{$json.organizationName || ''}}",
-            "point_name": "={{$json.pointName || ''}}",
-            "backend_upload_id": "={{$json.backendUploadId || ''}}",
-            "backend_trace_id": "={{$json.backendTraceId || ''}}"
-          }
-        },
-        "matchingColumns": [
-          "chat_id"
-        ]
-      },
-      "id": "persist-session-row",
-      "name": "Persist Session Row",
-      "type": "n8n-nodes-base.dataTable",
-      "typeVersion": 1,
-      "position": [
-        3360,
-        440
-      ]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "=https://api.telegram.org/bot{{$json.config.telegramBotToken}}/sendMessage",
-        "sendBody": true,
-        "contentType": "form-urlencoded",
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "chat_id",
-              "value": "={{$json.chatId}}"
-            },
-            {
-              "name": "text",
-              "value": "={{($json.sessionAutoOpened ? 'Новый документ начат.\\n\\n' : '') + 'Страница ' + $json.filesCount + ' добавлена.\\n\\n' + $json.ui.collectingText}}"
-            },
-            {
-              "name": "reply_markup",
-              "value": "={{$json.replyKeyboard}}"
-            }
-          ]
-        }
-      },
-      "id": "reply-file-added",
-      "name": "Reply File Added",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        3600,
-        440
-      ]
-    },
-    {
-      "parameters": {
-        "operation": "get",
-        "tableId": "telegram_bot_sessions",
-        "filters": {
-          "conditions": [
-            {
-              "keyName": "chat_id",
-              "condition": "eq",
-              "keyValue": "={{$json.chatId}}"
-            }
-          ]
-        }
-      },
-      "id": "load-session-finalize",
-      "name": "Load Session Finalize",
-      "type": "n8n-nodes-base.dataTable",
-      "typeVersion": 1,
-      "position": [
-        1200,
-        560
-      ]
-    },
-    {
-      "parameters": {
-        "jsCode": "const session = $json.data?.[0] || null;\nconst config = $json.config || {};\nif (!session?.id) {\n  return [{ json: { ...$json, finalizeError: 'Нет активного документа. Сначала отправьте фото, скан или PDF.' } }];\n}\nlet files = [];\ntry {\n  const parsed = JSON.parse(session.files_json || '[]');\n  files = Array.isArray(parsed) ? parsed : [];\n} catch {\n  return [{ json: { ...$json, finalizeError: 'Не удалось прочитать сохранённые страницы документа.' } }];\n}\nif (!files.length) {\n  return [{ json: { ...$json, finalizeError: 'Документ пока пустой. Сначала отправьте хотя бы одну страницу.' } }];\n}\nconst maxPages = Number(config.maxDocumentPages || 12);\nif (files.length > maxPages) {\n  return [{ json: { ...$json, finalizeError: `Сейчас backend принимает не больше ${maxPages} страниц в одном документе.` } }];\n}\nconst uploadContract = {\n  source_channel: config.botSourceChannel || 'telegram_bot',\n  document_kind: config.botDocumentKind || 'primary_document',\n  source_user_id: $json.userId || session.user_id,\n  source_username: $json.username || session.username || null,\n  source_chat_id: $json.chatId || session.chat_id,\n  organization_name: session.organization_name || config.defaultOrganizationName || null,\n  point_name: session.point_name || config.defaultPointName || null,\n  create_google_sheet: String(config.createGoogleSheet || 'true'),\n};\nconst binary = {};\nfiles.forEach((file, index) => {\n  binary[`file_${index + 1}`] = {\n    data: file.data,\n    mimeType: file.mimeType || 'application/octet-stream',\n    fileName: file.fileName || `page-${index + 1}`,\n  };\n});\nreturn [{ json: { ...$json, sessionRowId: session.id, uploadContract, filesCount: files.length, filesJsonSource: session.files_json || '[]' }, binary }];"
-      },
-      "id": "prepare-finalize",
-      "name": "Prepare Finalize",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        1440,
-        560
-      ]
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "typeValidation": "strict",
-            "version": 2
-          },
-          "conditions": [
-            {
-              "leftValue": "={{$json.finalizeError || ''}}",
-              "rightValue": "",
-              "operator": {
-                "type": "string",
-                "operation": "notEmpty"
-              }
-            }
-          ],
-          "combinator": "and"
-        }
-      },
-      "id": "check-finalize-error",
-      "name": "Check Finalize Error",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [
-        1680,
-        560
-      ]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "=https://api.telegram.org/bot{{$json.config.telegramBotToken}}/sendMessage",
-        "sendBody": true,
-        "contentType": "form-urlencoded",
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "chat_id",
-              "value": "={{$json.chatId}}"
-            },
-            {
-              "name": "text",
-              "value": "={{$json.finalizeError}}"
-            },
-            {
-              "name": "reply_markup",
-              "value": "={{$json.replyKeyboard}}"
-            }
-          ]
-        }
-      },
-      "id": "reply-finalize-error",
-      "name": "Reply Finalize Error",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        1920,
-        480
-      ]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "={{$json.config.backendBaseUrl + '/api/v1/invoice-review/bot/upload-document-live'}}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Accept",
-              "value": "application/json"
-            }
-          ]
-        },
+        "url": "={{ $('Workflow Config').item.json.backendBaseUrl }}/api/v1/invoice-review/bot/drafts/pages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "contentType": "multipart-form-data",
         "bodyParameters": {
           "parameters": [
+            { "parameterType": "formData", "name": "chat_id", "value": "={{$('Normalize Update').item.json.chat_id}}" },
+            { "parameterType": "formData", "name": "source_user_id", "value": "={{$('Normalize Update').item.json.user_id}}" },
+            { "parameterType": "formData", "name": "source_username", "value": "={{$('Normalize Update').item.json.username}}" },
+            { "parameterType": "formBinaryData", "name": "file", "inputDataFieldName": "data" }
+          ]
+        },
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Bot API Key"
+        }
+      }
+    },
+    {
+      "id": "if-unsupported-1",
+      "name": "If Page Unsupported",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [240, 120],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "typeValidation": "loose" },
+          "combinator": "and",
+          "conditions": [
             {
-              "name": "source_channel",
-              "value": "={{$json.uploadContract.source_channel}}"
-            },
-            {
-              "name": "document_kind",
-              "value": "={{$json.uploadContract.document_kind}}"
-            },
-            {
-              "name": "source_user_id",
-              "value": "={{$json.uploadContract.source_user_id}}"
-            },
-            {
-              "name": "source_username",
-              "value": "={{$json.uploadContract.source_username}}"
-            },
-            {
-              "name": "source_chat_id",
-              "value": "={{$json.uploadContract.source_chat_id}}"
-            },
-            {
-              "name": "organization_name",
-              "value": "={{$json.uploadContract.organization_name}}"
-            },
-            {
-              "name": "point_name",
-              "value": "={{$json.uploadContract.point_name}}"
-            },
-            {
-              "name": "create_google_sheet",
-              "value": "={{$json.uploadContract.create_google_sheet}}"
-            },
-            {
-              "name": "files",
-              "parameterType": "formBinaryData",
-              "inputDataFieldName": "file_1"
-            },
-            {
-              "name": "files",
-              "parameterType": "formBinaryData",
-              "inputDataFieldName": "file_2"
-            },
-            {
-              "name": "files",
-              "parameterType": "formBinaryData",
-              "inputDataFieldName": "file_3"
-            },
-            {
-              "name": "files",
-              "parameterType": "formBinaryData",
-              "inputDataFieldName": "file_4"
-            },
-            {
-              "name": "files",
-              "parameterType": "formBinaryData",
-              "inputDataFieldName": "file_5"
-            },
-            {
-              "name": "files",
-              "parameterType": "formBinaryData",
-              "inputDataFieldName": "file_6"
-            },
-            {
-              "name": "files",
-              "parameterType": "formBinaryData",
-              "inputDataFieldName": "file_7"
-            },
-            {
-              "name": "files",
-              "parameterType": "formBinaryData",
-              "inputDataFieldName": "file_8"
-            },
-            {
-              "name": "files",
-              "parameterType": "formBinaryData",
-              "inputDataFieldName": "file_9"
-            },
-            {
-              "name": "files",
-              "parameterType": "formBinaryData",
-              "inputDataFieldName": "file_10"
-            },
-            {
-              "name": "files",
-              "parameterType": "formBinaryData",
-              "inputDataFieldName": "file_11"
-            },
-            {
-              "name": "files",
-              "parameterType": "formBinaryData",
-              "inputDataFieldName": "file_12"
+              "id": "c1",
+              "leftValue": "={{$json.status === 'unsupported_format'}}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
             }
           ]
         },
-        "responseFormat": "json",
-        "options": {
-          "ignoreResponseCode": true,
-          "fullResponse": true
-        }
-      },
-      "id": "upload-to-backend",
-      "name": "Upload To Backend",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        1920,
-        620
-      ]
+        "options": {}
+      }
     },
     {
-      "parameters": {
-        "jsCode": "const source = $('Prepare Finalize').first().json;\nconst response = $json.body ? $json : { statusCode: 200, body: $json };\nconst body = response.body || {};\nconst statusCode = Number(response.statusCode || 200);\nconst detail = body.detail;\nlet uploadError = null;\nif (statusCode >= 400) {\n  if (typeof detail === 'string') uploadError = detail;\n  else if (detail && typeof detail === 'object') uploadError = detail.error_message || JSON.stringify(detail);\n  else uploadError = body.message || `Backend вернул ошибку ${statusCode}.`;\n} else if ((body.status || '') !== 'accepted_for_processing') {\n  uploadError = body.unsupported_reason || body.message || 'Backend не принял документ в обработку.';\n}\nconst uploadAccepted = !uploadError && Boolean(body.upload_id);\nconst replyText = uploadAccepted\n  ? source.ui.processingText\n  : `Не удалось передать документ в backend.\\n${uploadError || 'Неизвестная ошибка.'}`;\nreturn [{\n  json: {\n    ...source,\n    uploadAccepted,\n    uploadError,\n    replyText,\n    backendUploadId: body.upload_id || '',\n    backendTraceId: body.trace_id || '',\n    backendStatus: body.status || '',\n    statusToPersist: uploadAccepted ? 'processing' : 'collecting',\n    filesJsonToPersist: uploadAccepted ? '[]' : (source.filesJsonSource || '[]'),\n  }\n}];"
-      },
-      "id": "normalize-upload-response",
-      "name": "Normalize Upload Response",
+      "id": "reply-unsupported-1",
+      "name": "Reply Unsupported",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        2160,
-        620
-      ]
-    },
-    {
+      "position": [480, 40],
       "parameters": {
-        "operation": "update",
-        "tableId": "telegram_bot_sessions",
-        "rowId": "={{$json.sessionRowId}}",
-        "columns": {
-          "mappingMode": "defineBelow",
-          "value": {
-            "status": "={{$json.statusToPersist}}",
-            "files_json": "={{$json.filesJsonToPersist}}",
-            "backend_upload_id": "={{$json.backendUploadId || ''}}",
-            "backend_trace_id": "={{$json.backendTraceId || ''}}"
-          }
-        }
-      },
-      "id": "persist-session-after-upload",
-      "name": "Persist Session After Upload",
-      "type": "n8n-nodes-base.dataTable",
-      "typeVersion": 1,
-      "position": [
-        2400,
-        620
-      ]
+        "jsCode": "return [{ json: { reply_text: $json.message || 'Этот формат пока не поддерживается. Пришлите JPG, PNG или PDF.' } }];"
+      }
     },
     {
+      "id": "reply-page-added-1",
+      "name": "Reply Page Added",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 200],
+      "parameters": {
+        "jsCode": "return [{ json: { reply_text: `Страница ${$json.pages_count} добавлена. Пришлите ещё страницы накладной или нажмите «Готово», если это всё.` } }];"
+      }
+    },
+    {
+      "id": "if-is-done-1",
+      "name": "If Is Done",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-240, 400],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "typeValidation": "loose" },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{$json.intent === 'done'}}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "finalize-draft-1",
+      "name": "Finalize Draft",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [0, 340],
+      "onError": "continueErrorOutput",
       "parameters": {
         "method": "POST",
-        "url": "=https://api.telegram.org/bot{{$json.config.telegramBotToken}}/sendMessage",
+        "url": "={{ $('Workflow Config').item.json.backendBaseUrl }}/api/v1/invoice-review/bot/drafts/finalize",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "contentType": "form-urlencoded",
         "bodyParameters": {
           "parameters": [
-            {
-              "name": "chat_id",
-              "value": "={{$json.chatId}}"
-            },
-            {
-              "name": "text",
-              "value": "={{$json.replyText}}"
-            },
-            {
-              "name": "reply_markup",
-              "value": "={{$json.replyKeyboard}}"
-            }
+            { "name": "chat_id", "value": "={{$('Normalize Update').item.json.chat_id}}" },
+            { "name": "create_google_sheet", "value": "true" }
           ]
-        }
+        },
+        "options": {}
       },
-      "id": "reply-upload-outcome",
-      "name": "Reply Upload Outcome",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        2640,
-        620
-      ]
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Bot API Key"
+        }
+      }
     },
     {
-      "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "typeValidation": "strict",
-            "version": 2
-          },
-          "conditions": [
-            {
-              "leftValue": "={{$json.uploadAccepted}}",
-              "rightValue": true,
-              "operator": {
-                "type": "boolean",
-                "operation": "true",
-                "singleValue": true
-              }
-            }
-          ],
-          "combinator": "and"
-        }
-      },
-      "id": "check-upload-accepted",
-      "name": "Check Upload Accepted",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [
-        2880,
-        620
-      ]
-    },
-    {
-      "parameters": {
-        "jsCode": "return [{ json: { ...$json, pollAttempt: 1 } }];"
-      },
-      "id": "prepare-poll-state",
-      "name": "Prepare Poll State",
+      "id": "reply-no-pages-1",
+      "name": "Reply No Pages",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        3120,
-        620
-      ]
+      "position": [240, 460],
+      "parameters": {
+        "jsCode": "return [{ json: { reply_text: 'Сначала пришлите хотя бы одну страницу документа.' } }];"
+      }
     },
     {
+      "id": "reply-processing-1",
+      "name": "Reply Processing Started",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 300],
       "parameters": {
-        "amount": "={{$json.config.pollIntervalSeconds || 5}}",
-        "unit": "seconds"
-      },
-      "id": "wait-before-poll",
+        "jsCode": "return [{ json: { reply_text: 'Принял, обрабатываю документ...' } }];"
+      }
+    },
+    {
+      "id": "prepare-poll-1",
+      "name": "Prepare Poll",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 340],
+      "parameters": {
+        "jsCode": "let attempt = 0;\ntry {\n  attempt = $('Prepare Poll').item.json.attempt || 0;\n} catch (e) {\n  attempt = 0;\n}\nreturn [{\n  json: {\n    upload_id: $('Finalize Draft').item.json.upload_id,\n    attempt: attempt + 1,\n  }\n}];"
+      }
+    },
+    {
+      "id": "wait-poll-1",
       "name": "Wait Before Poll",
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
-      "position": [
-        3360,
-        620
-      ],
-      "webhookId": "telegram-bot-wait-before-poll"
+      "position": [720, 340],
+      "parameters": {
+        "amount": 5,
+        "unit": "seconds"
+      }
     },
     {
+      "id": "check-upload-1",
+      "name": "Check Upload Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 340],
       "parameters": {
         "method": "GET",
-        "url": "={{$json.config.backendBaseUrl + '/api/v1/invoice-review/bot/uploads/' + $json.backendUploadId}}",
-        "responseFormat": "json",
-        "options": {
-          "ignoreResponseCode": true,
-          "fullResponse": true
-        }
+        "url": "={{ $('Workflow Config').item.json.backendBaseUrl }}/api/v1/invoice-review/bot/uploads/{{ $('Prepare Poll').item.json.upload_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
       },
-      "id": "poll-backend-status-auto",
-      "name": "Poll Backend Status Auto",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        3600,
-        620
-      ]
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Bot API Key"
+        }
+      }
     },
     {
+      "id": "if-poll-done-1",
+      "name": "If Poll Done",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1200, 340],
       "parameters": {
-        "jsCode": "function formatMoney(value) {\n  if (value === null || value === undefined || value === '') return null;\n  const num = Number(value);\n  if (!Number.isFinite(num)) return String(value);\n  return num.toLocaleString('ru-RU', { minimumFractionDigits: 0, maximumFractionDigits: 2 });\n}\n\nfunction buildFinalText(body) {\n  const lines = [];\n  const summary = body.document_summary || {};\n  if (body.status === 'processing_error') {\n    lines.push('Не удалось обработать документ.');\n    if (body.error_text) lines.push(body.error_text);\n    return lines.join('\\n');\n  }\n  if (body.google_spreadsheet_error && !body.google_spreadsheet_url) {\n    lines.push('Документ распознан, но не удалось записать результат в Google Таблицы.');\n    lines.push(body.google_spreadsheet_error);\n    return lines.join('\\n');\n  }\n  if (body.status === 'possible_duplicate') {\n    lines.push('Документ обработан, но похож на дубль.');\n  } else if (body.status === 'requires_review') {\n    lines.push('Документ обработан и требует проверки.');\n  } else {\n    lines.push('Документ готов.');\n  }\n  const summaryLines = [];\n  if (summary.supplier) summaryLines.push(`Поставщик: ${summary.supplier}`);\n  if (summary.invoice_number) {\n    const datePart = summary.invoice_date ? ` от ${summary.invoice_date}` : '';\n    summaryLines.push(`Накладная: ${summary.invoice_number}${datePart}`);\n  } else if (summary.invoice_date) {\n    summaryLines.push(`Дата документа: ${summary.invoice_date}`);\n  }\n  if (summary.document_form) summaryLines.push(`Форма: ${summary.document_form}`);\n  if (summary.items_count) summaryLines.push(`Строк распознано: ${summary.items_count}`);\n  if (summary.total_sum !== null && summary.total_sum !== undefined) summaryLines.push(`Сумма: ${formatMoney(summary.total_sum)}`);\n  if (summary.duplicate_indicator && ['Да', '?'].includes(String(summary.duplicate_indicator))) {\n    summaryLines.push(`Признак дубля: ${summary.duplicate_indicator}`);\n  }\n  if (summaryLines.length) {\n    lines.push('');\n    lines.push(...summaryLines);\n  }\n  if (body.google_spreadsheet_url) {\n    lines.push('');\n    lines.push('Готовая таблица:');\n    lines.push(body.google_spreadsheet_url);\n  }\n  if (body.google_spreadsheet_error && body.google_spreadsheet_url) {\n    lines.push('');\n    lines.push(`Предупреждение: ${body.google_spreadsheet_error}`);\n  }\n  return lines.join('\\n');\n}\n\nconst state = $('Wait Before Poll').first().json;\nconst response = $json.body ? $json : { statusCode: 200, body: $json };\nconst body = response.body || {};\nconst statusCode = Number(response.statusCode || 200);\nif (statusCode >= 400) {\n  const detail = body.detail;\n  const errorText = typeof detail === 'string' ? detail : (detail?.error_message || body.message || `Backend вернул ошибку ${statusCode}.`);\n  return [{ json: { ...state, pollCompleted: true, backendFinalStatus: 'processing_error', finalReplyText: `Не удалось получить итоговый статус документа.\\n${errorText}`, googleSpreadsheetUrl: null, googleSpreadsheetError: errorText } }];\n}\nif (!body.completed) {\n  const nextAttempt = Number(state.pollAttempt || 1) + 1;\n  const maxAttempts = Number(state.config?.pollMaxAttempts || 60);\n  return [{ json: { ...state, pollCompleted: false, pollAttempt: nextAttempt, shouldStopPolling: nextAttempt > maxAttempts } }];\n}\nreturn [{\n  json: {\n    ...state,\n    pollCompleted: true,\n    backendFinalStatus: body.status || 'processed',\n    finalReplyText: buildFinalText(body),\n    googleSpreadsheetUrl: body.google_spreadsheet_url || null,\n    googleSpreadsheetError: body.google_spreadsheet_error || null,\n  }\n}];"
-      },
-      "id": "normalize-poll-response",
-      "name": "Normalize Poll Response",
+        "conditions": {
+          "options": { "caseSensitive": true, "typeValidation": "loose" },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.completed === true || $('Prepare Poll').item.json.attempt >= $('Workflow Config').item.json.maxPollAttempts }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "compute-stage-1",
+      "name": "Compute Stage",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        3840,
-        620
-      ]
+      "position": [1200, 460],
+      "parameters": {
+        "jsCode": "const data = $json;\nconst logs = Array.isArray(data.pipeline_logs) ? data.pipeline_logs : [];\nconst lastLog = logs.length ? logs[logs.length - 1] : null;\n\nfunction mapStage(stageName) {\n  if (!stageName) return 'accepted';\n  if (stageName === 'job_failed') return 'failed';\n  if (\n    stageName.indexOf('evidence_provider') === 0 ||\n    stageName.indexOf('document_page') === 0 ||\n    stageName === 'document_received' ||\n    stageName.indexOf('collect_evidence') === 0\n  ) {\n    return 'extracting';\n  }\n  if (stageName.indexOf('openai_') === 0 || stageName.indexOf('reference_mapping') === 0) {\n    return 'ai_processing';\n  }\n  if (stageName.indexOf('google_sheet') === 0) {\n    return 'writing_sheet';\n  }\n  return 'accepted';\n}\n\nconst stageKey = mapStage(lastLog ? lastLog.stage : null);\n\nlet previousStage = 'accepted';\ntry {\n  previousStage = $('Set Stage Reply Text').item.json.lastStageSent || 'accepted';\n} catch (e) {\n  previousStage = 'accepted';\n}\n\nreturn [{\n  json: {\n    ...data,\n    stage_key: stageKey,\n    stage_changed: stageKey !== previousStage,\n  }\n}];"
+      }
     },
     {
-      "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "typeValidation": "strict",
-            "version": 2
-          },
-          "conditions": [
-            {
-              "leftValue": "={{$json.pollCompleted}}",
-              "rightValue": true,
-              "operator": {
-                "type": "boolean",
-                "operation": "true",
-                "singleValue": true
-              }
-            }
-          ],
-          "combinator": "and"
-        }
-      },
-      "id": "check-poll-completed",
-      "name": "Check Poll Completed",
+      "id": "if-stage-changed-1",
+      "name": "If Stage Changed",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
-      "position": [
-        4080,
-        620
-      ]
-    },
-    {
+      "position": [1440, 460],
       "parameters": {
         "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "typeValidation": "strict",
-            "version": 2
-          },
+          "options": { "caseSensitive": true, "typeValidation": "loose" },
+          "combinator": "and",
           "conditions": [
             {
-              "leftValue": "={{$json.shouldStopPolling}}",
+              "id": "c1",
+              "leftValue": "={{$json.stage_changed === true}}",
               "rightValue": true,
-              "operator": {
-                "type": "boolean",
-                "operation": "true",
-                "singleValue": true
-              }
-            }
-          ],
-          "combinator": "and"
-        }
-      },
-      "id": "check-poll-timeout",
-      "name": "Check Poll Timeout",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [
-        4320,
-        700
-      ]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "=https://api.telegram.org/bot{{$json.config.telegramBotToken}}/sendMessage",
-        "sendBody": true,
-        "contentType": "form-urlencoded",
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "chat_id",
-              "value": "={{$json.chatId}}"
-            },
-            {
-              "name": "text",
-              "value": "Документ всё ещё обрабатывается дольше обычного. Нажмите «Статус» позже, если результат ещё не пришёл автоматически."
-            },
-            {
-              "name": "reply_markup",
-              "value": "={{$json.replyKeyboard}}"
+              "operator": { "type": "boolean", "operation": "equals" }
             }
           ]
-        }
-      },
-      "id": "reply-poll-timeout",
-      "name": "Reply Poll Timeout",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        4560,
-        640
-      ]
+        },
+        "options": {}
+      }
     },
     {
-      "parameters": {
-        "operation": "update",
-        "tableId": "telegram_bot_sessions",
-        "rowId": "={{$json.sessionRowId}}",
-        "columns": {
-          "mappingMode": "defineBelow",
-          "value": {
-            "status": "={{$json.backendFinalStatus}}",
-            "files_json": "=[]"
-          }
-        }
-      },
-      "id": "persist-final-status",
-      "name": "Persist Final Status",
-      "type": "n8n-nodes-base.dataTable",
-      "typeVersion": 1,
-      "position": [
-        4320,
-        540
-      ]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "=https://api.telegram.org/bot{{$json.config.telegramBotToken}}/sendMessage",
-        "sendBody": true,
-        "contentType": "form-urlencoded",
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "chat_id",
-              "value": "={{$json.chatId}}"
-            },
-            {
-              "name": "text",
-              "value": "={{$json.finalReplyText}}"
-            },
-            {
-              "name": "reply_markup",
-              "value": "={{$json.replyKeyboard}}"
-            }
-          ]
-        }
-      },
-      "id": "reply-final-result",
-      "name": "Reply Final Result",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        4560,
-        540
-      ]
-    },
-    {
-      "parameters": {
-        "operation": "get",
-        "tableId": "telegram_bot_sessions",
-        "filters": {
-          "conditions": [
-            {
-              "keyName": "chat_id",
-              "condition": "eq",
-              "keyValue": "={{$json.chatId}}"
-            }
-          ]
-        }
-      },
-      "id": "load-session-status",
-      "name": "Load Session Status",
-      "type": "n8n-nodes-base.dataTable",
-      "typeVersion": 1,
-      "position": [
-        1200,
-        720
-      ]
-    },
-    {
-      "parameters": {
-        "jsCode": "const session = $json.data?.[0] || null;\nif (!session?.id) {\n  return [{ json: { ...$json, statusLookupError: 'Активного документа пока нет. Сначала отправьте файл.' } }];\n}\nif (!session.backend_upload_id) {\n  if (session.status === 'collecting') {\n    return [{ json: { ...$json, statusLookupError: 'Документ ещё не отправлен в backend. Нажмите «Продолжить» после последней страницы.' } }];\n  }\n  return [{ json: { ...$json, statusLookupError: 'Для этого чата backend-загрузка пока не найдена.' } }];\n}\nreturn [{ json: { ...$json, sessionRowId: session.id, backendUploadId: session.backend_upload_id, backendTraceId: session.backend_trace_id || '' } }];"
-      },
-      "id": "prepare-status-check",
-      "name": "Prepare Status Check",
+      "id": "set-stage-reply-1",
+      "name": "Set Stage Reply Text",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        1440,
-        720
-      ]
+      "position": [1680, 400],
+      "parameters": {
+        "jsCode": "const STAGE_TEXT = {\n  accepted: 'Документ принят в обработку.',\n  extracting: 'Выгружаем данные из скана...',\n  ai_processing: 'Обрабатываем данные через ИИ...',\n  writing_sheet: 'Загружаем данные в таблицу...',\n  failed: 'Возникла ошибка при обработке, уточняю результат...',\n};\nreturn [{\n  json: {\n    reply_text: STAGE_TEXT[$json.stage_key] || 'Документ обрабатывается...',\n    lastStageSent: $json.stage_key,\n  }\n}];"
+      }
     },
     {
+      "id": "send-stage-update-1",
+      "name": "Send Stage Update",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1920, 400],
       "parameters": {
-        "conditions": {
-          "options": {
-            "caseSensitive": true,
-            "typeValidation": "strict",
-            "version": 2
-          },
-          "conditions": [
-            {
-              "leftValue": "={{$json.statusLookupError || ''}}",
-              "rightValue": "",
-              "operator": {
-                "type": "string",
-                "operation": "notEmpty"
-              }
-            }
-          ],
-          "combinator": "and"
-        }
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{$('Normalize Update').item.json.chat_id}}",
+        "text": "={{$json.reply_text}}",
+        "additionalFields": {}
       },
-      "id": "check-status-lookup-error",
-      "name": "Check Status Lookup Error",
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "id": "if-is-status-1",
+      "name": "If Is Status",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
-      "position": [
-        1680,
-        720
-      ]
-    },
-    {
+      "position": [0, 560],
       "parameters": {
-        "method": "POST",
-        "url": "=https://api.telegram.org/bot{{$json.config.telegramBotToken}}/sendMessage",
-        "sendBody": true,
-        "contentType": "form-urlencoded",
-        "bodyParameters": {
-          "parameters": [
+        "conditions": {
+          "options": { "caseSensitive": true, "typeValidation": "loose" },
+          "combinator": "and",
+          "conditions": [
             {
-              "name": "chat_id",
-              "value": "={{$json.chatId}}"
-            },
-            {
-              "name": "text",
-              "value": "={{$json.statusLookupError}}"
-            },
-            {
-              "name": "reply_markup",
-              "value": "={{$json.replyKeyboard}}"
+              "id": "c1",
+              "leftValue": "={{$json.intent === 'status'}}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
             }
           ]
-        }
-      },
-      "id": "reply-status-lookup-error",
-      "name": "Reply Status Lookup Error",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        1920,
-        680
-      ]
+        },
+        "options": {}
+      }
     },
     {
+      "id": "check-draft-status-1",
+      "name": "Check Draft Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [240, 500],
       "parameters": {
         "method": "GET",
-        "url": "={{$json.config.backendBaseUrl + '/api/v1/invoice-review/bot/uploads/' + $json.backendUploadId}}",
-        "responseFormat": "json",
-        "options": {
-          "ignoreResponseCode": true,
-          "fullResponse": true
-        }
+        "url": "={{ $('Workflow Config').item.json.backendBaseUrl }}/api/v1/invoice-review/bot/drafts/status",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "chat_id", "value": "={{$('Normalize Update').item.json.chat_id}}" }
+          ]
+        },
+        "options": {}
       },
-      "id": "poll-backend-status-manual",
-      "name": "Poll Backend Status Manual",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        1920,
-        760
-      ]
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Bot API Key"
+        }
+      }
     },
     {
+      "id": "if-has-draft-1",
+      "name": "If Has Draft",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [480, 500],
       "parameters": {
-        "jsCode": "function formatMoney(value) {\n  if (value === null || value === undefined || value === '') return null;\n  const num = Number(value);\n  if (!Number.isFinite(num)) return String(value);\n  return num.toLocaleString('ru-RU', { minimumFractionDigits: 0, maximumFractionDigits: 2 });\n}\nconst source = $('Prepare Status Check').first().json;\nconst response = $json.body ? $json : { statusCode: 200, body: $json };\nconst body = response.body || {};\nconst statusCode = Number(response.statusCode || 200);\nlet replyText = 'Статус недоступен.';\nif (statusCode >= 400) {\n  const detail = body.detail;\n  const errorText = typeof detail === 'string' ? detail : (detail?.error_message || body.message || `Backend вернул ошибку ${statusCode}.`);\n  replyText = `Не удалось получить статус документа.\\n${errorText}`;\n} else if (!body.completed) {\n  replyText = 'Документ ещё обрабатывается в backend.';\n} else {\n  const summary = body.document_summary || {};\n  const lines = [];\n  if (body.status === 'processing_error') {\n    lines.push('Обработка завершилась ошибкой.');\n    if (body.error_text) lines.push(body.error_text);\n  } else {\n    lines.push(body.message || 'Документ обработан.');\n    if (summary.supplier) lines.push(`Поставщик: ${summary.supplier}`);\n    if (summary.invoice_number) lines.push(`Накладная: ${summary.invoice_number}`);\n    if (summary.total_sum !== null && summary.total_sum !== undefined) lines.push(`Сумма: ${formatMoney(summary.total_sum)}`);\n    if (body.google_spreadsheet_url) {\n      lines.push('');\n      lines.push('Готовая таблица:');\n      lines.push(body.google_spreadsheet_url);\n    }\n    if (body.google_spreadsheet_error) lines.push(`Предупреждение: ${body.google_spreadsheet_error}`);\n  }\n  replyText = lines.join('\\n');\n}\nreturn [{ json: { ...source, replyText } }];"
-      },
-      "id": "normalize-status-reply",
-      "name": "Normalize Status Reply",
+        "conditions": {
+          "options": { "caseSensitive": true, "typeValidation": "loose" },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.draft !== null && $json.draft !== undefined }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "reply-draft-status-1",
+      "name": "Reply Draft Status",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        2160,
-        760
-      ]
+      "position": [720, 440],
+      "parameters": {
+        "jsCode": "return [{ json: { reply_text: `Черновик: ${$json.draft.pages_count} стр. Пришлите ещё или нажмите «Готово».` } }];"
+      }
     },
     {
+      "id": "check-latest-1",
+      "name": "Check Latest Upload",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [720, 580],
+      "onError": "continueErrorOutput",
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Workflow Config').item.json.backendBaseUrl }}/api/v1/invoice-review/bot/uploads/latest",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "chat_id", "value": "={{$('Normalize Update').item.json.chat_id}}" }
+          ]
+        },
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Bot API Key"
+        }
+      }
+    },
+    {
+      "id": "reply-no-history-1",
+      "name": "Reply No History",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 660],
+      "parameters": {
+        "jsCode": "return [{ json: { reply_text: 'Для этого чата еще нет загруженных документов. Пришлите первую страницу накладной.' } }];"
+      }
+    },
+    {
+      "id": "format-result-1",
+      "name": "Format Upload Result Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1440, 500],
+      "parameters": {
+        "jsCode": "const data = $json;\nlet timedOut = false;\ntry {\n  const attempt = $('Prepare Poll').item.json.attempt;\n  const maxAttempts = $('Workflow Config').item.json.maxPollAttempts;\n  if (!data.completed && attempt >= maxAttempts) {\n    timedOut = true;\n  }\n} catch (e) {\n  timedOut = false;\n}\n\nlet text;\nif (timedOut) {\n  text = 'Обработка продолжается дольше обычного. Наберите «Статус» через минуту.';\n} else if (!data.completed) {\n  text = data.message || 'Документ обрабатывается.';\n} else {\n  const lines = [data.message || 'Документ обработан.'];\n  const summary = data.document_summary;\n  if (summary) {\n    if (summary.supplier) lines.push(`Поставщик: ${summary.supplier}`);\n    if (summary.invoice_number) lines.push(`Накладная: ${summary.invoice_number}`);\n    if (summary.invoice_date) lines.push(`Дата: ${summary.invoice_date}`);\n    if (summary.total_sum !== null && summary.total_sum !== undefined) lines.push(`Сумма: ${summary.total_sum}`);\n  }\n  if (data.google_spreadsheet_url) {\n    lines.push(`Таблица: ${data.google_spreadsheet_url}`);\n  } else if (data.google_spreadsheet_error) {\n    lines.push('Не удалось получить ссылку на таблицу, проверьте вручную.');\n  }\n  text = lines.join('\\n');\n}\n\nreturn [{ json: { reply_text: text } }];"
+      }
+    },
+    {
+      "id": "if-is-reset-1",
+      "name": "If Is Reset",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [240, 720],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "typeValidation": "loose" },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{$json.intent === 'reset'}}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "reset-draft-1",
+      "name": "Reset Draft",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 680],
       "parameters": {
         "method": "POST",
-        "url": "=https://api.telegram.org/bot{{$json.config.telegramBotToken}}/sendMessage",
+        "url": "={{ $('Workflow Config').item.json.backendBaseUrl }}/api/v1/invoice-review/bot/drafts/reset",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "contentType": "form-urlencoded",
         "bodyParameters": {
           "parameters": [
-            {
-              "name": "chat_id",
-              "value": "={{$json.chatId}}"
-            },
-            {
-              "name": "text",
-              "value": "={{$json.replyText}}"
-            },
-            {
-              "name": "reply_markup",
-              "value": "={{$json.replyKeyboard}}"
-            }
+            { "name": "chat_id", "value": "={{$('Normalize Update').item.json.chat_id}}" }
           ]
-        }
+        },
+        "options": {}
       },
-      "id": "reply-status",
-      "name": "Reply Status",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        2400,
-        760
-      ]
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Bot API Key"
+        }
+      }
+    },
+    {
+      "id": "reply-reset-done-1",
+      "name": "Reply Reset Done",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 680],
+      "parameters": {
+        "jsCode": "return [{ json: { reply_text: 'Черновик очищен.' } }];"
+      }
+    },
+    {
+      "id": "reply-menu-1",
+      "name": "Reply Menu",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 800],
+      "parameters": {
+        "jsCode": "return [{ json: { reply_text: 'Пришлите фото или PDF накладной — можно несколько страниц подряд.\\nКогда все страницы отправлены — нажмите кнопку «Готово» внизу экрана.\\nКнопка «Статус» покажет, что сейчас происходит с документом.\\nКнопка «Сбросить» очистит незавершенный черновик.' } }];"
+      }
+    },
+    {
+      "id": "send-reply-1",
+      "name": "Send Reply",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1680, 500],
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{$('Normalize Update').item.json.chat_id}}",
+        "text": "={{$json.reply_text}}",
+        "additionalFields": {}
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_WITH_CREDENTIAL_ID",
+          "name": "Telegram Bot"
+        }
+      }
     }
   ],
-  "pinData": {},
   "connections": {
-    "Telegram Trigger": {
+    "Telegram Trigger": { "main": [[{ "node": "Workflow Config", "type": "main", "index": 0 }]] },
+    "Workflow Config": { "main": [[{ "node": "Normalize Update", "type": "main", "index": 0 }]] },
+    "Normalize Update": { "main": [[{ "node": "If Is File", "type": "main", "index": 0 }]] },
+    "If Is File": {
+      "main": [
+        [{ "node": "Get Telegram File", "type": "main", "index": 0 }],
+        [{ "node": "If Is Done", "type": "main", "index": 0 }]
+      ]
+    },
+    "Get Telegram File": { "main": [[{ "node": "Send Page To Backend", "type": "main", "index": 0 }]] },
+    "Send Page To Backend": { "main": [[{ "node": "If Page Unsupported", "type": "main", "index": 0 }]] },
+    "If Page Unsupported": {
+      "main": [
+        [{ "node": "Reply Unsupported", "type": "main", "index": 0 }],
+        [{ "node": "Reply Page Added", "type": "main", "index": 0 }]
+      ]
+    },
+    "Reply Unsupported": { "main": [[{ "node": "Send Reply", "type": "main", "index": 0 }]] },
+    "Reply Page Added": { "main": [[{ "node": "Send Reply", "type": "main", "index": 0 }]] },
+    "If Is Done": {
+      "main": [
+        [{ "node": "Finalize Draft", "type": "main", "index": 0 }],
+        [{ "node": "If Is Status", "type": "main", "index": 0 }]
+      ]
+    },
+    "Finalize Draft": {
+      "main": [
+        [{ "node": "Reply Processing Started", "type": "main", "index": 0 }],
+        [{ "node": "Reply No Pages", "type": "main", "index": 0 }]
+      ]
+    },
+    "Reply No Pages": { "main": [[{ "node": "Send Reply", "type": "main", "index": 0 }]] },
+    "Reply Processing Started": {
       "main": [
         [
-          {
-            "node": "Workflow Config",
-            "type": "main",
-            "index": 0
-          }
+          { "node": "Send Reply", "type": "main", "index": 0 },
+          { "node": "Prepare Poll", "type": "main", "index": 0 }
         ]
       ]
     },
-    "Workflow Config": {
+    "Prepare Poll": { "main": [[{ "node": "Wait Before Poll", "type": "main", "index": 0 }]] },
+    "Wait Before Poll": { "main": [[{ "node": "Check Upload Status", "type": "main", "index": 0 }]] },
+    "Check Upload Status": { "main": [[{ "node": "If Poll Done", "type": "main", "index": 0 }]] },
+    "If Poll Done": {
       "main": [
-        [
-          {
-            "node": "Normalize Update",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [{ "node": "Format Upload Result Message", "type": "main", "index": 0 }],
+        [{ "node": "Compute Stage", "type": "main", "index": 0 }]
       ]
     },
-    "Normalize Update": {
+    "Compute Stage": { "main": [[{ "node": "If Stage Changed", "type": "main", "index": 0 }]] },
+    "If Stage Changed": {
       "main": [
-        [
-          {
-            "node": "Route Intent",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [{ "node": "Set Stage Reply Text", "type": "main", "index": 0 }],
+        [{ "node": "Prepare Poll", "type": "main", "index": 0 }]
       ]
     },
-    "Route Intent": {
+    "Set Stage Reply Text": { "main": [[{ "node": "Send Stage Update", "type": "main", "index": 0 }]] },
+    "Send Stage Update": { "main": [[{ "node": "Prepare Poll", "type": "main", "index": 0 }]] },
+    "If Is Status": {
       "main": [
-        [
-          {
-            "node": "Start Session Store",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Load Session For File",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Load Session Finalize",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Load Session Status",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Reset Session Store",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Reply Unknown",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [{ "node": "Check Draft Status", "type": "main", "index": 0 }],
+        [{ "node": "If Is Reset", "type": "main", "index": 0 }]
       ]
     },
-    "Start Session Store": {
+    "Check Draft Status": { "main": [[{ "node": "If Has Draft", "type": "main", "index": 0 }]] },
+    "If Has Draft": {
       "main": [
-        [
-          {
-            "node": "Reply Start",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [{ "node": "Reply Draft Status", "type": "main", "index": 0 }],
+        [{ "node": "Check Latest Upload", "type": "main", "index": 0 }]
       ]
     },
-    "Reset Session Store": {
+    "Reply Draft Status": { "main": [[{ "node": "Send Reply", "type": "main", "index": 0 }]] },
+    "Check Latest Upload": {
       "main": [
-        [
-          {
-            "node": "Reply Reset",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [{ "node": "Format Upload Result Message", "type": "main", "index": 0 }],
+        [{ "node": "Reply No History", "type": "main", "index": 0 }]
       ]
     },
-    "Load Session For File": {
+    "Reply No History": { "main": [[{ "node": "Send Reply", "type": "main", "index": 0 }]] },
+    "Format Upload Result Message": { "main": [[{ "node": "Send Reply", "type": "main", "index": 0 }]] },
+    "If Is Reset": {
       "main": [
-        [
-          {
-            "node": "Prepare File Download",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [{ "node": "Reset Draft", "type": "main", "index": 0 }],
+        [{ "node": "Reply Menu", "type": "main", "index": 0 }]
       ]
     },
-    "Prepare File Download": {
-      "main": [
-        [
-          {
-            "node": "Check Append Error",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Check Append Error": {
-      "main": [
-        [
-          {
-            "node": "Reply Append Error",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Telegram Get File",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Telegram Get File": {
-      "main": [
-        [
-          {
-            "node": "Map Telegram File Path",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Map Telegram File Path": {
-      "main": [
-        [
-          {
-            "node": "Check Download Error",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Check Download Error": {
-      "main": [
-        [
-          {
-            "node": "Reply Download Error",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Download Telegram File Binary",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Download Telegram File Binary": {
-      "main": [
-        [
-          {
-            "node": "Store File In Memory",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Store File In Memory": {
-      "main": [
-        [
-          {
-            "node": "Check Store Error",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Check Store Error": {
-      "main": [
-        [
-          {
-            "node": "Reply Store Error",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Persist Session Row",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Persist Session Row": {
-      "main": [
-        [
-          {
-            "node": "Reply File Added",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Load Session Finalize": {
-      "main": [
-        [
-          {
-            "node": "Prepare Finalize",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Prepare Finalize": {
-      "main": [
-        [
-          {
-            "node": "Check Finalize Error",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Check Finalize Error": {
-      "main": [
-        [
-          {
-            "node": "Reply Finalize Error",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Upload To Backend",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Upload To Backend": {
-      "main": [
-        [
-          {
-            "node": "Normalize Upload Response",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Normalize Upload Response": {
-      "main": [
-        [
-          {
-            "node": "Persist Session After Upload",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Persist Session After Upload": {
-      "main": [
-        [
-          {
-            "node": "Reply Upload Outcome",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Reply Upload Outcome": {
-      "main": [
-        [
-          {
-            "node": "Check Upload Accepted",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Check Upload Accepted": {
-      "main": [
-        [],
-        [
-          {
-            "node": "Prepare Poll State",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Prepare Poll State": {
-      "main": [
-        [
-          {
-            "node": "Wait Before Poll",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Wait Before Poll": {
-      "main": [
-        [
-          {
-            "node": "Poll Backend Status Auto",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Poll Backend Status Auto": {
-      "main": [
-        [
-          {
-            "node": "Normalize Poll Response",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Normalize Poll Response": {
-      "main": [
-        [
-          {
-            "node": "Check Poll Completed",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Check Poll Completed": {
-      "main": [
-        [
-          {
-            "node": "Persist Final Status",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Check Poll Timeout",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Persist Final Status": {
-      "main": [
-        [
-          {
-            "node": "Reply Final Result",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Check Poll Timeout": {
-      "main": [
-        [
-          {
-            "node": "Reply Poll Timeout",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Wait Before Poll",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Load Session Status": {
-      "main": [
-        [
-          {
-            "node": "Prepare Status Check",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Prepare Status Check": {
-      "main": [
-        [
-          {
-            "node": "Check Status Lookup Error",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Check Status Lookup Error": {
-      "main": [
-        [
-          {
-            "node": "Reply Status Lookup Error",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "Poll Backend Status Manual",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Poll Backend Status Manual": {
-      "main": [
-        [
-          {
-            "node": "Normalize Status Reply",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Normalize Status Reply": {
-      "main": [
-        [
-          {
-            "node": "Reply Status",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    }
+    "Reset Draft": { "main": [[{ "node": "Reply Reset Done", "type": "main", "index": 0 }]] },
+    "Reply Reset Done": { "main": [[{ "node": "Send Reply", "type": "main", "index": 0 }]] },
+    "Reply Menu": { "main": [[{ "node": "Send Reply", "type": "main", "index": 0 }]] }
   },
-  "active": false,
-  "settings": {},
-  "versionId": "telegram-bot-mvp-v2",
-  "meta": {
-    "templateCredsSetupCompleted": false
-  }
+  "pinData": {}
 }

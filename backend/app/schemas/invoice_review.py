@@ -222,6 +222,32 @@ class BotUploadAcceptedResponse(BaseModel):
     unsupported_reason: str | None = None
 
 
+class BotDraftPageResponse(BaseModel):
+    upload_id: str
+    status: str
+    message: str
+    pages_count: int
+    filenames: list[str] = Field(default_factory=list)
+    unsupported_reason: str | None = None
+
+
+class BotDraftInfo(BaseModel):
+    upload_id: str
+    pages_count: int
+    filenames: list[str] = Field(default_factory=list)
+    organization_name: str | None = None
+    point_name: str | None = None
+
+
+class BotDraftStatusResponse(BaseModel):
+    draft: BotDraftInfo | None = None
+
+
+class BotDraftResetResponse(BaseModel):
+    status: str
+    message: str
+
+
 class BotDocumentSummary(BaseModel):
     supplier: str | None = None
     invoice_number: str | None = None

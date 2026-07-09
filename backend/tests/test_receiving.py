@@ -777,6 +777,188 @@ def test_bot_upload_creates_trace_and_updates_journal(monkeypatch, tmp_path):
     assert status_data["next_actions"]["review_id"] == 55
 
 
+def test_bot_draft_pages_accumulate_across_requests(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.routers.invoice_review.settings.uploaded_invoices_dir", str(tmp_path))
+
+    first = client.post(
+        "/api/v1/invoice-review/bot/drafts/pages",
+        files={"file": ("page-1.jpg", b"first", "image/jpeg")},
+        data={"chat_id": "chat-draft-1", "source_user_id": "tg-user-9"},
+    )
+    assert first.status_code == 200
+    first_data = first.json()
+    assert first_data["status"] == "collecting"
+    assert first_data["pages_count"] == 1
+    upload_id = first_data["upload_id"]
+
+    second = client.post(
+        "/api/v1/invoice-review/bot/drafts/pages",
+        files={"file": ("page-2.jpg", b"second", "image/jpeg")},
+        data={"chat_id": "chat-draft-1", "source_user_id": "tg-user-9"},
+    )
+    assert second.status_code == 200
+    second_data = second.json()
+    assert second_data["upload_id"] == upload_id
+    assert second_data["pages_count"] == 2
+    assert second_data["filenames"] == ["page-1.jpg", "page-2.jpg"]
+
+    status_response = client.get(
+        "/api/v1/invoice-review/bot/drafts/status",
+        params={"chat_id": "chat-draft-1"},
+    )
+    assert status_response.status_code == 200
+    draft = status_response.json()["draft"]
+    assert draft["upload_id"] == upload_id
+    assert draft["pages_count"] == 2
+    assert draft["filenames"] == ["page-1.jpg", "page-2.jpg"]
+
+
+def test_bot_draft_is_isolated_per_chat(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.routers.invoice_review.settings.uploaded_invoices_dir", str(tmp_path))
+
+    client.post(
+        "/api/v1/invoice-review/bot/drafts/pages",
+        files={"file": ("page-1.jpg", b"first", "image/jpeg")},
+        data={"chat_id": "chat-a", "source_user_id": "tg-user-a"},
+    )
+
+    other_status = client.get(
+        "/api/v1/invoice-review/bot/drafts/status",
+        params={"chat_id": "chat-b"},
+    )
+    assert other_status.status_code == 200
+    assert other_status.json()["draft"] is None
+
+
+def test_bot_draft_reset_clears_pages_before_next_upload(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.routers.invoice_review.settings.uploaded_invoices_dir", str(tmp_path))
+
+    client.post(
+        "/api/v1/invoice-review/bot/drafts/pages",
+        files={"file": ("page-1.jpg", b"first", "image/jpeg")},
+        data={"chat_id": "chat-reset-1", "source_user_id": "tg-user-9"},
+    )
+    reset_response = client.post(
+        "/api/v1/invoice-review/bot/drafts/reset",
+        data={"chat_id": "chat-reset-1"},
+    )
+    assert reset_response.status_code == 200
+    assert reset_response.json()["status"] == "reset"
+
+    status_response = client.get(
+        "/api/v1/invoice-review/bot/drafts/status",
+        params={"chat_id": "chat-reset-1"},
+    )
+    assert status_response.json()["draft"] is None
+
+    fresh = client.post(
+        "/api/v1/invoice-review/bot/drafts/pages",
+        files={"file": ("page-new.jpg", b"third", "image/jpeg")},
+        data={"chat_id": "chat-reset-1", "source_user_id": "tg-user-9"},
+    )
+    assert fresh.json()["pages_count"] == 1
+    assert fresh.json()["filenames"] == ["page-new.jpg"]
+
+
+def test_bot_draft_reset_without_active_draft_is_a_safe_no_op():
+    response = client.post(
+        "/api/v1/invoice-review/bot/drafts/reset",
+        data={"chat_id": "chat-never-opened"},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "no_active_draft"
+
+
+def test_bot_draft_finalize_without_pages_returns_422():
+    response = client.post(
+        "/api/v1/invoice-review/bot/drafts/finalize",
+        data={"chat_id": "chat-empty-draft"},
+    )
+    assert response.status_code == 422
+
+
+def test_bot_draft_finalize_starts_processing_and_is_visible_via_latest(monkeypatch, tmp_path):
+    from app.routers import invoice_review as invoice_review_router
+
+    monkeypatch.setattr(invoice_review_router.settings, "uploaded_invoices_dir", str(tmp_path))
+
+    captured = {}
+
+    def fake_background(**kwargs):
+        captured.update(kwargs)
+        invoice_review_router.finalize_trace(kwargs["trace_id"])
+
+    monkeypatch.setattr(invoice_review_router, "_process_bot_upload_background", fake_background)
+
+    client.post(
+        "/api/v1/invoice-review/bot/drafts/pages",
+        files={"file": ("page-1.jpg", b"first", "image/jpeg")},
+        data={"chat_id": "chat-finalize-1", "source_user_id": "tg-user-9"},
+    )
+    client.post(
+        "/api/v1/invoice-review/bot/drafts/pages",
+        files={"file": ("page-2.jpg", b"second", "image/jpeg")},
+        data={"chat_id": "chat-finalize-1", "source_user_id": "tg-user-9"},
+    )
+
+    finalize_response = client.post(
+        "/api/v1/invoice-review/bot/drafts/finalize",
+        data={"chat_id": "chat-finalize-1", "create_google_sheet": "false"},
+    )
+    assert finalize_response.status_code == 200
+    finalize_data = finalize_response.json()
+    assert finalize_data["status"] == "accepted_for_processing"
+    assert finalize_data["files_count"] == 2
+    assert finalize_data["trace_id"]
+
+    assert captured["file_names"] == ["page-1.jpg", "page-2.jpg"]
+
+    _wait_for_trace(finalize_data["trace_id"])
+
+    no_more_draft = client.get(
+        "/api/v1/invoice-review/bot/drafts/status",
+        params={"chat_id": "chat-finalize-1"},
+    )
+    assert no_more_draft.json()["draft"] is None
+
+    latest_response = client.get(
+        "/api/v1/invoice-review/bot/uploads/latest",
+        params={"chat_id": "chat-finalize-1"},
+    )
+    assert latest_response.status_code == 200
+    latest_data = latest_response.json()
+    assert latest_data["upload_id"] == finalize_data["upload_id"]
+    assert latest_data["status"] == "accepted_for_processing"
+
+
+def test_bot_uploads_latest_returns_404_when_chat_has_no_uploads():
+    response = client.get(
+        "/api/v1/invoice-review/bot/uploads/latest",
+        params={"chat_id": "chat-with-no-history"},
+    )
+    assert response.status_code == 404
+
+
+def test_bot_drafts_pages_rejects_unsupported_format(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.routers.invoice_review.settings.uploaded_invoices_dir", str(tmp_path))
+
+    response = client.post(
+        "/api/v1/invoice-review/bot/drafts/pages",
+        files={"file": ("invoice.xml", b"<xml/>", "application/xml")},
+        data={"chat_id": "chat-unsupported-1", "source_user_id": "tg-user-9"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "unsupported_format"
+    assert data["pages_count"] == 0
+
+    status_response = client.get(
+        "/api/v1/invoice-review/bot/drafts/status",
+        params={"chat_id": "chat-unsupported-1"},
+    )
+    assert status_response.json()["draft"] is None
+
+
 def test_build_review_sheet_backfills_invoice_reference_mapping_for_old_items(monkeypatch):
     from app.services import invoice_review_service
     from app.schemas.invoice_review import InvoiceReviewCreateRequest, RecognizedInvoiceItem

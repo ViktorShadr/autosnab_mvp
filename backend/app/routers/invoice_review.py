@@ -1,11 +1,12 @@
 import html
 import json
+import mimetypes
 import shutil
 from threading import Thread
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from sqlalchemy.orm import Session
 
@@ -14,6 +15,10 @@ from app.db.session import SessionLocal, get_db
 from app.models.accounting import AccountingExport
 from app.models.receiving import Receiving, ReceivingDocument
 from app.schemas.invoice_review import (
+    BotDraftInfo,
+    BotDraftPageResponse,
+    BotDraftResetResponse,
+    BotDraftStatusResponse,
     BotUploadAcceptedResponse,
     BotDocumentSummary,
     BotUploadStatusResponse,
@@ -26,13 +31,20 @@ from app.schemas.invoice_review import (
     SyncSheetAndConfirmRequest,
 )
 from app.services.bot_ingestion_service import (
+    DRAFT_STATUS,
+    append_draft_file,
     build_bot_document_summary,
     build_bot_next_actions,
     build_source_metadata,
     classify_bot_file,
     create_upload_journal,
+    delete_draft,
     derive_bot_result,
+    draft_display_name,
+    get_active_draft,
+    get_latest_upload_for_chat,
     get_upload_journal,
+    list_draft_files,
     update_upload_journal,
 )
 from app.services.invoice_review_service import (
@@ -66,6 +78,11 @@ from app.services.upload_trace_service import (
 )
 
 router = APIRouter(prefix="/invoice-review", tags=["invoice-review"])
+
+
+def require_bot_api_key(x_bot_api_key: str | None = Header(default=None)) -> None:
+    if settings.bot_api_shared_secret and x_bot_api_key != settings.bot_api_shared_secret:
+        raise HTTPException(status_code=401, detail="Неверный или отсутствующий X-Bot-Api-Key.")
 
 
 
@@ -1047,7 +1064,11 @@ def get_upload_trace(trace_id: str):
     return trace
 
 
-@router.post("/bot/upload-document-live", response_model=BotUploadAcceptedResponse)
+@router.post(
+    "/bot/upload-document-live",
+    response_model=BotUploadAcceptedResponse,
+    dependencies=[Depends(require_bot_api_key)],
+)
 async def upload_invoice_document_via_bot(
     files: list[UploadFile] = File(...),
     source_channel: str = Form(default="telegram_bot"),
@@ -1131,7 +1152,6 @@ async def upload_invoice_document_via_bot(
             unsupported_reason=unsupported_reason,
         )
 
-    trace_id = f"trace-{document_upload_id}"
     upload = create_upload_journal(
         db,
         source_channel=source_channel,
@@ -1145,15 +1165,207 @@ async def upload_invoice_document_via_bot(
         file_type=primary_type,
         raw_file_path=str(target_dir),
         files_count=len(file_paths),
-        trace_id=trace_id,
+        trace_id=None,
         status="accepted_for_processing",
     )
+    return _start_bot_processing(
+        db,
+        upload,
+        file_paths=file_paths,
+        file_names=file_names,
+        file_types=file_types,
+        create_google_sheet=create_google_sheet,
+        extraction_method=extraction_method,
+        public_api_base_url=public_api_base_url,
+    )
+
+
+@router.post(
+    "/bot/drafts/pages",
+    response_model=BotDraftPageResponse,
+    dependencies=[Depends(require_bot_api_key)],
+)
+async def append_bot_draft_page(
+    file: UploadFile = File(...),
+    chat_id: str = Form(...),
+    source_user_id: str = Form(...),
+    source_username: str | None = Form(default=None),
+    document_kind: str = Form(default="primary_document"),
+    organization_name: str | None = Form(default=None),
+    point_name: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    safe_name = Path(file.filename or "file").name
+    supported_now, reason, _ = classify_bot_file(safe_name, file.content_type, document_kind=document_kind)
+    if not supported_now:
+        return BotDraftPageResponse(
+            upload_id="",
+            status="unsupported_format",
+            message=reason or "Формат файла пока не поддерживается.",
+            pages_count=0,
+            unsupported_reason=reason,
+        )
+
+    upload = get_active_draft(db, chat_id)
+    if upload is None:
+        document_upload_id = f"bot-draft-{uuid4().hex}"
+        target_dir = Path(settings.uploaded_invoices_dir) / document_upload_id
+        target_dir.mkdir(parents=True, exist_ok=True)
+        upload = create_upload_journal(
+            db,
+            source_channel="telegram_bot",
+            document_kind=document_kind,
+            user_id=source_user_id,
+            username=source_username,
+            chat_id=chat_id,
+            organization_name=organization_name,
+            point_name=point_name,
+            original_filename=safe_name,
+            file_type=file.content_type or "application/octet-stream",
+            raw_file_path=str(target_dir),
+            files_count=0,
+            trace_id=None,
+            status=DRAFT_STATUS,
+        )
+    if upload.files_count >= settings.openai_max_image_pages:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Слишком много страниц в черновике: максимум {settings.openai_max_image_pages}.",
+        )
+
+    target_dir = Path(upload.raw_file_path)
+    index = upload.files_count + 1
+    target = target_dir / f"{index:03d}-{safe_name}"
+    with target.open("wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    if target.stat().st_size == 0:
+        target.unlink(missing_ok=True)
+        raise HTTPException(status_code=422, detail=f"Файл {safe_name} пустой.")
+    if target.stat().st_size > settings.bot_upload_max_file_bytes:
+        target.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=422,
+            detail=f"Файл {safe_name} превышает лимит {settings.bot_upload_max_file_bytes} байт.",
+        )
+
+    upload = append_draft_file(db, upload, filename=safe_name)
+    return BotDraftPageResponse(
+        upload_id=upload.upload_id,
+        status=DRAFT_STATUS,
+        message=f"Страница {upload.files_count} добавлена.",
+        pages_count=upload.files_count,
+        filenames=[draft_display_name(path) for path in list_draft_files(upload)],
+    )
+
+
+@router.get(
+    "/bot/drafts/status",
+    response_model=BotDraftStatusResponse,
+    dependencies=[Depends(require_bot_api_key)],
+)
+def get_bot_draft_status(chat_id: str = Query(...), db: Session = Depends(get_db)):
+    upload = get_active_draft(db, chat_id)
+    if upload is None:
+        return BotDraftStatusResponse(draft=None)
+    return BotDraftStatusResponse(
+        draft=BotDraftInfo(
+            upload_id=upload.upload_id,
+            pages_count=upload.files_count,
+            filenames=[draft_display_name(path) for path in list_draft_files(upload)],
+            organization_name=upload.organization_name,
+            point_name=upload.point_name,
+        )
+    )
+
+
+@router.post(
+    "/bot/drafts/reset",
+    response_model=BotDraftResetResponse,
+    dependencies=[Depends(require_bot_api_key)],
+)
+def reset_bot_draft(chat_id: str = Form(...), db: Session = Depends(get_db)):
+    upload = get_active_draft(db, chat_id)
+    if upload is None:
+        return BotDraftResetResponse(status="no_active_draft", message="Черновика еще нет.")
+    delete_draft(db, upload)
+    return BotDraftResetResponse(status="reset", message="Черновик очищен.")
+
+
+@router.post(
+    "/bot/drafts/finalize",
+    response_model=BotUploadAcceptedResponse,
+    dependencies=[Depends(require_bot_api_key)],
+)
+def finalize_bot_draft(
+    chat_id: str = Form(...),
+    create_google_sheet: bool = Form(default=True),
+    extraction_method: str | None = Form(default=None),
+    public_api_base_url: str | None = Form(default=None),
+    db: Session = Depends(get_db),
+):
+    upload = get_active_draft(db, chat_id)
+    if upload is None or upload.files_count == 0:
+        raise HTTPException(status_code=422, detail="Сначала пришлите хотя бы одну страницу документа.")
+    files = list_draft_files(upload)
+    file_paths = [str(path) for path in files]
+    file_names = [draft_display_name(path) for path in files]
+    file_types = [mimetypes.guess_type(path.name)[0] or "application/octet-stream" for path in files]
+    return _start_bot_processing(
+        db,
+        upload,
+        file_paths=file_paths,
+        file_names=file_names,
+        file_types=file_types,
+        create_google_sheet=create_google_sheet,
+        extraction_method=extraction_method,
+        public_api_base_url=public_api_base_url,
+    )
+
+
+@router.get(
+    "/bot/uploads/latest",
+    response_model=BotUploadStatusResponse,
+    dependencies=[Depends(require_bot_api_key)],
+)
+def get_latest_bot_upload_status(chat_id: str = Query(...), db: Session = Depends(get_db)):
+    upload = get_latest_upload_for_chat(db, chat_id)
+    if upload is None:
+        raise HTTPException(status_code=404, detail="Для этого чата еще нет завершенных загрузок.")
+    return _build_bot_upload_status_response(db, upload)
+
+
+@router.get(
+    "/bot/uploads/{upload_id}",
+    response_model=BotUploadStatusResponse,
+    dependencies=[Depends(require_bot_api_key)],
+)
+def get_bot_upload_status(upload_id: str, db: Session = Depends(get_db)):
+    try:
+        upload = get_upload_journal(db, upload_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return _build_bot_upload_status_response(db, upload)
+
+
+def _start_bot_processing(
+    db: Session,
+    upload,
+    *,
+    file_paths: list[str],
+    file_names: list[str],
+    file_types: list[str],
+    create_google_sheet: bool,
+    extraction_method: str | None,
+    public_api_base_url: str | None,
+) -> BotUploadAcceptedResponse:
+    trace_id = f"trace-{upload.upload_id}"
+    update_upload_journal(db, upload.upload_id, status="accepted_for_processing", trace_id=trace_id)
     initialize_trace(trace_id)
     set_trace_metadata(
         trace_id,
         upload_id=upload.upload_id,
-        source_channel=source_channel,
-        document_kind=document_kind,
+        source_channel=upload.source_channel,
+        document_kind=upload.document_kind,
     )
     append_trace_log(
         trace_id,
@@ -1188,18 +1400,13 @@ async def upload_invoice_document_via_bot(
         trace_id=trace_id,
         status="accepted_for_processing",
         message="Документ принят в обработку.",
-        source_channel=source_channel,
-        document_kind=document_kind,
+        source_channel=upload.source_channel,
+        document_kind=upload.document_kind,
         files_count=len(file_paths),
     )
 
 
-@router.get("/bot/uploads/{upload_id}", response_model=BotUploadStatusResponse)
-def get_bot_upload_status(upload_id: str, db: Session = Depends(get_db)):
-    try:
-        upload = get_upload_journal(db, upload_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+def _build_bot_upload_status_response(db: Session, upload) -> BotUploadStatusResponse:
     trace = get_trace(upload.trace_id) if upload.trace_id else None
     response = trace.get("result") if trace else None
     receiving = db.get(Receiving, upload.review_id) if upload.review_id else None
@@ -1610,6 +1817,8 @@ def _extraction_method_label(value: str | None) -> str | None:
 
 
 def _bot_status_message(status: str, error_text: str | None) -> str:
+    if status == "collecting":
+        return "Черновик документа собирается."
     if status == "accepted_for_processing":
         return "Документ принят в обработку."
     if status == "processing":
