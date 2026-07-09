@@ -650,3 +650,11 @@
 - Registered the new Telegram screenshot `codex-clipboard-jumBaw.png` in `manifests/raw_sources.csv` before using it for diagnosis.
 - Confirmed from that screenshot that the current editor workflow had imported broken Data Table settings: `Persist Session Row` lost its `chat_id` upsert match and failed with `At least one condition is required`.
 - Saved a separate handoff artifact `n8n/telegram-bot-mvp.workflow.hardcoded-fixed.json` as a copy of the validated fixed workflow so the user can import a known-good bot JSON without losing the current hardcoded Telegram token, backend URL, or Telegram credential binding.
+
+## [2026-07-09] operations | ngrok secrets filled and Docker MTU bug fixed
+
+- Filled in `NGROK_AUTHTOKEN` and `BOT_API_SHARED_SECRET` in this workstation's `.env`, which were previously absent (only documented in `.env.example`), and brought up `docker compose --profile public-tunnel up`.
+- Diagnosed a live `ERR_NGROK_3004` failure on **Send Page To Backend**: reproduced it independently with raw `curl` (small POST bodies succeeded, a multipart file upload failed identically to the n8n error), ruling out n8n/backend application code.
+- Root cause: Docker's default bridge network MTU (1500) exceeded this machine's actual outbound path MTU (1376, from active VPN interface `amn0`), so larger multipart packets were silently dropped instead of fragmented. Fixed by adding a `networks.default` block to `docker-compose.yml` with `driver_opts: com.docker.network.driver.mtu: 1376`, then recreating the stack. Verified fixed with the same raw `curl` reproduction (`200 OK`, page accepted) before touching n8n again.
+- Separately hit and fixed a `401 Неверный или отсутствующий X-Bot-Api-Key` on the same node: confirmed via `sha256sum` that the backend-side secret matched the value already given to the user, so the mismatch was in the n8n `Backend URL` HTTP Header Auth credential not being saved with the current value. Fixed by having the user re-enter and explicitly save it.
+- User confirmed the bot works end to end again after both fixes.

@@ -47,3 +47,9 @@ volumes:
   autosnab_uploads:
   autosnab_exports:
   autosnab_hf_cache:
+
+networks:
+  default:
+    driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: 1376
