@@ -1,45 +1,48 @@
 # n8n Bot MVP
 
-This directory contains the first repository-native scaffold for the Telegram
-document-upload bot.
+This directory now contains one importable Telegram bot workflow for the MVP.
 
 ## Files
 
-- `telegram-bot-mvp.workflow.json` - importable n8n workflow scaffold
-- `telegram-bot-full.workflow.json` - fuller importable workflow with compact Telegram UX, persistent Telegram reply-keyboard buttons, real Telegram file download, multipart backend upload, and durable `Data Table` session storage
-- `telegram-bot-mvp.env.example` - environment variables expected by the workflow
-- `telegram-bot-workflow-notes.md` - practical assembly notes for the remaining multipart step
-- `telegram-bot-node-setup.md` - exact node-by-node UI configuration for the current workflow
+- `telegram-bot-mvp.workflow.json` - importable workflow with config node, Telegram file download, multipart backend upload, durable `Data Table` session storage, and automatic backend status polling
+- `telegram-bot-node-setup.md` - minimal setup notes for import and one-time prerequisites
 
 ## Workflow intent
 
 The workflow is intentionally thin:
 
-- Telegram receives commands and files
-- n8n stores a lightweight per-chat session
-- n8n forwards one logical document to backend
-- backend performs OCR/parsing/review-sheet work
-- n8n polls backend by `upload_id`
-- n8n sends the final short operator result
+- Telegram accepts pages of one document
+- `n8n` stores a lightweight per-chat draft in `telegram_bot_sessions`
+- the user finishes the logical document with button `Продолжить`
+- `n8n` forwards the document to backend
+- backend decides how to parse and process it
+- `n8n` only relays processing state and final result back to Telegram
 
-The workflow must not duplicate parsing or business logic from the backend.
+The bot must not duplicate OCR, parser, or review business logic from backend.
 
 ## Expected backend endpoints
 
 - `POST /api/v1/invoice-review/bot/upload-document-live`
 - `GET /api/v1/invoice-review/bot/uploads/{upload_id}`
 
-## Current limitations
+## Current import assumptions
 
-- The JSON file now freezes the session/status/metadata contract, but the real
-  Telegram file download and multipart file attachment still must be wired in n8n.
-- Credentials, webhook URL, data-table IDs, and deployment-specific IDs still
-  must be filled in by the operator.
-- Create the `telegram_bot_sessions` Data Table before importing the full workflow; it now uses durable row storage for cross-message document assembly.
-- In the full workflow, the first uploaded file can auto-open a chat session; the operator does not have to send `Новый документ` first.
-- The full workflow now also exposes clearer user-facing guidance, but without repeating the same long command list after every single event.
-- The full workflow now uses a compact Telegram conversation pattern as well: a short home screen, step-specific replies, and disabled `n8n` message attribution on reply nodes so the bot reads like a product flow rather than a debug chat.
-- The full workflow now sends a persistent Telegram reply keyboard (`Новый документ`, `Готово`, `Статус`, `Сбросить`) through direct Bot API `sendMessage` calls, so the operator can tap actions instead of typing them manually.
-- Some `n8n` instances deny `$env` both in HTTP expressions and in Code nodes. The full workflow now keeps its runtime defaults inside `Normalize Update` instead of relying on env access there; after import, fill `telegramBotToken` and `backendBaseUrl` in that node explicitly.
-- If the `n8n` instance denies `$env` access inside node expressions, keep the safer built-in Telegram reply nodes enabled instead of the direct Bot API keyboard workaround.
-- XML / Excel / QR scenarios still depend on future backend support.
+- Create the `telegram_bot_sessions` Data Table before import.
+- Attach a Telegram credential to `Telegram Trigger`.
+- Fill runtime constants in the `Workflow Config` node.
+- The workflow does not use `$env`; all deployment-specific values live in the config node itself.
+- For cloud `n8n`, `backendBaseUrl` must be a public HTTPS URL of your local backend, for example an `ngrok` tunnel.
+
+## User-facing behavior
+
+- The first file can start a new document automatically.
+- After each page, the bot asks whether more pages will follow.
+- The user finishes the document with button `Продолжить`, not by typing free-form confirmation.
+- While backend is working, the bot sends a processing message and then polls the backend automatically.
+- On success, the bot sends a short parsed summary plus the Google Sheets link returned by backend.
+- On backend failure, the bot sends the backend error text to the user.
+
+## Remaining product boundary
+
+XML / Excel / QR scenarios still depend on future backend support and are not
+handled in this MVP workflow.

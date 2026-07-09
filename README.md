@@ -251,6 +251,11 @@ IIKO_AUTO_MAPPING_ENABLED=true
 IIKO_MAPPING_MIN_CONFIDENCE=0.72
 ```
 
+Для облачного `n8n` вместо `localhost` нужен один и тот же публичный HTTPS base URL backend, например `https://example.ngrok-free.app`:
+
+- `PUBLIC_API_BASE_URL=https://example.ngrok-free.app`
+- `GOOGLE_OAUTH_REDIRECT_URI=https://example.ngrok-free.app/api/v1/google-oauth/callback`
+
 Актуальный шаблон также лежит в [.env.example](/home/viktor-shadrin/PycharmProjects/autosnab_mvp/.env.example).
 
 ### 3. Пройти OAuth
@@ -278,6 +283,8 @@ http://localhost:8000/api/v1/google-oauth/authorize
 - `GOOGLE_OAUTH_ACCESS_TOKEN`
 - `GOOGLE_OAUTH_REFRESH_TOKEN`
 - `GOOGLE_OAUTH_TOKEN_EXPIRY`
+
+Если OAuth уже был успешно пройден локально и в `.env` сохранён рабочий refresh token, для одной только интеграции бота с облачным `n8n` переавторизация через публичный callback обычно не требуется. Но при следующем полном OAuth-цикле redirect URI должен совпадать с публичным URL backend.
 
 ### 4. Запустить backend
 
@@ -313,6 +320,54 @@ docker compose up --build
 docker compose up --build -d
 docker compose logs -f backend
 docker compose down
+```
+
+## Публичный backend для cloud n8n
+
+Если сам бот живёт в облачном `n8n`, локальный backend должен быть доступен по публичному HTTPS URL.
+
+Схема в репозитории теперь такая:
+
+- backend поднимается локально через `docker compose up --build -d`
+- дополнительный профиль `public-tunnel` поднимает `ngrok` поверх контейнера backend
+- cloud `n8n` использует этот public URL в `Workflow Config -> backendBaseUrl`
+
+Подготовка `.env`:
+
+```env
+PUBLIC_API_BASE_URL=https://example.ngrok-free.app
+GOOGLE_OAUTH_REDIRECT_URI=https://example.ngrok-free.app/api/v1/google-oauth/callback
+NGROK_AUTHTOKEN=<your_ngrok_token>
+```
+
+Если на этой машине путь `.env` занят директорией или нужен отдельный runtime-файл, Compose теперь можно запускать через `BACKEND_ENV_FILE`:
+
+```bash
+cp .env.example .env.runtime
+BACKEND_ENV_FILE=.env.runtime docker compose up --build -d
+BACKEND_ENV_FILE=.env.runtime docker compose --profile public-tunnel up -d ngrok
+```
+
+Запуск:
+
+```bash
+docker compose up --build -d
+docker compose --profile public-tunnel up -d ngrok
+python3 scripts/get_ngrok_public_url.py
+```
+
+Что делать дальше:
+
+- вставить выданный `https://...ngrok...` URL в `Workflow Config -> backendBaseUrl` в облачном `n8n`
+- если tunnel URL меняется, обновить `PUBLIC_API_BASE_URL` в `.env` и это же значение в `n8n`
+- если нужен стабильный адрес без ручных замен, используйте закреплённый ngrok domain
+- если backend стартует не из `.env`, используйте тот же runtime-файл и для этих переменных, например `.env.runtime`
+
+Проверки:
+
+```bash
+curl "$(python3 scripts/get_ngrok_public_url.py)/ping"
+curl "$(python3 scripts/get_ngrok_public_url.py)/health/runtime"
 ```
 
 Проверка после старта:

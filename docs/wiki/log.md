@@ -259,6 +259,14 @@
 - Registered the new root source `ТЗ бота.pdf` in `manifests/raw_sources.csv` before using it.
 - Reviewed the PDF and confirmed it matches the current repo direction: the bot is only an intake/status channel over the existing invoice-review backend, not a second parsing/export pipeline.
 
+## [2026-07-09] operations | cloud n8n public-backend path added
+
+- Updated `docker-compose.yml` so `PUBLIC_API_BASE_URL` is no longer hardcoded to `http://localhost:8000` inside the backend container; Docker now respects the configured public base URL from `.env`.
+- Added `BACKEND_ENV_FILE` support in `docker-compose.yml` so backend startup is no longer blocked by a non-file `.env` path on this workstation; Compose can now mount and load a separate runtime env file when needed.
+- Added an optional `ngrok` compose profile that publishes the local backend and exposes the ngrok inspection API on `localhost:4040`.
+- Added `scripts/get_ngrok_public_url.py` so the current public HTTPS tunnel URL can be read quickly and pasted into cloud `n8n` workflow config.
+- Updated `.env.example`, `README.md`, `docs/wiki/runbook.md`, `n8n/README.md`, `n8n/telegram-bot-node-setup.md`, and the importable workflow JSON so the cloud-`n8n` setup is explicit: the workflow must use a public HTTPS `backendBaseUrl`, while local `host.docker.internal:8000` remains only for same-machine `n8n`.
+
 ## [2026-07-09] fix | full n8n workflow binary handoff corrected
 
 - Registered the new Telegram screenshot `codex-clipboard-x2c4Ho.png` in `manifests/raw_sources.csv` before using it.
@@ -526,3 +534,18 @@
 - Kept both change lines in the resolved upload flow: the bot ingestion/journal endpoints stay intact, and the newer colleague upload behavior also stays intact, including explicit `multipage_invoice` gating, client timezone propagation, compact selected-file UI, and upload polling UX changes.
 - Explicitly dropped the tracked `autosnab_mvp.db` file from the merge result so branch-local SQLite contents were not inherited as if they were source code.
 - Re-ran targeted verification after the merge: `pytest backend/tests/test_google_sheets_service.py -q` passed with 7 tests, and `python3 -m py_compile` succeeded for `backend/app/routers/invoice_review.py`, `backend/app/services/google_sheets_service.py`, and `backend/app/services/invoice_review_service.py`.
+
+## [2026-07-09] bot | telegram workflow rebuilt around merged upload contract
+
+- Deleted the earlier parallel bot workflow JSON artifacts and rebuilt the Telegram MVP around one import target: `n8n/telegram-bot-mvp.workflow.json`.
+- Removed workflow dependence on `$env`: deployment-specific values now live in the opening `Workflow Config` node because the target `n8n` instance does not allow env reads in expressions or Code nodes.
+- Kept the bot deliberately thin: it accumulates pages of one logical document, asks whether more pages will follow, finalizes with button `Продолжить`, uploads through `POST /api/v1/invoice-review/bot/upload-document-live`, polls `GET /api/v1/invoice-review/bot/uploads/{upload_id}`, and relays the backend result back to Telegram.
+- Extended the bot status API contract so Telegram can stay thin at the finish step too: `BotUploadStatusResponse` now includes `document_summary`, `google_spreadsheet_url`, and `google_spreadsheet_error`.
+- Added focused regression coverage for the new bot-summary backend helper in `backend/tests/test_bot_ingestion_service.py`.
+
+## [2026-07-09] operations | local n8n workspace raised for direct workflow editing
+
+- Started a persistent local `n8n` editor on `http://localhost:5678` in Docker container `autosnab_n8n_local`, mounted to the existing `~/.n8n` home so workflows and credentials survive restarts.
+- Filled the local `n8n` Data Table layer directly in SQLite: table `telegram_bot_sessions` now exists with the expected bot-session columns and its backing storage table, so the MVP workflow can run without manual table creation in the UI.
+- Imported the rebuilt Telegram MVP workflow into the same local `n8n` instance as draft `autosnab telegram bot mvp`, which means the next task can continue by editing the live workflow in the editor rather than only the JSON file in Git.
+- Confirmed runtime connectivity across the intended local topology: the backend is reachable at `http://host.docker.internal:8000` from inside the `n8n` container and returns healthy status for the bot-facing endpoints.

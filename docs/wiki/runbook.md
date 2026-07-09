@@ -89,6 +89,15 @@ OPENAI_DEBUG_LOG_ENABLED=true
 OPENAI_DEBUG_LOG_DIR=exports/openai_debug
 ```
 
+For cloud `n8n`, the backend needs one public HTTPS base URL, for example
+`https://example.ngrok-free.app`. In that setup set both:
+
+```env
+PUBLIC_API_BASE_URL=https://example.ngrok-free.app
+GOOGLE_OAUTH_REDIRECT_URI=https://example.ngrok-free.app/api/v1/google-oauth/callback
+NGROK_AUTHTOKEN=<secret>
+```
+
 ## Shared-sheet mode
 
 If new invoices must be inserted into one existing operator spreadsheet instead of creating a new spreadsheet per invoice, also set:
@@ -154,6 +163,21 @@ docker compose logs -f backend
 docker compose down
 ```
 
+To publish the local backend for a cloud `n8n` workflow:
+
+```bash
+docker compose --profile public-tunnel up -d ngrok
+python3 scripts/get_ngrok_public_url.py
+```
+
+Notes:
+
+- the `ngrok` profile publishes local backend traffic from `backend:8000`
+- `scripts/get_ngrok_public_url.py` reads the local ngrok inspection API on `http://127.0.0.1:4040`
+- use the printed HTTPS URL in cloud `n8n` as `Workflow Config -> backendBaseUrl`
+- if the tunnel URL changes, update both `PUBLIC_API_BASE_URL` in `.env` and the same value in `n8n`
+- if `.env` is not a usable file on this machine, start Compose with an explicit runtime file such as `BACKEND_ENV_FILE=.env.runtime`
+
 ## Google OAuth setup
 
 In Google Cloud:
@@ -165,6 +189,13 @@ In Google Cloud:
 
 ```text
 http://localhost:8000/api/v1/google-oauth/callback
+```
+
+If you are running Google OAuth through the public ngrok address instead of
+localhost, register the public HTTPS callback URI instead:
+
+```text
+https://example.ngrok-free.app/api/v1/google-oauth/callback
 ```
 
 Copy the client credentials from the downloaded JSON into `.env`:
