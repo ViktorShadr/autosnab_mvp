@@ -626,6 +626,25 @@
 - Removed the guessed `replyMarkup`/`replyKeyboard` block from **Send Reply** in `n8n/telegram-bot-mvp.workflow.json` entirely rather than re-guessing the correct nesting; the workflow now imports clean (33 nodes, same stage-tracking sub-loop from the previous entry untouched).
 - Updated `n8n/telegram-bot-node-setup.md` with exact manual steps to add the reply keyboard through the n8n editor UI (Additional Fields → Reply Markup → Reply Keyboard → two rows: `Готово`/`Статус`, then `Сбросить`), since the editor UI cannot produce invalid parameter JSON the way hand-authoring blind can.
 
+## [2026-07-09] fix | Статус after Сбросить no longer reads as live news about the reset
+
+- Registered root screenshot `img_4.png` in `manifests/raw_sources.csv` as `src_20260709_img4` before using it for diagnosis.
+- Live test showed: `Сбросить` clears the draft correctly, but a following `Статус` then displayed the last *finished* upload's full result (supplier/invoice/sum/link) with no indication it was old news — reading as if it answered the just-cleared draft.
+- Root cause was intentional fallback behavior (`Статус` with no open draft → `GET /bot/uploads/latest`), just missing a distinguishing label. Added a `Mark As Status Command` code node on that branch (`Check Latest Upload` success → `Mark As Status Command` → `Format Upload Result Message`, workflow now 34 nodes in `n8n/telegram-bot-mvp.workflow.json`) and prefixed the shared result-formatting message with `Активного черновика нет. Последний обработанный документ:` only on that path.
+- Updated `n8n/telegram-bot-node-setup.md` with a section explaining this is expected fallback behavior, now clearly labeled.
+
+## [2026-07-09] fix | workflow rebuilt from the user's own live n8n export, reply-keyboard bug root-caused
+
+- The user pasted back their own current cloud-n8n export after manually configuring the reply keyboard through the editor UI (real credential IDs `buTTuJt7v20jFjXE`/`1inRkYns5Mj1ovhO`, real `backendBaseUrl`, real `webhookId`s) and asked for the `Mark As Status Command` fix to be layered onto that exact file without touching hardcoded values or structure.
+- `n8n/telegram-bot-mvp.workflow.json` was rewritten from that pasted export plus the `Check Latest Upload` → `Mark As Status Command` → `Format Upload Result Message` rewiring and the `from_status_command` prefix in `Format Upload Result Message`'s `jsCode`. 34 nodes total; internal connection graph re-verified.
+- This also resolved the earlier reply-keyboard mystery: the working export shows `replyMarkup: "replyKeyboard"` as a valid top-level parameter after all — the actual bug in the first hand-authored attempt was the nested key name (`values` instead of the correct **`buttons`**), plus a sibling `replyKeyboardOptions: {}`. Recorded the corrected shape in memory (`feedback_n8n_hand_authoring.md`) and removed the now-obsolete "add the keyboard manually" instructions from `n8n/telegram-bot-node-setup.md`.
+- Established a working process for the remainder of this bot's iteration: the user tests live and pastes back their current export/screenshots when something looks off; fixes are layered onto that exact file rather than regenerated independently.
+
+## [2026-07-09] docs | root README gets a full bot onboarding section
+
+- Rewrote the "Публичный backend для cloud n8n" section of the root `README.md` into a full "Telegram-бот через облачный n8n" section aimed at a colleague setting this up cold: what to prepare (Docker, ngrok account/authtoken, Telegram bot token from `@BotFather`, cloud n8n account, OpenAI key, Google Cloud access), 8 numbered steps from `.env` prep through activation/smoke-tests, and a troubleshooting list (import errors, 401s, dead webhook after an `ngrok` restart).
+- Cross-linked the deeper docs from there instead of duplicating them: `docs/wiki/telegram-bot-cloud-n8n-plan.md` for architecture rationale, `docs/wiki/bot-backend-api-contract.md` for the endpoint contract, `n8n/telegram-bot-node-setup.md` for node-by-node detail.
+
 ## [2026-07-09] bot | separate hardcoded fixed workflow artifact saved
 
 - Registered the new Telegram screenshot `codex-clipboard-jumBaw.png` in `manifests/raw_sources.csv` before using it for diagnosis.

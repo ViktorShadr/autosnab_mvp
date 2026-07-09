@@ -322,61 +322,192 @@ docker compose logs -f backend
 docker compose down
 ```
 
-## Публичный backend для cloud n8n
+## Telegram-бот через облачный n8n
 
-Если сам бот живёт в облачном `n8n`, локальный backend должен быть доступен по публичному HTTPS URL.
+Бот — это тонкий, полностью stateless Telegram-роутер поверх того же backend:
+он не хранит никакого состояния сам (ни сессий, ни файлов); всё состояние
+"какой документ сейчас собирается" живёт в backend (`ingestion_uploads`,
+статус `collecting`) и адресуется по `chat_id`. Логика распознавания,
+нормализации и записи в Google Sheets не дублируется — бот вызывает те же
+эндпоинты, что и веб-загрузка.
 
-Схема в репозитории теперь такая:
+Подробный архитектурный разбор: [docs/wiki/telegram-bot-cloud-n8n-plan.md](docs/wiki/telegram-bot-cloud-n8n-plan.md).
+Контракт эндпоинтов бота: [docs/wiki/bot-backend-api-contract.md](docs/wiki/bot-backend-api-contract.md).
+Разбор по узлам воркфлоу и известные особенности схемы n8n: [n8n/telegram-bot-node-setup.md](n8n/telegram-bot-node-setup.md).
 
-- backend поднимается локально через `docker compose up --build -d`
-- дополнительный профиль `public-tunnel` поднимает `ngrok` поверх контейнера backend
-- cloud `n8n` использует этот public URL в `Workflow Config -> backendBaseUrl`
+Ниже — самодостаточная пошаговая инструкция, чтобы поднять бота с нуля.
 
-Подготовка `.env`:
+### Что подготовить заранее
+
+| Что нужно | Где взять |
+|---|---|
+| Docker + Docker Compose | уже должен быть установлен для локального запуска backend |
+| Аккаунт ngrok + authtoken | зарегистрироваться на https://ngrok.com, токен лежит на https://dashboard.ngrok.com/get-started/your-authtoken |
+| Токен Telegram-бота | создать бота через [@BotFather](https://t.me/BotFather) командой `/newbot`, скопировать выданный токен вида `123456:ABC-DEF...` |
+| Аккаунт в облачном n8n | https://n8n.cloud (или любой другой n8n с публичным доступом для приёма вебхуков от Telegram) |
+| Ключ OpenAI | https://platform.openai.com/api-keys — нужен для структурного парсинга накладных |
+| Доступ к Google Cloud проекту | для Google Drive OCR + Google Sheets, см. раздел "Пройти OAuth" выше |
+
+### Шаг 1. Заполнить `.env` backend'а
+
+Скопируйте `.env.example` в `.env` и заполните минимум:
+
+```env
+# базовые ключи — как в разделе "Локальный запуск" выше
+GOOGLE_OAUTH_CLIENT_ID=...
+GOOGLE_OAUTH_CLIENT_SECRET=...
+OPENAI_API_KEY=...
+GOOGLE_TARGET_SPREADSHEET_ID=...        # ID таблицы из её URL
+
+# специфично для бота через облачный n8n
+NGROK_AUTHTOKEN=<токен из ngrok dashboard>
+BOT_API_SHARED_SECRET=<длинная случайная строка>
+PUBLIC_API_BASE_URL=http://localhost:8000   # обновится на шаге 3
+GOOGLE_OAUTH_REDIRECT_URI=http://localhost:8000/api/v1/google-oauth/callback  # тоже обновится на шаге 3
+```
+
+`BOT_API_SHARED_SECRET` — это не логин/пароль откуда-то, а просто секрет,
+который вы сами придумываете один раз и используете в двух местах (backend
+`.env` и n8n credential на шаге 6). Сгенерировать можно так:
+
+```bash
+openssl rand -hex 32
+```
+
+Пока `BOT_API_SHARED_SECRET` пуст, backend не проверяет заголовок
+`X-Bot-Api-Key` — это ок для локальной разработки без публичного туннеля, но
+**обязательно** заполните его перед тем, как открывать backend наружу через
+`ngrok`, иначе загрузку документов сможет вызвать кто угодно, кто узнает URL.
+
+### Шаг 2. Поднять backend вместе с публичным туннелем
+
+```bash
+docker compose --profile public-tunnel up --build -d
+```
+
+Это поднимает два контейнера: `backend` (FastAPI на `:8000`) и `ngrok`
+(публикует его наружу). Если путь `.env` на машине занят или нужен отдельный
+runtime-файл:
+
+```bash
+cp .env.example .env.runtime
+BACKEND_ENV_FILE=.env.runtime docker compose --profile public-tunnel up --build -d
+```
+
+Проверить, что оба контейнера здоровы:
+
+```bash
+docker compose ps
+docker compose logs -f backend
+```
+
+### Шаг 3. Получить публичный URL и вписать его обратно в `.env`
+
+```bash
+python3 scripts/get_ngrok_public_url.py
+```
+
+Выведет что-то вроде `https://example.ngrok-free.app`. Впишите это значение в
+`.env` (или `.env.runtime`) вместо `localhost`:
 
 ```env
 PUBLIC_API_BASE_URL=https://example.ngrok-free.app
 GOOGLE_OAUTH_REDIRECT_URI=https://example.ngrok-free.app/api/v1/google-oauth/callback
-NGROK_AUTHTOKEN=<your_ngrok_token>
 ```
 
-Если на этой машине путь `.env` занят директорией или нужен отдельный runtime-файл, Compose теперь можно запускать через `BACKEND_ENV_FILE`:
+и перезапустите backend, чтобы значения подхватились:
 
 ```bash
-cp .env.example .env.runtime
-BACKEND_ENV_FILE=.env.runtime docker compose up --build -d
-BACKEND_ENV_FILE=.env.runtime docker compose --profile public-tunnel up -d ngrok
+docker compose --profile public-tunnel up --build -d
 ```
 
-Запуск:
+Проверка, что backend действительно отвечает через туннель:
 
 ```bash
-docker compose up --build -d
-docker compose --profile public-tunnel up -d ngrok
-python3 scripts/get_ngrok_public_url.py
-```
-
-Что делать дальше:
-
-- вставить выданный `https://...ngrok...` URL в `Workflow Config -> backendBaseUrl` в облачном `n8n`
-- если tunnel URL меняется, обновить `PUBLIC_API_BASE_URL` в `.env` и это же значение в `n8n`
-- если нужен стабильный адрес без ручных замен, используйте закреплённый ngrok domain
-- если backend стартует не из `.env`, используйте тот же runtime-файл и для этих переменных, например `.env.runtime`
-
-Проверки:
-
-```bash
-curl "$(python3 scripts/get_ngrok_public_url.py)/ping"
 curl "$(python3 scripts/get_ngrok_public_url.py)/health/runtime"
 ```
 
-Проверка после старта:
+**Важно про free-tier ngrok:** этот URL меняется при каждом перезапуске
+контейнера `ngrok`. После рестарта нужно будет заново выполнить этот шаг и
+обновить только узел `Workflow Config` в n8n (шаг 7) — остальной воркфлоу
+трогать не нужно. Если рестарты частые и это раздражает — у ngrok есть
+платный вариант с закреплённым доменом.
 
-```text
-http://localhost:8000/ping
-http://localhost:8000/docs
-http://localhost:8000/api/v1/invoice-review/upload-page
+### Шаг 4. Пройти Google OAuth (если ещё не проходили)
+
+Откройте `https://<ваш-ngrok-url>/api/v1/google-oauth/authorize`, войдите
+нужным Google-аккаунтом. После успешного callback backend сам запишет
+`GOOGLE_OAUTH_ACCESS_TOKEN` / `GOOGLE_OAUTH_REFRESH_TOKEN` /
+`GOOGLE_OAUTH_TOKEN_EXPIRY` обратно в `.env`. Если это уже было сделано
+локально и refresh token рабочий — повторно проходить не обязательно.
+
+### Шаг 5. Импортировать воркфлоу в облачный n8n
+
+В n8n: **Workflows → Import from File** → выбрать
+`n8n/telegram-bot-mvp.workflow.json` из этого репозитория. Импортируется как
+неактивный черновик.
+
+### Шаг 6. Создать в n8n два credential'а
+
+Воркфлоу ссылается на два credential'а по имени; после импорта на
+соответствующих узлах будет видно "Credential not found", пока вы их не
+создадите и не привяжете:
+
+**Telegram API** — назовите как угодно, например `Telegram account`:
+- Access Token: токен бота от `@BotFather` (см. таблицу выше)
+- Привязать к узлам: `Telegram Trigger`, `Get Telegram File`, `Send Reply`,
+  `Send Stage Update`
+
+**HTTP Header Auth** — назовите как угодно, например `Backend URL`:
+- Name: `X-Bot-Api-Key`
+- Value: то же значение, что и `BOT_API_SHARED_SECRET` в `.env`
+- Привязать ко всем `HTTP Request`-узлам: `Send Page To Backend`,
+  `Finalize Draft`, `Check Upload Status`, `Check Draft Status`,
+  `Check Latest Upload`, `Reset Draft`
+
+### Шаг 7. Настроить узел `Workflow Config`
+
+Откройте первый `Code`-узел после триггера — `Workflow Config` — и замените
+`backendBaseUrl` на URL из шага 3:
+
+```js
+backendBaseUrl: 'https://example.ngrok-free.app',
 ```
+
+Это единственное место, где захардкожен адрес backend — всё остальное
+обращается к нему через
+`{{ $('Workflow Config').item.json.backendBaseUrl }}`.
+
+### Шаг 8. Активировать и проверить
+
+Включите воркфлоу (тумблер вверху справа) — n8n сам зарегистрирует Telegram
+webhook. Откройте чат с ботом и проверьте:
+
+1. Одна страница накладной → `Готово` → итог с поставщиком/суммой/ссылкой на таблицу.
+2. Две страницы одной накладной → `Готово` → один документ, а не два.
+3. Повторная отправка того же документа → пометка про дубликат.
+4. Неподдерживаемый формат файла → понятный отказ, черновик не портится.
+5. `Статус` во время сбора страниц → корректное число страниц.
+6. `Сбросить` → следующая страница начинает новый черновик.
+7. Остановить backend во время обработки → `Статус` всё равно отдаёт
+   последнее известное состояние, а не ошибку узла n8n.
+
+### Частые проблемы
+
+- **`Could not find property option` при импорте JSON** — обычно значит, что
+  в файл руками добавили параметр узла, которого нет в установленной версии
+  ноды (типичный кандидат — клавиатура Telegram-сообщения). Самый надёжный
+  способ настроить клавиатуру — сделать это через UI узла `Send Reply`
+  (Additional Fields → Reply Markup → Reply Keyboard), а не редактировать
+  JSON руками; UI не даст сохранить невалидную схему.
+- **401 от backend** — проверьте, что значение credential'а `X-Bot-Api-Key`
+  в n8n совпадает с `BOT_API_SHARED_SECRET` в `.env` backend'а.
+- **Бот не отвечает вообще** — проверьте `docker compose ps` (оба контейнера
+  должны быть `healthy`/`Up`), затем `python3 scripts/get_ngrok_public_url.py`
+  (туннель должен отдавать текущий URL), затем что именно этот URL стоит в
+  узле `Workflow Config`.
+- **После перезапуска `ngrok` бот снова не отвечает** — почти всегда это
+  просто новый URL; повторите шаг 3 и обновите только `Workflow Config`.
 
 ## Структура кода
 

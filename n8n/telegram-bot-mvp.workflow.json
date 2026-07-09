@@ -1,92 +1,108 @@
 {
-  "name": "Autosnab Telegram Bot MVP (Cloud n8n)",
-  "active": false,
-  "settings": {
-    "executionOrder": "v1"
-  },
   "nodes": [
     {
-      "id": "tg-trigger-1",
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "id": "63b9afbd-b2c8-4cd3-8c0b-64d1a7810688",
       "name": "Telegram Trigger",
       "type": "n8n-nodes-base.telegramTrigger",
       "typeVersion": 1.1,
-      "position": [-1200, 300],
-      "parameters": {
-        "updates": ["message"]
-      },
+      "position": [
+        -1888,
+        288
+      ],
+      "webhookId": "2c42523f-aacf-4294-b740-5795d6830ab0",
       "credentials": {
         "telegramApi": {
-          "id": "REPLACE_WITH_CREDENTIAL_ID",
-          "name": "Telegram Bot"
+          "id": "buTTuJt7v20jFjXE",
+          "name": "Telegram account"
         }
       }
     },
     {
-      "id": "cfg-1",
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    ...$input.item.json,\n    backendBaseUrl: 'https://frequent-scope-scallion.ngrok-free.dev',\n    maxPollAttempts: 24,\n  }\n}];"
+      },
+      "id": "34499deb-7269-4b19-b2b5-d5fceb21c48d",
       "name": "Workflow Config",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [-960, 300],
-      "parameters": {
-        "jsCode": "return [{\n  json: {\n    ...$input.item.json,\n    backendBaseUrl: 'https://REPLACE-WITH-NGROK-URL',\n    maxPollAttempts: 24,\n  }\n}];"
-      }
+      "position": [
+        -1648,
+        288
+      ]
     },
     {
-      "id": "normalize-1",
+      "parameters": {
+        "jsCode": "const update = $input.item.json;\nconst message = update.message || update.edited_message || {};\nconst chatId = message.chat ? message.chat.id : null;\nconst userId = message.from ? message.from.id : null;\nconst username = message.from ? message.from.username : null;\nconst text = (message.text || '').trim();\nconst normalizedText = text.toLowerCase();\n\nlet intent = 'unknown';\nlet fileId = null;\nlet filename = null;\nlet mimeType = null;\n\nif (message.photo && message.photo.length) {\n  const largest = message.photo[message.photo.length - 1];\n  fileId = largest.file_id;\n  filename = `photo-${largest.file_unique_id}.jpg`;\n  mimeType = 'image/jpeg';\n  intent = 'file';\n} else if (message.document) {\n  fileId = message.document.file_id;\n  filename = message.document.file_name || `document-${message.document.file_unique_id}`;\n  mimeType = message.document.mime_type || 'application/octet-stream';\n  intent = 'file';\n} else if (['готово', '/done', 'done'].includes(normalizedText)) {\n  intent = 'done';\n} else if (['статус', '/status', 'status'].includes(normalizedText)) {\n  intent = 'status';\n} else if (['сбросить', '/reset', 'reset'].includes(normalizedText)) {\n  intent = 'reset';\n} else if (['/start', 'start', 'меню', '/menu', 'menu'].includes(normalizedText)) {\n  intent = 'start';\n}\n\nreturn [{\n  json: {\n    chat_id: chatId !== null ? String(chatId) : null,\n    user_id: userId !== null ? String(userId) : null,\n    username: username || null,\n    intent,\n    file_id: fileId,\n    filename,\n    mime_type: mimeType,\n  }\n}];"
+      },
+      "id": "1223ac98-537e-4c77-86dd-5f7f5e478b36",
       "name": "Normalize Update",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [-720, 300],
-      "parameters": {
-        "jsCode": "const update = $input.item.json;\nconst message = update.message || update.edited_message || {};\nconst chatId = message.chat ? message.chat.id : null;\nconst userId = message.from ? message.from.id : null;\nconst username = message.from ? message.from.username : null;\nconst text = (message.text || '').trim();\nconst normalizedText = text.toLowerCase();\n\nlet intent = 'unknown';\nlet fileId = null;\nlet filename = null;\nlet mimeType = null;\n\nif (message.photo && message.photo.length) {\n  const largest = message.photo[message.photo.length - 1];\n  fileId = largest.file_id;\n  filename = `photo-${largest.file_unique_id}.jpg`;\n  mimeType = 'image/jpeg';\n  intent = 'file';\n} else if (message.document) {\n  fileId = message.document.file_id;\n  filename = message.document.file_name || `document-${message.document.file_unique_id}`;\n  mimeType = message.document.mime_type || 'application/octet-stream';\n  intent = 'file';\n} else if (['готово', '/done', 'done'].includes(normalizedText)) {\n  intent = 'done';\n} else if (['статус', '/status', 'status'].includes(normalizedText)) {\n  intent = 'status';\n} else if (['сбросить', '/reset', 'reset'].includes(normalizedText)) {\n  intent = 'reset';\n} else if (['/start', 'start', 'меню', '/menu', 'menu'].includes(normalizedText)) {\n  intent = 'start';\n}\n\nreturn [{\n  json: {\n    chat_id: chatId !== null ? String(chatId) : null,\n    user_id: userId !== null ? String(userId) : null,\n    username: username || null,\n    intent,\n    file_id: fileId,\n    filename,\n    mime_type: mimeType,\n  }\n}];"
-      }
+      "position": [
+        -1408,
+        288
+      ]
     },
     {
-      "id": "if-is-file-1",
-      "name": "If Is File",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [-480, 300],
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "typeValidation": "loose" },
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
           "combinator": "and",
           "conditions": [
             {
               "id": "c1",
               "leftValue": "={{$json.intent === 'file'}}",
               "rightValue": true,
-              "operator": { "type": "boolean", "operation": "equals" }
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
             }
           ]
         },
         "options": {}
-      }
+      },
+      "id": "dc0bf762-6f3a-49e5-98c4-ca4556dcba9c",
+      "name": "If Is File",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1168,
+        288
+      ]
     },
     {
-      "id": "get-file-1",
+      "parameters": {
+        "resource": "file",
+        "fileId": "={{$json.file_id}}",
+        "additionalFields": {}
+      },
+      "id": "b1698f68-706a-463a-b4ed-e2551f11f8a2",
       "name": "Get Telegram File",
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
-      "position": [-240, 120],
-      "parameters": {
-        "resource": "file",
-        "operation": "get",
-        "fileId": "={{$json.file_id}}"
-      },
+      "position": [
+        -928,
+        96
+      ],
+      "webhookId": "c738650d-c819-4616-8e06-c0c89e8495cb",
       "credentials": {
         "telegramApi": {
-          "id": "REPLACE_WITH_CREDENTIAL_ID",
-          "name": "Telegram Bot"
+          "id": "buTTuJt7v20jFjXE",
+          "name": "Telegram account"
         }
       }
     },
     {
-      "id": "send-page-1",
-      "name": "Send Page To Backend",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [0, 120],
       "parameters": {
         "method": "POST",
         "url": "={{ $('Workflow Config').item.json.backendBaseUrl }}/api/v1/invoice-review/bot/drafts/pages",
@@ -96,92 +112,131 @@
         "contentType": "multipart-form-data",
         "bodyParameters": {
           "parameters": [
-            { "parameterType": "formData", "name": "chat_id", "value": "={{$('Normalize Update').item.json.chat_id}}" },
-            { "parameterType": "formData", "name": "source_user_id", "value": "={{$('Normalize Update').item.json.user_id}}" },
-            { "parameterType": "formData", "name": "source_username", "value": "={{$('Normalize Update').item.json.username}}" },
-            { "parameterType": "formBinaryData", "name": "file", "inputDataFieldName": "data" }
+            {
+              "name": "chat_id",
+              "value": "={{$('Normalize Update').item.json.chat_id}}"
+            },
+            {
+              "name": "source_user_id",
+              "value": "={{$('Normalize Update').item.json.user_id}}"
+            },
+            {
+              "name": "source_username",
+              "value": "={{$('Normalize Update').item.json.username}}"
+            },
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "data"
+            }
           ]
         },
         "options": {}
       },
+      "id": "fcffbc59-f310-4078-b11e-7f94ae49834a",
+      "name": "Send Page To Backend",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -688,
+        96
+      ],
       "credentials": {
         "httpHeaderAuth": {
-          "id": "REPLACE_WITH_CREDENTIAL_ID",
-          "name": "Bot API Key"
+          "id": "1inRkYns5Mj1ovhO",
+          "name": "Backend URL"
         }
       }
     },
     {
-      "id": "if-unsupported-1",
-      "name": "If Page Unsupported",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [240, 120],
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "typeValidation": "loose" },
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
           "combinator": "and",
           "conditions": [
             {
               "id": "c1",
               "leftValue": "={{$json.status === 'unsupported_format'}}",
               "rightValue": true,
-              "operator": { "type": "boolean", "operation": "equals" }
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
             }
           ]
         },
         "options": {}
-      }
+      },
+      "id": "76b716c5-2269-459e-b526-fd1618c1782f",
+      "name": "If Page Unsupported",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -448,
+        96
+      ]
     },
     {
-      "id": "reply-unsupported-1",
+      "parameters": {
+        "jsCode": "return [{ json: { reply_text: $json.message || 'Этот формат пока не поддерживается. Пришлите JPG, PNG или PDF.' } }];"
+      },
+      "id": "3f0af1ab-f42c-48eb-b9ce-fbf2e290c288",
       "name": "Reply Unsupported",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [480, 40],
-      "parameters": {
-        "jsCode": "return [{ json: { reply_text: $json.message || 'Этот формат пока не поддерживается. Пришлите JPG, PNG или PDF.' } }];"
-      }
+      "position": [
+        -208,
+        16
+      ]
     },
     {
-      "id": "reply-page-added-1",
+      "parameters": {
+        "jsCode": "return [{ json: { reply_text: `Страница ${$json.pages_count} добавлена. Пришлите ещё страницы накладной или нажмите «Готово», если это всё.` } }];"
+      },
+      "id": "ad20a7f4-012a-4309-9218-2921aa664ee3",
       "name": "Reply Page Added",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [480, 200],
-      "parameters": {
-        "jsCode": "return [{ json: { reply_text: `Страница ${$json.pages_count} добавлена. Пришлите ещё страницы накладной или нажмите «Готово», если это всё.` } }];"
-      }
+      "position": [
+        -208,
+        176
+      ]
     },
     {
-      "id": "if-is-done-1",
-      "name": "If Is Done",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [-240, 400],
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "typeValidation": "loose" },
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
           "combinator": "and",
           "conditions": [
             {
               "id": "c1",
               "leftValue": "={{$json.intent === 'done'}}",
               "rightValue": true,
-              "operator": { "type": "boolean", "operation": "equals" }
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
             }
           ]
         },
         "options": {}
-      }
+      },
+      "id": "1e5e66e2-e25c-4164-b0be-51bb9ea79f4f",
+      "name": "If Is Done",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -928,
+        384
+      ]
     },
     {
-      "id": "finalize-draft-1",
-      "name": "Finalize Draft",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [0, 340],
-      "onError": "continueErrorOutput",
       "parameters": {
         "method": "POST",
         "url": "={{ $('Workflow Config').item.json.backendBaseUrl }}/api/v1/invoice-review/bot/drafts/finalize",
@@ -191,319 +246,426 @@
         "contentType": "form-urlencoded",
         "bodyParameters": {
           "parameters": [
-            { "name": "chat_id", "value": "={{$('Normalize Update').item.json.chat_id}}" },
-            { "name": "create_google_sheet", "value": "true" }
+            {
+              "name": "chat_id",
+              "value": "={{$('Normalize Update').item.json.chat_id}}"
+            },
+            {
+              "name": "create_google_sheet",
+              "value": "true"
+            }
           ]
         },
         "options": {}
       },
+      "id": "70b96b52-2805-4dcd-8594-649151c591c0",
+      "name": "Finalize Draft",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -688,
+        320
+      ],
       "credentials": {
         "httpHeaderAuth": {
-          "id": "REPLACE_WITH_CREDENTIAL_ID",
-          "name": "Bot API Key"
+          "id": "1inRkYns5Mj1ovhO",
+          "name": "Backend URL"
         }
-      }
+      },
+      "onError": "continueErrorOutput"
     },
     {
-      "id": "reply-no-pages-1",
+      "parameters": {
+        "jsCode": "return [{ json: { reply_text: 'Сначала пришлите хотя бы одну страницу документа.' } }];"
+      },
+      "id": "bcc110e3-6720-4dfb-9587-f96b88790be0",
       "name": "Reply No Pages",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [240, 460],
-      "parameters": {
-        "jsCode": "return [{ json: { reply_text: 'Сначала пришлите хотя бы одну страницу документа.' } }];"
-      }
+      "position": [
+        -448,
+        432
+      ]
     },
     {
-      "id": "reply-processing-1",
+      "parameters": {
+        "jsCode": "return [{ json: { reply_text: 'Принял, обрабатываю документ...' } }];"
+      },
+      "id": "6a736d6e-3e42-466b-ad73-54c1158619c4",
       "name": "Reply Processing Started",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [240, 300],
-      "parameters": {
-        "jsCode": "return [{ json: { reply_text: 'Принял, обрабатываю документ...' } }];"
-      }
+      "position": [
+        -448,
+        288
+      ]
     },
     {
-      "id": "prepare-poll-1",
+      "parameters": {
+        "jsCode": "let attempt = 0;\ntry {\n  attempt = $('Prepare Poll').item.json.attempt || 0;\n} catch (e) {\n  attempt = 0;\n}\nreturn [{\n  json: {\n    upload_id: $('Finalize Draft').item.json.upload_id,\n    attempt: attempt + 1,\n  }\n}];"
+      },
+      "id": "3a06d196-6a59-4e08-b568-fd6e7ef40039",
       "name": "Prepare Poll",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [480, 340],
-      "parameters": {
-        "jsCode": "let attempt = 0;\ntry {\n  attempt = $('Prepare Poll').item.json.attempt || 0;\n} catch (e) {\n  attempt = 0;\n}\nreturn [{\n  json: {\n    upload_id: $('Finalize Draft').item.json.upload_id,\n    attempt: attempt + 1,\n  }\n}];"
-      }
+      "position": [
+        -208,
+        320
+      ]
     },
     {
-      "id": "wait-poll-1",
+      "parameters": {},
+      "id": "0806e991-ea68-4e59-b835-ee1774892f8e",
       "name": "Wait Before Poll",
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
-      "position": [720, 340],
-      "parameters": {
-        "amount": 5,
-        "unit": "seconds"
-      }
+      "position": [
+        32,
+        272
+      ],
+      "webhookId": "517f76f3-d549-4716-bf0b-49a63a1d29c8"
     },
     {
-      "id": "check-upload-1",
-      "name": "Check Upload Status",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [960, 340],
       "parameters": {
-        "method": "GET",
         "url": "={{ $('Workflow Config').item.json.backendBaseUrl }}/api/v1/invoice-review/bot/uploads/{{ $('Prepare Poll').item.json.upload_id }}",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "options": {}
       },
+      "id": "dc4653b6-99d2-457d-be04-078ed0360648",
+      "name": "Check Upload Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        272,
+        320
+      ],
       "credentials": {
         "httpHeaderAuth": {
-          "id": "REPLACE_WITH_CREDENTIAL_ID",
-          "name": "Bot API Key"
+          "id": "1inRkYns5Mj1ovhO",
+          "name": "Backend URL"
         }
       }
     },
     {
-      "id": "if-poll-done-1",
-      "name": "If Poll Done",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [1200, 340],
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "typeValidation": "loose" },
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
           "combinator": "and",
           "conditions": [
             {
               "id": "c1",
               "leftValue": "={{ $json.completed === true || $('Prepare Poll').item.json.attempt >= $('Workflow Config').item.json.maxPollAttempts }}",
               "rightValue": true,
-              "operator": { "type": "boolean", "operation": "equals" }
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
             }
           ]
         },
         "options": {}
-      }
+      },
+      "id": "2dcfe407-2ad7-4058-92ee-cd7628d31bac",
+      "name": "If Poll Done",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        592,
+        16
+      ]
     },
     {
-      "id": "compute-stage-1",
+      "parameters": {
+        "jsCode": "const data = $json;\nconst logs = Array.isArray(data.pipeline_logs) ? data.pipeline_logs : [];\nconst lastLog = logs.length ? logs[logs.length - 1] : null;\n\nfunction mapStage(stageName) {\n  if (!stageName) return 'accepted';\n  if (stageName === 'job_failed') return 'failed';\n  if (\n    stageName.indexOf('evidence_provider') === 0 ||\n    stageName.indexOf('document_page') === 0 ||\n    stageName === 'document_received' ||\n    stageName.indexOf('collect_evidence') === 0\n  ) {\n    return 'extracting';\n  }\n  if (stageName.indexOf('openai_') === 0 || stageName.indexOf('reference_mapping') === 0) {\n    return 'ai_processing';\n  }\n  if (stageName.indexOf('google_sheet') === 0) {\n    return 'writing_sheet';\n  }\n  return 'accepted';\n}\n\nconst stageKey = mapStage(lastLog ? lastLog.stage : null);\n\nlet previousStage = 'accepted';\ntry {\n  previousStage = $('Set Stage Reply Text').item.json.lastStageSent || 'accepted';\n} catch (e) {\n  previousStage = 'accepted';\n}\n\nreturn [{\n  json: {\n    ...data,\n    stage_key: stageKey,\n    stage_changed: stageKey !== previousStage,\n  }\n}];"
+      },
+      "id": "71b6c12b-be5f-4f3e-b969-5403fb7e9413",
       "name": "Compute Stage",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1200, 460],
-      "parameters": {
-        "jsCode": "const data = $json;\nconst logs = Array.isArray(data.pipeline_logs) ? data.pipeline_logs : [];\nconst lastLog = logs.length ? logs[logs.length - 1] : null;\n\nfunction mapStage(stageName) {\n  if (!stageName) return 'accepted';\n  if (stageName === 'job_failed') return 'failed';\n  if (\n    stageName.indexOf('evidence_provider') === 0 ||\n    stageName.indexOf('document_page') === 0 ||\n    stageName === 'document_received' ||\n    stageName.indexOf('collect_evidence') === 0\n  ) {\n    return 'extracting';\n  }\n  if (stageName.indexOf('openai_') === 0 || stageName.indexOf('reference_mapping') === 0) {\n    return 'ai_processing';\n  }\n  if (stageName.indexOf('google_sheet') === 0) {\n    return 'writing_sheet';\n  }\n  return 'accepted';\n}\n\nconst stageKey = mapStage(lastLog ? lastLog.stage : null);\n\nlet previousStage = 'accepted';\ntry {\n  previousStage = $('Set Stage Reply Text').item.json.lastStageSent || 'accepted';\n} catch (e) {\n  previousStage = 'accepted';\n}\n\nreturn [{\n  json: {\n    ...data,\n    stage_key: stageKey,\n    stage_changed: stageKey !== previousStage,\n  }\n}];"
-      }
+      "position": [
+        544,
+        256
+      ]
     },
     {
-      "id": "if-stage-changed-1",
-      "name": "If Stage Changed",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [1440, 460],
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "typeValidation": "loose" },
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
           "combinator": "and",
           "conditions": [
             {
               "id": "c1",
               "leftValue": "={{$json.stage_changed === true}}",
               "rightValue": true,
-              "operator": { "type": "boolean", "operation": "equals" }
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
             }
           ]
         },
         "options": {}
-      }
+      },
+      "id": "96b46a53-74d6-4fd8-83c0-a0ba1b52e946",
+      "name": "If Stage Changed",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        816,
+        384
+      ]
     },
     {
-      "id": "set-stage-reply-1",
+      "parameters": {
+        "jsCode": "const STAGE_TEXT = {\n  accepted: 'Документ принят в обработку.',\n  extracting: 'Выгружаем данные из скана...',\n  ai_processing: 'Обрабатываем данные через ИИ...',\n  writing_sheet: 'Загружаем данные в таблицу...',\n  failed: 'Возникла ошибка при обработке, уточняю результат...',\n};\nreturn [{\n  json: {\n    reply_text: STAGE_TEXT[$json.stage_key] || 'Документ обрабатывается...',\n    lastStageSent: $json.stage_key,\n  }\n}];"
+      },
+      "id": "246745c8-d2c2-4196-b459-4b32a9927176",
       "name": "Set Stage Reply Text",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1680, 400],
-      "parameters": {
-        "jsCode": "const STAGE_TEXT = {\n  accepted: 'Документ принят в обработку.',\n  extracting: 'Выгружаем данные из скана...',\n  ai_processing: 'Обрабатываем данные через ИИ...',\n  writing_sheet: 'Загружаем данные в таблицу...',\n  failed: 'Возникла ошибка при обработке, уточняю результат...',\n};\nreturn [{\n  json: {\n    reply_text: STAGE_TEXT[$json.stage_key] || 'Документ обрабатывается...',\n    lastStageSent: $json.stage_key,\n  }\n}];"
-      }
+      "position": [
+        1008,
+        224
+      ]
     },
     {
-      "id": "send-stage-update-1",
-      "name": "Send Stage Update",
-      "type": "n8n-nodes-base.telegram",
-      "typeVersion": 1.2,
-      "position": [1920, 400],
       "parameters": {
-        "resource": "message",
-        "operation": "sendMessage",
         "chatId": "={{$('Normalize Update').item.json.chat_id}}",
         "text": "={{$json.reply_text}}",
         "additionalFields": {}
       },
+      "id": "0e0a2232-d25d-44fd-852d-7b2d5f0aec72",
+      "name": "Send Stage Update",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1232,
+        384
+      ],
+      "webhookId": "e1b10827-639c-47f7-9db9-69ed97dd2697",
       "credentials": {
         "telegramApi": {
-          "id": "REPLACE_WITH_CREDENTIAL_ID",
-          "name": "Telegram Bot"
+          "id": "buTTuJt7v20jFjXE",
+          "name": "Telegram account"
         }
       }
     },
     {
-      "id": "if-is-status-1",
-      "name": "If Is Status",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [0, 560],
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "typeValidation": "loose" },
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
           "combinator": "and",
           "conditions": [
             {
               "id": "c1",
               "leftValue": "={{$json.intent === 'status'}}",
               "rightValue": true,
-              "operator": { "type": "boolean", "operation": "equals" }
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
             }
           ]
         },
         "options": {}
-      }
+      },
+      "id": "ccf6be73-c1dd-408a-b365-aab77133429c",
+      "name": "If Is Status",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -688,
+        544
+      ]
     },
     {
-      "id": "check-draft-status-1",
-      "name": "Check Draft Status",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [240, 500],
       "parameters": {
-        "method": "GET",
         "url": "={{ $('Workflow Config').item.json.backendBaseUrl }}/api/v1/invoice-review/bot/drafts/status",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendQuery": true,
         "queryParameters": {
           "parameters": [
-            { "name": "chat_id", "value": "={{$('Normalize Update').item.json.chat_id}}" }
+            {
+              "name": "chat_id",
+              "value": "={{$('Normalize Update').item.json.chat_id}}"
+            }
           ]
         },
         "options": {}
       },
+      "id": "c2a9e081-5c91-49ae-83ea-d804a7c377ff",
+      "name": "Check Draft Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -448,
+        560
+      ],
       "credentials": {
         "httpHeaderAuth": {
-          "id": "REPLACE_WITH_CREDENTIAL_ID",
-          "name": "Bot API Key"
+          "id": "1inRkYns5Mj1ovhO",
+          "name": "Backend URL"
         }
       }
     },
     {
-      "id": "if-has-draft-1",
-      "name": "If Has Draft",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [480, 500],
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "typeValidation": "loose" },
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
           "combinator": "and",
           "conditions": [
             {
               "id": "c1",
               "leftValue": "={{ $json.draft !== null && $json.draft !== undefined }}",
               "rightValue": true,
-              "operator": { "type": "boolean", "operation": "equals" }
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
             }
           ]
         },
         "options": {}
-      }
+      },
+      "id": "122e2562-6923-4aa4-a776-9b2384635a6f",
+      "name": "If Has Draft",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -208,
+        480
+      ]
     },
     {
-      "id": "reply-draft-status-1",
+      "parameters": {
+        "jsCode": "return [{ json: { reply_text: `Черновик: ${$json.draft.pages_count} стр. Пришлите ещё или нажмите «Готово».` } }];"
+      },
+      "id": "91e4e877-8fef-4eba-ad53-bdd5c87c847b",
       "name": "Reply Draft Status",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [720, 440],
-      "parameters": {
-        "jsCode": "return [{ json: { reply_text: `Черновик: ${$json.draft.pages_count} стр. Пришлите ещё или нажмите «Готово».` } }];"
-      }
+      "position": [
+        32,
+        416
+      ]
     },
     {
-      "id": "check-latest-1",
-      "name": "Check Latest Upload",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [720, 580],
-      "onError": "continueErrorOutput",
       "parameters": {
-        "method": "GET",
         "url": "={{ $('Workflow Config').item.json.backendBaseUrl }}/api/v1/invoice-review/bot/uploads/latest",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendQuery": true,
         "queryParameters": {
           "parameters": [
-            { "name": "chat_id", "value": "={{$('Normalize Update').item.json.chat_id}}" }
+            {
+              "name": "chat_id",
+              "value": "={{$('Normalize Update').item.json.chat_id}}"
+            }
           ]
         },
         "options": {}
       },
+      "id": "bc31b5ca-ec30-47f3-9c06-2a2fcd9461b1",
+      "name": "Check Latest Upload",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        32,
+        560
+      ],
       "credentials": {
         "httpHeaderAuth": {
-          "id": "REPLACE_WITH_CREDENTIAL_ID",
-          "name": "Bot API Key"
+          "id": "1inRkYns5Mj1ovhO",
+          "name": "Backend URL"
         }
-      }
+      },
+      "onError": "continueErrorOutput"
     },
     {
-      "id": "reply-no-history-1",
+      "parameters": {
+        "jsCode": "return [{ json: { ...$json, from_status_command: true } }];"
+      },
+      "id": "5a2c6f1e-2b7d-4a3b-9f6e-1c9d7e3a4b5c",
+      "name": "Mark As Status Command",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        272,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { reply_text: 'Для этого чата еще нет загруженных документов. Пришлите первую страницу накладной.' } }];"
+      },
+      "id": "ab7ff6e7-66cd-4f2b-9c21-a818efa8a56d",
       "name": "Reply No History",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [960, 660],
-      "parameters": {
-        "jsCode": "return [{ json: { reply_text: 'Для этого чата еще нет загруженных документов. Пришлите первую страницу накладной.' } }];"
-      }
+      "position": [
+        272,
+        640
+      ]
     },
     {
-      "id": "format-result-1",
+      "parameters": {
+        "jsCode": "const data = $json;\nlet timedOut = false;\ntry {\n  const attempt = $('Prepare Poll').item.json.attempt;\n  const maxAttempts = $('Workflow Config').item.json.maxPollAttempts;\n  if (!data.completed && attempt >= maxAttempts) {\n    timedOut = true;\n  }\n} catch (e) {\n  timedOut = false;\n}\n\nlet text;\nif (timedOut) {\n  text = 'Обработка продолжается дольше обычного. Наберите «Статус» через минуту.';\n} else if (!data.completed) {\n  text = data.message || 'Документ обрабатывается.';\n} else {\n  const lines = [data.message || 'Документ обработан.'];\n  const summary = data.document_summary;\n  if (summary) {\n    if (summary.supplier) lines.push(`Поставщик: ${summary.supplier}`);\n    if (summary.invoice_number) lines.push(`Накладная: ${summary.invoice_number}`);\n    if (summary.invoice_date) lines.push(`Дата: ${summary.invoice_date}`);\n    if (summary.total_sum !== null && summary.total_sum !== undefined) lines.push(`Сумма: ${summary.total_sum}`);\n  }\n  if (data.google_spreadsheet_url) {\n    lines.push(`Таблица: ${data.google_spreadsheet_url}`);\n  } else if (data.google_spreadsheet_error) {\n    lines.push('Не удалось получить ссылку на таблицу, проверьте вручную.');\n  }\n  text = lines.join('\\n');\n}\n\nif (data.from_status_command) {\n  text = `Активного черновика нет. Последний обработанный документ:\\n${text}`;\n}\n\nreturn [{ json: { reply_text: text } }];"
+      },
+      "id": "37d8b155-839d-4c00-8a2d-d98b232760b9",
       "name": "Format Upload Result Message",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1440, 500],
-      "parameters": {
-        "jsCode": "const data = $json;\nlet timedOut = false;\ntry {\n  const attempt = $('Prepare Poll').item.json.attempt;\n  const maxAttempts = $('Workflow Config').item.json.maxPollAttempts;\n  if (!data.completed && attempt >= maxAttempts) {\n    timedOut = true;\n  }\n} catch (e) {\n  timedOut = false;\n}\n\nlet text;\nif (timedOut) {\n  text = 'Обработка продолжается дольше обычного. Наберите «Статус» через минуту.';\n} else if (!data.completed) {\n  text = data.message || 'Документ обрабатывается.';\n} else {\n  const lines = [data.message || 'Документ обработан.'];\n  const summary = data.document_summary;\n  if (summary) {\n    if (summary.supplier) lines.push(`Поставщик: ${summary.supplier}`);\n    if (summary.invoice_number) lines.push(`Накладная: ${summary.invoice_number}`);\n    if (summary.invoice_date) lines.push(`Дата: ${summary.invoice_date}`);\n    if (summary.total_sum !== null && summary.total_sum !== undefined) lines.push(`Сумма: ${summary.total_sum}`);\n  }\n  if (data.google_spreadsheet_url) {\n    lines.push(`Таблица: ${data.google_spreadsheet_url}`);\n  } else if (data.google_spreadsheet_error) {\n    lines.push('Не удалось получить ссылку на таблицу, проверьте вручную.');\n  }\n  text = lines.join('\\n');\n}\n\nreturn [{ json: { reply_text: text } }];"
-      }
+      "position": [
+        800,
+        848
+      ]
     },
     {
-      "id": "if-is-reset-1",
-      "name": "If Is Reset",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [240, 720],
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "typeValidation": "loose" },
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "loose"
+          },
           "combinator": "and",
           "conditions": [
             {
               "id": "c1",
               "leftValue": "={{$json.intent === 'reset'}}",
               "rightValue": true,
-              "operator": { "type": "boolean", "operation": "equals" }
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
             }
           ]
         },
         "options": {}
-      }
+      },
+      "id": "145b620a-1110-4772-897d-17a7318bb201",
+      "name": "If Is Reset",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -448,
+        704
+      ]
     },
     {
-      "id": "reset-draft-1",
-      "name": "Reset Draft",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [480, 680],
       "parameters": {
         "method": "POST",
         "url": "={{ $('Workflow Config').item.json.backendBaseUrl }}/api/v1/invoice-review/bot/drafts/reset",
@@ -513,149 +675,552 @@
         "contentType": "form-urlencoded",
         "bodyParameters": {
           "parameters": [
-            { "name": "chat_id", "value": "={{$('Normalize Update').item.json.chat_id}}" }
+            {
+              "name": "chat_id",
+              "value": "={{$('Normalize Update').item.json.chat_id}}"
+            }
           ]
         },
         "options": {}
       },
+      "id": "71611ec4-8dfb-4880-89e2-8344464908c6",
+      "name": "Reset Draft",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -208,
+        656
+      ],
       "credentials": {
         "httpHeaderAuth": {
-          "id": "REPLACE_WITH_CREDENTIAL_ID",
-          "name": "Bot API Key"
+          "id": "1inRkYns5Mj1ovhO",
+          "name": "Backend URL"
         }
       }
     },
     {
-      "id": "reply-reset-done-1",
+      "parameters": {
+        "jsCode": "return [{ json: { reply_text: 'Черновик очищен.' } }];"
+      },
+      "id": "d04c6987-44b0-4643-af32-6cb1d6c68528",
       "name": "Reply Reset Done",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [720, 680],
-      "parameters": {
-        "jsCode": "return [{ json: { reply_text: 'Черновик очищен.' } }];"
-      }
+      "position": [
+        16,
+        704
+      ]
     },
     {
-      "id": "reply-menu-1",
+      "parameters": {
+        "jsCode": "return [{ json: { reply_text: 'Пришлите фото или PDF накладной — можно несколько страниц подряд.\\nКогда все страницы отправлены — нажмите кнопку «Готово» внизу экрана.\\nКнопка «Статус» покажет, что сейчас происходит с документом.\\nКнопка «Сбросить» очистит незавершенный черновик.' } }];"
+      },
+      "id": "6c5bf9e6-a6db-401e-bbd7-9b09c01b5a4a",
       "name": "Reply Menu",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [480, 800],
-      "parameters": {
-        "jsCode": "return [{ json: { reply_text: 'Пришлите фото или PDF накладной — можно несколько страниц подряд.\\nКогда все страницы отправлены — нажмите кнопку «Готово» внизу экрана.\\nКнопка «Статус» покажет, что сейчас происходит с документом.\\nКнопка «Сбросить» очистит незавершенный черновик.' } }];"
-      }
+      "position": [
+        -208,
+        784
+      ]
     },
     {
-      "id": "send-reply-1",
+      "parameters": {
+        "chatId": "={{$('Normalize Update').item.json.chat_id}}",
+        "text": "={{$json.reply_text}}",
+        "replyMarkup": "replyKeyboard",
+        "replyKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "Готово",
+                    "additionalFields": {}
+                  },
+                  {
+                    "text": "Статус",
+                    "additionalFields": {}
+                  }
+                ]
+              }
+            },
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "Сбросить",
+                    "additionalFields": {}
+                  }
+                ]
+              }
+            },
+            {}
+          ]
+        },
+        "replyKeyboardOptions": {},
+        "additionalFields": {}
+      },
+      "id": "da6369d6-1c58-4d81-9904-7a7bcaf0c540",
       "name": "Send Reply",
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
-      "position": [1680, 500],
-      "parameters": {
-        "resource": "message",
-        "operation": "sendMessage",
-        "chatId": "={{$('Normalize Update').item.json.chat_id}}",
-        "text": "={{$json.reply_text}}",
-        "additionalFields": {}
-      },
+      "position": [
+        1088,
+        576
+      ],
+      "webhookId": "369e0964-9607-4d60-ae59-148e10b53359",
       "credentials": {
         "telegramApi": {
-          "id": "REPLACE_WITH_CREDENTIAL_ID",
-          "name": "Telegram Bot"
+          "id": "buTTuJt7v20jFjXE",
+          "name": "Telegram account"
         }
       }
     }
   ],
   "connections": {
-    "Telegram Trigger": { "main": [[{ "node": "Workflow Config", "type": "main", "index": 0 }]] },
-    "Workflow Config": { "main": [[{ "node": "Normalize Update", "type": "main", "index": 0 }]] },
-    "Normalize Update": { "main": [[{ "node": "If Is File", "type": "main", "index": 0 }]] },
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Workflow Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Workflow Config": {
+      "main": [
+        [
+          {
+            "node": "Normalize Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Update": {
+      "main": [
+        [
+          {
+            "node": "If Is File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "If Is File": {
       "main": [
-        [{ "node": "Get Telegram File", "type": "main", "index": 0 }],
-        [{ "node": "If Is Done", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Get Telegram File",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "If Is Done",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
-    "Get Telegram File": { "main": [[{ "node": "Send Page To Backend", "type": "main", "index": 0 }]] },
-    "Send Page To Backend": { "main": [[{ "node": "If Page Unsupported", "type": "main", "index": 0 }]] },
+    "Get Telegram File": {
+      "main": [
+        [
+          {
+            "node": "Send Page To Backend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Page To Backend": {
+      "main": [
+        [
+          {
+            "node": "If Page Unsupported",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "If Page Unsupported": {
       "main": [
-        [{ "node": "Reply Unsupported", "type": "main", "index": 0 }],
-        [{ "node": "Reply Page Added", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Reply Unsupported",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reply Page Added",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
-    "Reply Unsupported": { "main": [[{ "node": "Send Reply", "type": "main", "index": 0 }]] },
-    "Reply Page Added": { "main": [[{ "node": "Send Reply", "type": "main", "index": 0 }]] },
+    "Reply Unsupported": {
+      "main": [
+        [
+          {
+            "node": "Send Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply Page Added": {
+      "main": [
+        [
+          {
+            "node": "Send Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "If Is Done": {
       "main": [
-        [{ "node": "Finalize Draft", "type": "main", "index": 0 }],
-        [{ "node": "If Is Status", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Finalize Draft",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "If Is Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Finalize Draft": {
       "main": [
-        [{ "node": "Reply Processing Started", "type": "main", "index": 0 }],
-        [{ "node": "Reply No Pages", "type": "main", "index": 0 }]
-      ]
-    },
-    "Reply No Pages": { "main": [[{ "node": "Send Reply", "type": "main", "index": 0 }]] },
-    "Reply Processing Started": {
-      "main": [
         [
-          { "node": "Send Reply", "type": "main", "index": 0 },
-          { "node": "Prepare Poll", "type": "main", "index": 0 }
+          {
+            "node": "Reply Processing Started",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reply No Pages",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
-    "Prepare Poll": { "main": [[{ "node": "Wait Before Poll", "type": "main", "index": 0 }]] },
-    "Wait Before Poll": { "main": [[{ "node": "Check Upload Status", "type": "main", "index": 0 }]] },
-    "Check Upload Status": { "main": [[{ "node": "If Poll Done", "type": "main", "index": 0 }]] },
+    "Reply No Pages": {
+      "main": [
+        [
+          {
+            "node": "Send Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply Processing Started": {
+      "main": [
+        [
+          {
+            "node": "Send Reply",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare Poll",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Poll": {
+      "main": [
+        [
+          {
+            "node": "Wait Before Poll",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait Before Poll": {
+      "main": [
+        [
+          {
+            "node": "Check Upload Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Upload Status": {
+      "main": [
+        [
+          {
+            "node": "If Poll Done",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "If Poll Done": {
       "main": [
-        [{ "node": "Format Upload Result Message", "type": "main", "index": 0 }],
-        [{ "node": "Compute Stage", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Format Upload Result Message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Compute Stage",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
-    "Compute Stage": { "main": [[{ "node": "If Stage Changed", "type": "main", "index": 0 }]] },
+    "Compute Stage": {
+      "main": [
+        [
+          {
+            "node": "If Stage Changed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "If Stage Changed": {
       "main": [
-        [{ "node": "Set Stage Reply Text", "type": "main", "index": 0 }],
-        [{ "node": "Prepare Poll", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Set Stage Reply Text",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Poll",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
-    "Set Stage Reply Text": { "main": [[{ "node": "Send Stage Update", "type": "main", "index": 0 }]] },
-    "Send Stage Update": { "main": [[{ "node": "Prepare Poll", "type": "main", "index": 0 }]] },
+    "Set Stage Reply Text": {
+      "main": [
+        [
+          {
+            "node": "Send Stage Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Stage Update": {
+      "main": [
+        [
+          {
+            "node": "Prepare Poll",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "If Is Status": {
       "main": [
-        [{ "node": "Check Draft Status", "type": "main", "index": 0 }],
-        [{ "node": "If Is Reset", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Check Draft Status",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "If Is Reset",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
-    "Check Draft Status": { "main": [[{ "node": "If Has Draft", "type": "main", "index": 0 }]] },
+    "Check Draft Status": {
+      "main": [
+        [
+          {
+            "node": "If Has Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "If Has Draft": {
       "main": [
-        [{ "node": "Reply Draft Status", "type": "main", "index": 0 }],
-        [{ "node": "Check Latest Upload", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Reply Draft Status",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Check Latest Upload",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
-    "Reply Draft Status": { "main": [[{ "node": "Send Reply", "type": "main", "index": 0 }]] },
+    "Reply Draft Status": {
+      "main": [
+        [
+          {
+            "node": "Send Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "Check Latest Upload": {
       "main": [
-        [{ "node": "Format Upload Result Message", "type": "main", "index": 0 }],
-        [{ "node": "Reply No History", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Mark As Status Command",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reply No History",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
-    "Reply No History": { "main": [[{ "node": "Send Reply", "type": "main", "index": 0 }]] },
-    "Format Upload Result Message": { "main": [[{ "node": "Send Reply", "type": "main", "index": 0 }]] },
+    "Mark As Status Command": {
+      "main": [
+        [
+          {
+            "node": "Format Upload Result Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply No History": {
+      "main": [
+        [
+          {
+            "node": "Send Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Upload Result Message": {
+      "main": [
+        [
+          {
+            "node": "Send Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "If Is Reset": {
       "main": [
-        [{ "node": "Reset Draft", "type": "main", "index": 0 }],
-        [{ "node": "Reply Menu", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Reset Draft",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reply Menu",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
-    "Reset Draft": { "main": [[{ "node": "Reply Reset Done", "type": "main", "index": 0 }]] },
-    "Reply Reset Done": { "main": [[{ "node": "Send Reply", "type": "main", "index": 0 }]] },
-    "Reply Menu": { "main": [[{ "node": "Send Reply", "type": "main", "index": 0 }]] }
+    "Reset Draft": {
+      "main": [
+        [
+          {
+            "node": "Reply Reset Done",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply Reset Done": {
+      "main": [
+        [
+          {
+            "node": "Send Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply Menu": {
+      "main": [
+        [
+          {
+            "node": "Send Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
   },
-  "pinData": {}
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "527e68848b795fb6cfb90ac8c6e3a46e9792f925c935d26e929a888dc76090f0"
+  }
 }

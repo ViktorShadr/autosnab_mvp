@@ -6,11 +6,12 @@ Telegram router: it holds no session/draft data itself — everything about
 "which document is this page part of" lives in the backend
 (`ingestion_uploads`, `collecting` status), keyed by `chat_id`.
 
-This JSON was authored by hand against the current backend contract and has
-**not** been test-imported into a live n8n instance yet (no live n8n access
-from this environment). Import it, then work through the checklist below —
-n8n will visually flag any node whose parameters didn't map cleanly, and this
-guide tells you what the intended value is so you can fix it in a few clicks.
+This file is now the user's own confirmed-working cloud-n8n export (real
+credential IDs, real `webhookId`s, real `backendBaseUrl`), with incremental
+fixes applied on top by re-editing that export rather than hand-authoring a
+fresh one. Anything described below as "hand-authored and unverified" refers
+only to the parts that haven't gone through a live import yet — most of the
+workflow already has.
 
 ## 1. Prerequisites
 
@@ -26,90 +27,54 @@ In cloud n8n: **Workflows → Import from File** → select
 `telegram-bot-mvp.workflow.json`. It imports as an inactive draft named
 `Autosnab Telegram Bot MVP (Cloud n8n)`.
 
-## 3. Credentials to create
+## 3. Credentials already wired
 
-Every node that talks to Telegram or the backend references a credential by
-name; n8n will show these as "Credential not found" until you attach your
-own. Create these two, then reselect them on each node listed:
+This export already references the two real credentials from the user's
+n8n instance:
 
-### Telegram API credential — name it `Telegram Bot`
+- **Telegram account** (Telegram API) — attached to **Telegram Trigger**,
+  **Get Telegram File**, **Send Reply**, **Send Stage Update**.
+- **Backend URL** (HTTP Header Auth, header `X-Bot-Api-Key`) — attached to
+  every `HTTP Request` node: **Send Page To Backend**, **Finalize Draft**,
+  **Check Upload Status**, **Check Draft Status**, **Check Latest Upload**,
+  **Reset Draft**.
 
-- Type: **Telegram API**.
-- Access Token: the `@BotFather` bot token.
-- Attach to: **Telegram Trigger**, **Get Telegram File**, **Send Reply**,
-  **Send Stage Update**.
-
-### HTTP Header Auth credential — name it `Bot API Key`
-
-- Type: **Header Auth**.
-- Name: `X-Bot-Api-Key`.
-- Value: the same string as `.env`'s `BOT_API_SHARED_SECRET`.
-- Attach to every `HTTP Request` node: **Send Page To Backend**,
-  **Finalize Draft**, **Check Upload Status**, **Check Draft Status**,
-  **Check Latest Upload**, **Reset Draft**.
-- If `BOT_API_SHARED_SECRET` is left empty in `.env` (local-only testing),
-  the backend skips the check — you can leave the header value blank too,
-  but do this only while `ngrok` is not exposing the backend publicly.
+If you ever re-import this file into a *different* n8n instance, those
+credential IDs won't resolve there — recreate credentials with the same
+names and reattach them to the same node list above.
 
 ## 4. Workflow Config node
 
-Open the **Workflow Config** node (first Code node after the trigger) and
-edit the `backendBaseUrl` literal:
-
-```js
-backendBaseUrl: 'https://REPLACE-WITH-NGROK-URL',
-```
-
-Replace with the current `ngrok` HTTPS URL. This is the **only** place the
-backend URL is hardcoded — everything else references it via
+The **Workflow Config** node's `backendBaseUrl` is pre-filled with the
+current `ngrok` URL. This is the **only** place the backend URL is
+hardcoded — everything else references it via
 `{{ $('Workflow Config').item.json.backendBaseUrl }}`. When `ngrok` restarts
-with a new URL, this is the only node you need to touch.
+with a new URL (free tier), this is the only node you need to edit.
 
 `maxPollAttempts` (default `24`, ~2 minutes at 5s/attempt) controls how long
 the bot waits for processing to finish before telling the user to check
 `Статус` later — raise it if OpenAI/MinerU runs are consistently slower than
 that on your machine.
 
-## 5. Points to double-check after import (hand-authored JSON, not yet live-tested)
+## 5. Notes on a few node shapes
 
-n8n is generally forgiving about re-importing older parameter shapes and
-will show a small warning icon on any node it had to adjust. Check these
-first if something looks off:
-
-- **Send Page To Backend** (multipart body): confirm the `file` field shows
-  as *Body Parameter → Parameter Type: n8n Binary File → Input Data Field
-  Name: `data`*, and the three text fields (`chat_id`, `source_user_id`,
-  `source_username`) show as Form Data. If the binary field didn't map,
-  delete and re-add it with those exact settings — this uploads whatever
-  `Get Telegram File` downloaded into its `data` binary property.
-- **Get Telegram File**: resource `File`, operation `Get`, File ID
-  `={{$json.file_id}}`. Output binary property should be `data` (n8n's
-  default for this node) — that's what `Send Page To Backend` reads.
+- **Send Page To Backend** (multipart body): the `file` field is a Body
+  Parameter of type *n8n Binary File*, Input Data Field Name `data` — this
+  uploads whatever **Get Telegram File** downloaded into its `data` binary
+  property.
 - **Finalize Draft** / **Check Latest Upload**: both use *On Error → Continue
   (using error output)*, giving them two outputs (success / error) instead of
-  a separate `IF` node. Confirm this setting survived import; if not, set it
-  manually on the node's **Settings** tab.
+  a separate `IF` node.
 - Any `IF` node: each has exactly one condition, written as a full boolean
   expression compared to `true` (e.g. `{{$json.intent === 'file'}}` equals
-  `true`), rather than n8n's built-in string/exists operators. This was a
-  deliberate choice for stability across n8n versions — don't need to change
-  it, just know why it looks that way.
-- **Send Reply** (reply keyboard): the JSON ships with **no** reply-keyboard
-  parameters — an earlier attempt to hand-author them (`replyMarkup` /
-  `replyKeyboard` as top-level node parameters) caused n8n to reject the
-  whole import with `Could not find property option`, because those fields
-  actually live nested under **Additional Fields**, not at the top level of
-  the node. Rather than guess the exact nesting again, add the keyboard
-  yourself in the editor (2 minutes, and the UI can't produce invalid JSON):
-  1. Open the **Send Reply** node.
-  2. Under **Additional Fields**, click **Add Field** → choose **Reply
-     Markup**, set it to **Reply Keyboard**.
-  3. In the **Reply Keyboard** section, add two rows: row 1 = `Готово`,
-     `Статус`; row 2 = `Сбросить`.
-  4. Optionally enable **Resize Keyboard**.
-  `Normalize Update` already accepts the plain text `Готово` / `Статус` /
-  `Сбросить` (case-insensitive) whether it arrives as a typed message or a
-  tapped keyboard button, so no other node needs to change once this is set.
+  `true`), rather than n8n's built-in string/exists operators. Deliberate
+  choice for stability across n8n versions — no need to change it.
+- **Send Reply** (reply keyboard) — confirmed-working schema, learned from
+  this live export: `replyMarkup: "replyKeyboard"` and `replyKeyboard.rows`
+  is an array where each row is `{ "row": { "buttons": [{ "text": "..." }] } }`
+  (**`buttons`**, not `values` — an earlier hand-authored guess used `values`
+  and broke import with `Could not find property option`; this is the
+  corrected, confirmed shape). Two rows: `Готово`/`Статус`, then `Сбросить`.
 
 ## 6. Progress messages while a document is processing
 
@@ -141,7 +106,19 @@ The reply keyboard is only attached to **Send Reply** (the final-answer
 node); it doesn't need to be repeated on **Send Stage Update**, since a
 Telegram reply keyboard stays visible across messages once shown once.
 
-## 7. Activate and test
+## 7. "Статус" after "Сбросить" shows an old document — intentional, now labeled
+
+If the operator presses `Сбросить` and then `Статус` with no new pages sent,
+there is no open draft, so the bot falls back to the last *finished* upload
+for that chat (`GET /bot/uploads/latest`) — which can be an older document
+from before the reset. This looked like a bug in testing because the reply
+read like it was about the just-cleared draft. **Mark As Status Command**
+now tags that specific branch (`Check Latest Upload` → success →
+`Mark As Status Command` → `Format Upload Result Message`), and the message
+is prefixed with `Активного черновика нет. Последний обработанный документ:`
+so it reads as history, not as a live answer to the reset.
+
+## 8. Activate and test
 
 Activate the workflow (top-right toggle), set the Telegram webhook if not
 done automatically by the trigger node, then run the smoke tests from
