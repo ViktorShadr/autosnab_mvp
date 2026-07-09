@@ -76,6 +76,21 @@ begins, since `Prepare Poll` now depends on that node's output instead of
 racing it. `Send Reply` itself is unchanged and still used by every other
 reply path.
 
+## 4b. Publish before testing — editor changes are not live until published
+
+This cloud-n8n workspace has a Draft/Publish split (see the **Publish**
+button, top-right of the editor). Importing or editing the workflow only
+updates the *draft* graph — the live Telegram-triggered execution keeps
+running whatever was last **published**, even if the editor visibly shows
+the new nodes. Confirmed on 2026-07-09: after adding the `Send Started
+Reply` node fix, a live test still showed the old bug (attribution footer
+present, "Принял, обрабатываю..." arriving last), and the Executions tab
+for that exact run showed the *old* graph (no `Send Started Reply` node)
+even though the editor already had it. Clicking **Publish** and re-testing
+fixed both. Always publish after importing/editing before testing live —
+if a fix "doesn't work," check the Executions tab's graph view for that
+run before re-diagnosing the workflow JSON itself.
+
 ## 5. Notes on a few node shapes
 
 - **Send Page To Backend** (multipart body): the `file` field is a Body
