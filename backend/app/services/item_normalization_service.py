@@ -86,6 +86,9 @@ def normalize_item_candidate(item: InvoiceParsedItem) -> list[dict[str, str]]:
 
     if multiplier is None:
         multiplier, accounting_unit = _fallback_multiplier(item.package, document_unit)
+    units_per_package = _positive_number(item.units_per_package)
+    item.units_per_package = units_per_package
+    multiplier = _apply_units_per_package(multiplier, units_per_package)
     item.quantity_multiplier = multiplier
     item.accounting_unit_candidate = accounting_unit or _normalize_unit(item.accounting_unit_candidate)
     item.accounting_quantity_candidate = _multiply(quantity, multiplier)
@@ -256,6 +259,11 @@ def apply_reference_mapping_to_payload(
                 parser_notes,
             )
 
+        units_per_package = _positive_number(item.get("units_per_package"))
+        item["units_per_package"] = units_per_package
+        multiplier = _apply_units_per_package(multiplier, units_per_package)
+        conversion_method = _package_method(conversion_method, units_per_package)
+
         quantity = _number(item.get("quantity_document"))
         if quantity is None:
             quantity = _number(item.get("quantity"))
@@ -318,11 +326,7 @@ def _calculate_conversion(item: dict[str, Any]) -> tuple[float | None, str, str]
     document_unit = _normalize_unit(item.get("document_unit") or item.get("unit"))
     package, multiplier, accounting_unit = _extract_package(raw_name)
     if multiplier is not None:
-        if (
-            document_unit in {"кг", "л"}
-            and accounting_unit == document_unit
-            and multiplier > 1
-        ):
+        if document_unit in {"кг", "л"} and accounting_unit == document_unit and multiplier > 1:
             return 1.0, document_unit, "identity_document_unit"
         method = "compound_package" if _COMPOUND_PACKAGE_RE.search(raw_name) else "standard"
         return multiplier, accounting_unit, method
@@ -340,6 +344,25 @@ def _calculate_conversion(item: dict[str, Any]) -> tuple[float | None, str, str]
         return None, "", "unresolved"
     return None, "", "unresolved"
 
+def _positive_number(value: Any) -> float | None:
+    number = _number(value)
+    if number is None or number <= 0:
+        return None
+    return number
+
+
+def _apply_units_per_package(multiplier: float | None, units_per_package: float | None) -> float | None:
+    if multiplier is None:
+        return None
+    if units_per_package is None:
+        return multiplier
+    return _multiply(multiplier, units_per_package)
+
+
+def _package_method(method: str, units_per_package: float | None) -> str:
+    if units_per_package is None or units_per_package == 1:
+        return method
+    return f"{method}_with_units_per_package"
 
 def _extract_package(raw_name: str) -> tuple[InvoiceItemPackage, float | None, str]:
     dimension = _DIMENSION_RE.search(raw_name)

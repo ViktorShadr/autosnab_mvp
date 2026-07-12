@@ -187,6 +187,73 @@ def test_item_normalization_extracts_code_package_and_accounting_quantity():
     assert item.accounting_unit_candidate == "кг"
 
 
+
+def test_item_normalization_uses_explicit_units_per_package_from_document_column():
+    item = InvoiceParsedItem(
+        raw_name="1,5Л ВОДА КРАСНЫЙ КЛЮЧ ГАЗ",
+        document_unit="УП",
+        quantity_document=2,
+        units_per_package=6,
+        confidence=0.95,
+    )
+
+    issues = normalize_item_candidate(item)
+
+    assert issues == []
+    assert item.package.model_dump() == {"value": 1.5, "unit": "л", "raw": "1,5Л"}
+    assert item.units_per_package == 6
+    assert item.quantity_multiplier == 9.0
+    assert item.accounting_quantity_candidate == 18.0
+    assert item.accounting_unit_candidate == "л"
+
+
+def test_reference_mapping_applies_units_per_package_after_package_reference_check():
+    payload = {
+        "items": [
+            {
+                "line_number": 4,
+                "name": "1,5Л ВОДА КРАСНЫЙ КЛЮЧ ГАЗ",
+                "raw_name": "1,5Л ВОДА КРАСНЫЙ КЛЮЧ ГАЗ",
+                "normalized_name_candidate": "Вода Красный Ключ Газ",
+                "package": {"value": 1.5, "unit": "л", "raw": "1,5Л"},
+                "document_unit": "УП",
+                "quantity": 2,
+                "quantity_document": 2,
+                "units_per_package": 6,
+                "price": 181.48,
+            }
+        ],
+        "parser_metadata": {
+            "upload_status": "Проверить",
+            "row_status": "Распознано",
+            "review_flags": [],
+            "item_corrections": {},
+        },
+        "parser_notes": [],
+    }
+
+    result = apply_reference_mapping_to_payload(
+        payload,
+        products=[{"Наименование": "Вода Красный Ключ Газ", "Код": "277029", "Ед. изм.": "л"}],
+        packages=[
+            {
+                "ID": "1-50000",
+                "Фасовка в документе": "1,5Л",
+                "Коэффициент пересчета": 1.5,
+                "Единица учета в УС": "л",
+                "Активна": "да",
+            }
+        ],
+    )
+
+    item = result["items"][0]
+    assert item["units_per_package"] == 6
+    assert item["conversion_factor"] == 9.0
+    assert item["quantity_us"] == 18.0
+    assert item["price_us"] == pytest.approx(181.48 / 9)
+    assert item["conversion_method"] == "standard_with_units_per_package"
+    assert item.get("correction", "") == ""
+
 def test_item_normalization_fixes_common_latin_kg_ocr_alias():
     item = InvoiceParsedItem(
         raw_name="1Еноки вес",

@@ -16,7 +16,7 @@ SHARED_INVOICE_HEADERS = [
     "Грузоотправитель", "Получатель", "Торговая точка", "Склад", "Основание",
     "Товар найден в справочнике", "Наименование товара из документа",
     "Наименование товара в УС", "Ед.изм. в документе", "Ед.изм. в УС",
-    "Кол-во в документе", "Кол-во в УС", "Цена за ед-цу", "Цена в УС",
+    "Кол-во в документе", "Кол-во в упаковке", "Кол-во в УС", "Цена за ед-цу", "Цена в УС",
     "Стоимость без НДС", "Ставка НДС", "Сумма НДС", "Общая стоимость",
     "Сумма накладной", "Дата приема", "Принял, Ф.И.О.", "Госсистемы",
     "Кол-во в заявке", "Цена по прайсу", "Предыдущая дата поставки",
@@ -35,17 +35,18 @@ INVOICE_REGISTER_COLUMN_WIDTHS = {
     15: 280,  # Наименование товара из документа
     16: 240,  # Наименование товара в УС
     17: 190,  # Ед.изм. в документе
-    19: 190,  # Кол-во в документе
-    21: 150,  # Цена за ед-цу
-    23: 180,  # Стоимость без НДС
-    24: 130,  # Ставка НДС
-    30: 180,  # Госсистемы
-    33: 240,  # Предыдущая дата поставки
-    34: 190,  # Предыдущая цена
-    35: 230,  # Отклонение от цены прайса
-    36: 205,  # Время загрузки документа
-    37: 130,  # ID документа
-    38: 250,  # Ссылка на исходный документ
+    20: 190,  # Кол-во в документе
+    21: 180,  # Кол-во в упаковке
+    23: 150,  # Цена за ед-цу
+    25: 180,  # Стоимость без НДС
+    26: 130,  # Ставка НДС
+    32: 180,  # Госсистемы
+    35: 240,  # Предыдущая дата поставки
+    36: 190,  # Предыдущая цена
+    37: 230,  # Отклонение от цены прайса
+    38: 205,  # Время загрузки документа
+    39: 130,  # ID документа
+    40: 250,  # Ссылка на исходный документ
 }
 
 HEADER_BACKGROUND_COLOR = {
@@ -65,7 +66,7 @@ DOCUMENT_SEPARATOR_BORDER_COLOR = {
     "green": 96 / 255,
     "blue": 105 / 255,
 }
-INVOICE_REGISTER_COLUMN_COUNT = 39
+INVOICE_REGISTER_COLUMN_COUNT = 41
 
 
 class GoogleSheetsConfigurationError(RuntimeError):
@@ -79,7 +80,7 @@ def load_invoice_reference_catalogs() -> dict[str, list[dict[str, Any]]]:
             "Для чтения справочников нужны GOOGLE_SHEETS_ENABLED=true и GOOGLE_TARGET_SPREADSHEET_ID."
         )
     sheets_service, _ = _build_google_services()
-    ranges = ["'Товары'!A1:D", "'Справочник фасовок'!A1:M"]
+    ranges = ["'Товары'!A1:H", "'Поставщики'!A1:H", "'Справочник фасовок'!A1:M"]
     if settings.google_conversion_exceptions_sheet_name:
         escaped_name = settings.google_conversion_exceptions_sheet_name.replace("'", "''")
         ranges.append(f"'{escaped_name}'!A1:Z")
@@ -90,13 +91,27 @@ def load_invoice_reference_catalogs() -> dict[str, list[dict[str, Any]]]:
     ).execute()
     ranges = response.get("valueRanges") or []
     products_rows = ranges[0].get("values", []) if len(ranges) > 0 else []
-    packages_rows = ranges[1].get("values", []) if len(ranges) > 1 else []
-    exceptions_rows = ranges[2].get("values", []) if len(ranges) > 2 else []
+    suppliers_rows = ranges[1].get("values", []) if len(ranges) > 1 else []
+    packages_rows = ranges[2].get("values", []) if len(ranges) > 2 else []
+    exceptions_rows = ranges[3].get("values", []) if len(ranges) > 3 else []
     return {
-        "products": _table_rows_as_dicts(products_rows),
+        "products": _confirmed_reference_rows(_table_rows_as_dicts(products_rows)),
+        "suppliers": _confirmed_reference_rows(_table_rows_as_dicts(suppliers_rows)),
         "packages": _table_rows_as_dicts(packages_rows),
         "conversion_exceptions": _table_rows_as_dicts(exceptions_rows),
     }
+
+
+def _confirmed_reference_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    confirmed_statuses = {"", "matched", "ready", "подтвержден", "подтверждено", "сопоставлено"}
+    result = []
+    for row in rows:
+        status = _normalize_reference_sheet_name(
+            row.get("Статус сопоставления") or row.get("Статус") or ""
+        )
+        if status in confirmed_statuses:
+            result.append(row)
+    return result
 
 
 def create_invoice_review_spreadsheet(
@@ -365,31 +380,48 @@ def _add_invoice_bottom_separator(
     sheet_id: int,
     end_row: int,
     end_column_index: int | None = None,
+    clear_to_column_index: int | None = None,
 ) -> None:
     if end_row < 2:
         return
 
+    separator_end = end_column_index or INVOICE_REGISTER_COLUMN_COUNT
+    requests = []
+    if clear_to_column_index and clear_to_column_index > separator_end:
+        requests.append(
+            {
+                "updateBorders": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": end_row - 1,
+                        "endRowIndex": end_row,
+                        "startColumnIndex": separator_end,
+                        "endColumnIndex": clear_to_column_index,
+                    },
+                    "bottom": {"style": "NONE"},
+                }
+            }
+        )
+    requests.append(
+        {
+            "updateBorders": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": end_row - 1,
+                    "endRowIndex": end_row,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": separator_end,
+                },
+                "bottom": {
+                    "style": "SOLID",
+                    "color": DOCUMENT_SEPARATOR_BORDER_COLOR,
+                },
+            }
+        }
+    )
     sheets_service.spreadsheets().batchUpdate(
         spreadsheetId=spreadsheet_id,
-        body={
-            "requests": [
-                {
-                    "updateBorders": {
-                        "range": {
-                            "sheetId": sheet_id,
-                            "startRowIndex": end_row - 1,
-                            "endRowIndex": end_row,
-                            "startColumnIndex": 0,
-                            "endColumnIndex": end_column_index or INVOICE_REGISTER_COLUMN_COUNT,
-                        },
-                        "bottom": {
-                            "style": "SOLID",
-                            "color": DOCUMENT_SEPARATOR_BORDER_COLOR,
-                        },
-                    }
-                }
-            ]
-        },
+        body={"requests": requests},
     ).execute()
 
 
@@ -679,12 +711,18 @@ def _insert_into_existing_spreadsheet(
             }
         }
     ]
-    target_column_count = (target_sheet.get("gridProperties") or {}).get("columnCount", 0)
+    target_column_count = max(
+        (target_sheet.get("gridProperties") or {}).get("columnCount", 0),
+        len(target_headers),
+    )
     border_column_count = _invoice_separator_column_count(
         target_column_count=target_column_count,
         document_column_count=column_count,
         target_headers=target_headers,
     )
+    formula_start_column = len(SHARED_INVOICE_HEADERS)
+    if target_column_count == 47:
+        formula_start_column -= 1
     if target_column_count >= 47:
         template_row_start = insert_end_index
         inserted_rows = {
@@ -701,8 +739,8 @@ def _insert_into_existing_spreadsheet(
             requests.append(
                 {
                     "copyPaste": {
-                        "source": {**template_row, "startColumnIndex": 0, "endColumnIndex": 47},
-                        "destination": {**inserted_rows, "startColumnIndex": 0, "endColumnIndex": 47},
+                        "source": {**template_row, "startColumnIndex": 0, "endColumnIndex": target_column_count},
+                        "destination": {**inserted_rows, "startColumnIndex": 0, "endColumnIndex": target_column_count},
                         "pasteType": paste_type,
                         "pasteOrientation": "NORMAL",
                     }
@@ -711,8 +749,8 @@ def _insert_into_existing_spreadsheet(
         requests.append(
             {
                 "copyPaste": {
-                    "source": {**template_row, "startColumnIndex": 40, "endColumnIndex": 47},
-                    "destination": {**inserted_rows, "startColumnIndex": 40, "endColumnIndex": 47},
+                    "source": {**template_row, "startColumnIndex": formula_start_column, "endColumnIndex": target_column_count},
+                    "destination": {**inserted_rows, "startColumnIndex": formula_start_column, "endColumnIndex": target_column_count},
                     "pasteType": "PASTE_FORMULA",
                     "pasteOrientation": "NORMAL",
                 }
@@ -736,6 +774,7 @@ def _insert_into_existing_spreadsheet(
         sheet_id=target_sheet["sheetId"],
         end_row=last_document_row_number,
         end_column_index=border_column_count,
+        clear_to_column_index=target_column_count,
     )
 
     return {
@@ -763,12 +802,10 @@ def _invoice_separator_column_count(
     document_column_count: int,
     target_headers: list[str],
 ) -> int:
-    preferred_column_count = max(document_column_count, len(target_headers), INVOICE_REGISTER_COLUMN_COUNT)
-    if target_column_count >= 47:
-        preferred_column_count = max(preferred_column_count, 47)
+    table_column_count = max(document_column_count, len(target_headers), INVOICE_REGISTER_COLUMN_COUNT)
     if target_column_count > 0:
-        preferred_column_count = min(preferred_column_count, target_column_count)
-    return max(preferred_column_count, 1)
+        table_column_count = min(table_column_count, target_column_count)
+    return max(table_column_count, 1)
 
 
 def _read_target_headers(
@@ -780,20 +817,116 @@ def _read_target_headers(
     values_resource = sheets_service.spreadsheets().values()
     if not hasattr(values_resource, "get"):
         return SHARED_INVOICE_HEADERS
-    response = values_resource.get(
-        spreadsheetId=spreadsheet_id,
-        range=f"{sheet_name}!A{header_row_number}:AN{header_row_number}",
-    ).execute()
-    rows = response.get("values") or []
-    headers = [str(value).strip() for value in (rows[0] if rows else [])]
+    headers = _fetch_target_headers(
+        values_resource,
+        spreadsheet_id,
+        sheet_name,
+        header_row_number,
+    )
     if not headers:
         raise GoogleSheetsConfigurationError(f"Строка заголовков {header_row_number} листа '{sheet_name}' пуста.")
+
     missing = [header for header in SHARED_INVOICE_HEADERS if header not in headers]
+    if missing == ["Кол-во в упаковке"]:
+        _insert_units_per_package_column(
+            sheets_service,
+            values_resource,
+            spreadsheet_id,
+            sheet_name,
+            header_row_number,
+        )
+        headers = _fetch_target_headers(
+            values_resource,
+            spreadsheet_id,
+            sheet_name,
+            header_row_number,
+        )
+        missing = [header for header in SHARED_INVOICE_HEADERS if header not in headers]
     if missing:
         raise GoogleSheetsConfigurationError(
             "В листе 'Накладная' отсутствуют обязательные заголовки: " + ", ".join(missing)
         )
     return headers
+
+
+def _fetch_target_headers(
+    values_resource,
+    spreadsheet_id: str,
+    sheet_name: str,
+    header_row_number: int,
+) -> list[str]:
+    response = values_resource.get(
+        spreadsheetId=spreadsheet_id,
+        range=f"{sheet_name}!A{header_row_number}:AZ{header_row_number}",
+    ).execute()
+    rows = response.get("values") or []
+    return [str(value).strip() for value in (rows[0] if rows else [])]
+
+
+def _insert_units_per_package_column(
+    sheets_service,
+    values_resource,
+    spreadsheet_id: str,
+    sheet_name: str,
+    header_row_number: int,
+) -> None:
+    spreadsheet = sheets_service.spreadsheets().get(
+        spreadsheetId=spreadsheet_id,
+        includeGridData=False,
+    ).execute()
+    sheet_id = next(
+        (
+            sheet.get("properties", {}).get("sheetId")
+            for sheet in spreadsheet.get("sheets", [])
+            if sheet.get("properties", {}).get("title") == sheet_name
+        ),
+        None,
+    )
+    if sheet_id is None:
+        raise GoogleSheetsConfigurationError(f"В target spreadsheet не найден лист '{sheet_name}'.")
+
+    column_index = SHARED_INVOICE_HEADERS.index("Кол-во в упаковке")
+    sheets_service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={
+            "requests": [
+                {
+                    "insertDimension": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "dimension": "COLUMNS",
+                            "startIndex": column_index,
+                            "endIndex": column_index + 1,
+                        },
+                        "inheritFromBefore": False,
+                    }
+                },
+                {
+                    "copyPaste": {
+                        "source": {
+                            "sheetId": sheet_id,
+                            "startColumnIndex": column_index - 1,
+                            "endColumnIndex": column_index,
+                        },
+                        "destination": {
+                            "sheetId": sheet_id,
+                            "startColumnIndex": column_index,
+                            "endColumnIndex": column_index + 1,
+                        },
+                        "pasteType": "PASTE_FORMAT",
+                        "pasteOrientation": "NORMAL",
+                    }
+                },
+            ]
+        },
+    ).execute()
+    column_name = _column_index_to_a1(column_index)
+    values_resource.update(
+        spreadsheetId=spreadsheet_id,
+        range=f"{sheet_name}!{column_name}{header_row_number}",
+        valueInputOption="RAW",
+        body={"values": [["Кол-во в упаковке"]]},
+    ).execute()
 
 
 def _remap_source_rows_to_shared_sheet(
@@ -844,6 +977,7 @@ def _remap_source_rows_to_shared_sheet(
             "Ед.изм. в документе": row_map.get("Ед.изм.", ""),
             "Ед.изм. в УС": row_map.get("Ед.изм. в УС", ""),
             "Кол-во в документе": row_map.get("Кол-во из документа", ""),
+            "Кол-во в упаковке": row_map.get("Кол-во в упаковке", ""),
             "Кол-во в УС": row_map.get("Кол-во в УС", ""),
             "Цена за ед-цу": row_map.get("Цена за единицу", ""),
             "Цена в УС": row_map.get("Цена в УС", ""),
@@ -933,3 +1067,127 @@ def _column_index_to_a1(column_index: int) -> str:
 
 def serialize_sheet_result(result: dict[str, Any]) -> str:
     return json.dumps(result, ensure_ascii=False)
+
+
+def sync_incremental_reference_catalogs(entries: list[dict[str, Any]]) -> dict[str, int]:
+    """Append newly encountered products/suppliers to MVP reference tabs."""
+    result = {"products": 0, "suppliers": 0}
+    if not entries or not settings.google_sheets_enabled or not settings.google_target_spreadsheet_id:
+        return result
+    sheets_service, _ = _build_google_services()
+    grouped = {
+        "product": ("Товары", "products", ["Статус сопоставления", "Уверенность", "Источник", "Наименование из документа"]),
+        "supplier": ("Поставщики", "suppliers", ["Статус сопоставления", "Уверенность", "Источник", "Наименование из документа"]),
+    }
+    for kind, (sheet_name, result_key, extra_headers) in grouped.items():
+        kind_entries = [entry for entry in entries if entry.get("kind") == kind]
+        if not kind_entries:
+            continue
+        result[result_key] = _append_reference_entries(
+            sheets_service,
+            settings.google_target_spreadsheet_id,
+            sheet_name,
+            kind_entries,
+            extra_headers,
+        )
+    return result
+
+
+def _append_reference_entries(
+    sheets_service,
+    spreadsheet_id: str,
+    sheet_name: str,
+    entries: list[dict[str, Any]],
+    extra_headers: list[str],
+) -> int:
+    escaped_name = sheet_name.replace("'", "''")
+    response = sheets_service.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f"'{escaped_name}'!A1:Z",
+        majorDimension="ROWS",
+    ).execute()
+    rows = response.get("values") or []
+    if not rows:
+        return 0
+    headers = [str(value).strip() for value in rows[0]]
+    headers = _ensure_reference_headers(
+        sheets_service,
+        spreadsheet_id,
+        escaped_name,
+        headers,
+        extra_headers,
+    )
+    existing = {
+        _normalize_reference_sheet_name(value)
+        for row in rows[1:]
+        for value in row[:2]
+        if value not in (None, "")
+    }
+    new_rows = []
+    for entry in entries:
+        names = [entry.get("raw_name"), entry.get("external_name")]
+        if any(_normalize_reference_sheet_name(name) in existing for name in names if name):
+            continue
+        new_rows.append([_reference_sheet_value(header, entry) for header in headers])
+        existing.update(_normalize_reference_sheet_name(name) for name in names if name)
+    if not new_rows:
+        return 0
+    sheets_service.spreadsheets().values().append(
+        spreadsheetId=spreadsheet_id,
+        range=f"'{escaped_name}'!A:Z",
+        valueInputOption="RAW",
+        insertDataOption="INSERT_ROWS",
+        body={"values": new_rows},
+    ).execute()
+    return len(new_rows)
+
+
+def _ensure_reference_headers(
+    sheets_service,
+    spreadsheet_id: str,
+    escaped_sheet_name: str,
+    headers: list[str],
+    extra_headers: list[str],
+) -> list[str]:
+    normalized = {_normalize_reference_sheet_name(header) for header in headers}
+    missing = [header for header in extra_headers if _normalize_reference_sheet_name(header) not in normalized]
+    if not missing:
+        return headers
+    updated = headers + missing
+    end_column = _column_index_to_a1(len(updated) - 1)
+    sheets_service.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range=f"'{escaped_sheet_name}'!A1:{end_column}1",
+        valueInputOption="RAW",
+        body={"values": [updated]},
+    ).execute()
+    return updated
+
+
+def _reference_sheet_value(header: str, entry: dict[str, Any]) -> Any:
+    normalized = _normalize_reference_sheet_name(header)
+    status = entry.get("status") or ""
+    unresolved = status in {"new", "needs_review"}
+    if normalized in {"наименование", "товар", "наименование товара", "поставщик", "наименование поставщика"}:
+        if unresolved:
+            return entry.get("raw_name") or ""
+        return entry.get("external_name") or entry.get("raw_name") or ""
+    if normalized in {"код", "id", "внешний id", "external id", "код товара", "код поставщика"}:
+        return "" if unresolved else entry.get("external_id") or ""
+    if normalized in {"ед изм", "единица измерения", "единица"}:
+        return entry.get("unit") or ""
+    if normalized in {"статус", "статус сопоставления"}:
+        return status
+    if normalized in {"уверенность", "confidence"}:
+        return entry.get("confidence") or 0
+    if normalized in {"источник", "source"}:
+        return entry.get("source") or ""
+    if normalized in {"наименование из документа", "исходное наименование"}:
+        return entry.get("raw_name") or ""
+    return ""
+
+
+def _normalize_reference_sheet_name(value: Any) -> str:
+    text = str(value or "").lower().replace("ё", "е")
+    text = re.sub(r"[^a-zа-я0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()

@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     iiko_timeout_seconds: float = 30.0
     iiko_auto_mapping_enabled: bool = True
     iiko_mapping_min_confidence: float = 0.72
+    iiko_mapping_review_confidence: float = 0.55
 
     # OpenAI structures extracted evidence. Business rules and sheet writes stay local.
     openai_api_key: str | None = None

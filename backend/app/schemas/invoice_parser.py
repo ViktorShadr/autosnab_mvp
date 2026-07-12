@@ -38,6 +38,7 @@ class InvoiceParsedItem(BaseModel):
     package: InvoiceItemPackage = Field(default_factory=InvoiceItemPackage)
     document_unit: str = ""
     quantity_document: float | None = None
+    units_per_package: float | None = None
     quantity_multiplier: float | None = None
     accounting_quantity_candidate: float | None = None
     accounting_unit_candidate: str = ""

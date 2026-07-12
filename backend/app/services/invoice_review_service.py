@@ -17,11 +17,13 @@ from app.services.google_sheets_service import (
     SHARED_INVOICE_HEADERS,
     create_invoice_review_spreadsheet,
     load_invoice_reference_catalogs,
+    sync_incremental_reference_catalogs,
     serialize_sheet_result,
 )
 from app.services.iiko_incoming_invoice_service import build_iiko_export_payload, build_incoming_invoice_xml
 from app.services.iiko_reference_mapping_service import auto_fill_iiko_fields, get_iiko_reference_context, invalidate_iiko_reference_cache
 from app.services.invoice_normalization_service import normalize_supplier_inn_value
+from app.services.reference_catalog_service import upsert_reference_entry
 from app.services.item_normalization_service import apply_reference_mapping_to_payload
 
 REQUIRED_FIELDS = {
@@ -56,6 +58,7 @@ INVOICE_REGISTER_HEADERS = [
     "Ед.изм. в документе",
     "Ед.изм. в УС",
     "Кол-во в документе",
+    "Кол-во в упаковке",
     "Кол-во в УС",
     "Цена за ед-цу",
     "Цена в УС",
@@ -106,11 +109,15 @@ def create_invoice_review(db: Session, payload) -> Receiving:
 
     recognized_items = [_item_payload(item, index) for index, item in enumerate(payload.items, start=1)]
     header_meta = _header_payload(payload)
-    mapping_result = auto_fill_iiko_fields(header_meta, recognized_items, supplier_name=supplier, venue=venue)
+    _seed_local_reference_catalogs(db, venue)
+    mapping_result = auto_fill_iiko_fields(
+        header_meta, recognized_items, supplier_name=supplier, venue=venue, db=db
+    )
     header_meta = mapping_result["header"]
     recognized_items = mapping_result["items"]
     if mapping_result.get("notes"):
         header_meta["mapping_notes"] = mapping_result["notes"]
+    _sync_discovered_references(mapping_result, header_meta)
     document = ReceivingDocument(
         receiving_id=receiving.id,
         file_id=payload.file_id,
@@ -167,11 +174,19 @@ def update_invoice_review(db: Session, receiving_id: int, payload) -> Receiving:
     # Вариант 3: Google Таблица присылает только бизнес-поля.
     # Старые технические iiko-поля берем из backend metadata и сохраняем до повторного автосопоставления.
     recognized_items = _merge_stored_iiko_metadata(recognized_items, old_meta.get("items") or [])
-    mapping_result = auto_fill_iiko_fields(merged_header, recognized_items, supplier_name=payload.supplier or receiving.supplier, venue=payload.venue or receiving.venue)
+    _seed_local_reference_catalogs(db, payload.venue or receiving.venue)
+    mapping_result = auto_fill_iiko_fields(
+        merged_header,
+        recognized_items,
+        supplier_name=payload.supplier or receiving.supplier,
+        venue=payload.venue or receiving.venue,
+        db=db,
+    )
     merged_header = mapping_result["header"]
     recognized_items = mapping_result["items"]
     if mapping_result.get("notes"):
         merged_header["mapping_notes"] = mapping_result["notes"]
+    _sync_discovered_references(mapping_result, merged_header)
     if document is not None:
         document.invoice_number = payload.invoice_number or document.invoice_number
         document.invoice_date = payload.invoice_date or document.invoice_date
@@ -210,6 +225,59 @@ def update_invoice_review(db: Session, receiving_id: int, payload) -> Receiving:
 
 
 
+def _seed_local_reference_catalogs(db: Session, venue: str | None) -> None:
+    if not settings.google_sheets_enabled or not settings.google_target_spreadsheet_id:
+        return
+    try:
+        references = load_invoice_reference_catalogs()
+    except Exception:
+        return
+    for product in references.get("products", []):
+        name = product.get("Наименование") or product.get("name")
+        if not name:
+            continue
+        upsert_reference_entry(
+            db,
+            kind="product",
+            venue=venue,
+            raw_name=str(name),
+            external_id=product.get("Код") or product.get("id") or product.get("code"),
+            external_name=str(name),
+            unit=product.get("Ед. изм.") or product.get("unit"),
+            status="matched",
+            confidence=1.0,
+            source="local_sheet",
+        )
+    for supplier in references.get("suppliers", []):
+        name = supplier.get("Поставщик") or supplier.get("Наименование") or supplier.get("name")
+        if not name:
+            continue
+        upsert_reference_entry(
+            db,
+            kind="supplier",
+            venue=None,
+            raw_name=str(name),
+            external_id=supplier.get("Код") or supplier.get("id") or supplier.get("code"),
+            external_name=str(name),
+            unit=None,
+            status="matched",
+            confidence=1.0,
+            source="local_sheet",
+        )
+
+
+def _sync_discovered_references(mapping_result: dict[str, Any], header: dict[str, Any]) -> None:
+    discovered = mapping_result.get("discovered_references") or []
+    if not discovered:
+        return
+    try:
+        header["reference_catalog_sync"] = sync_incremental_reference_catalogs(discovered)
+    except Exception as exc:  # noqa: BLE001 - invoice upload must survive an operator-sheet sync error
+        notes = list(header.get("mapping_notes") or [])
+        notes.append(f"Не удалось обновить локальные справочники Google Sheets: {exc}")
+        header["mapping_notes"] = notes
+
+
 def get_iiko_reference_status() -> dict:
     context = get_iiko_reference_context(force_refresh=False)
     if context.get("context"):
@@ -238,10 +306,14 @@ def remap_review_with_iiko_references(db: Session, receiving_id: int, force_refr
     meta = _document_meta(document)
     header = meta.get("header", {})
     items = meta.get("items", [])
-    mapping_result = auto_fill_iiko_fields(header, items, supplier_name=receiving.supplier, venue=receiving.venue)
+    _seed_local_reference_catalogs(db, receiving.venue)
+    mapping_result = auto_fill_iiko_fields(
+        header, items, supplier_name=receiving.supplier, venue=receiving.venue, db=db
+    )
     header = mapping_result["header"]
     if mapping_result.get("notes"):
         header["mapping_notes"] = mapping_result["notes"]
+    _sync_discovered_references(mapping_result, header)
     document.recognized_items_json = json.dumps({"header": header, "items": mapping_result["items"]}, ensure_ascii=False)
     db.commit()
     db.refresh(receiving)
@@ -629,6 +701,7 @@ def _invoice_register_item_row(
         unit,
         unit_in_us,
         quantity,
+        row_meta.get("units_per_package", "") if item is not None else "",
         quantity_in_us,
         price,
         price_in_us,
@@ -753,6 +826,7 @@ def _shared_invoice_item_row(
         "Ед.изм. в документе": unit,
         "Ед.изм. в УС": unit_in_us,
         "Кол-во в документе": quantity,
+        "Кол-во в упаковке": row_meta.get("units_per_package", ""),
         "Кол-во в УС": quantity_in_us,
         "Цена за ед-цу": price,
         "Цена в УС": price_in_us,
@@ -1731,17 +1805,15 @@ def _extract_first_inn(value: Any) -> str | None:
 
 
 def _detect_document_form_from_text(value: str | None) -> str | None:
-    # Values and casing match the live sheet's own "Форма документа" dropdown
-    # (E3:E16 data validation in `АвтоСнаб Кафе Ромашка (ориг).xlsx`):
-    # "Торг-12,УПД,Кассовый чек,...". "Счет-фактура" is not one of the
-    # allowed dropdown values, so it is intentionally not returned here.
     if not value:
         return None
     lowered = value.lower()
     if "универсаль" in lowered and "передаточ" in lowered:
         return "УПД"
     if "торг-12" in lowered or "товарная накладная" in lowered:
-        return "Торг-12"
+        return "ТОРГ-12"
+    if "счет-фактура" in lowered or "счёт-фактура" in lowered:
+        return "Счет-фактура"
     if "накладная" in lowered:
         return "Накладная"
     return None
@@ -1860,6 +1932,7 @@ def _item_payload(item, index: int | None = None) -> dict:
         "package": item.package,
         "document_unit": item.document_unit or item.unit,
         "quantity_document": item.quantity_document if item.quantity_document is not None else quantity,
+        "units_per_package": item.units_per_package,
         "quantity_multiplier": item.quantity_multiplier,
         "accounting_quantity_candidate": item.accounting_quantity_candidate,
         "accounting_unit_candidate": item.accounting_unit_candidate,

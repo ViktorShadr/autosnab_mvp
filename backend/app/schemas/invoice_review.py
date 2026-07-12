@@ -18,6 +18,7 @@ class RecognizedInvoiceItem(BaseModel):
     package: dict = Field(default_factory=dict)
     document_unit: str | None = None
     quantity_document: float | None = None
+    units_per_package: float | None = None
     quantity_multiplier: float | None = None
     accounting_quantity_candidate: float | None = None
     accounting_unit_candidate: str | None = None

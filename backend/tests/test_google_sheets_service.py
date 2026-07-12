@@ -228,6 +228,7 @@ def test_reference_catalog_loader_reads_fixed_google_sheet_tabs(monkeypatch):
                 {
                     "valueRanges": [
                         {"values": [["Наименование", "Код"], ["Кефир", "01-00017"]]},
+                        {"values": [["Поставщик", "Код"], ["ООО Молоко", "SUP-1"]]},
                         {
                             "values": [
                                 ["ID", "Фасовка в документе", "Коэффициент пересчета"],
@@ -267,8 +268,13 @@ def test_reference_catalog_loader_reads_fixed_google_sheet_tabs(monkeypatch):
         settings.google_sheets_enabled = old_enabled
         settings.google_target_spreadsheet_id = old_spreadsheet_id
 
-    assert values.kwargs["ranges"] == ["'Товары'!A1:D", "'Справочник фасовок'!A1:M"]
+    assert values.kwargs["ranges"] == [
+        "'Товары'!A1:H",
+        "'Поставщики'!A1:H",
+        "'Справочник фасовок'!A1:M",
+    ]
     assert catalogs["products"][0]["Наименование"] == "Кефир"
+    assert catalogs["suppliers"][0]["Поставщик"] == "ООО Молоко"
     assert catalogs["packages"][0]["Коэффициент пересчета"] == 0.8
 
 
@@ -416,7 +422,7 @@ def test_insert_into_existing_spreadsheet_prepends_block_and_separator():
                         "Проверить", "Распознано", "", "", "УПД", "",
                         "2026-07-03", "doc-1", "Supplier", "1234567890",
                         "Shipper", "Recipient", "Main point", "Warehouse", "Basis",
-                        "Да", "item-1", "item-us-1", "kg", "pcs", "10", "9",
+                        "Да", "item-1", "item-us-1", "kg", "pcs", "10", "", "9",
                         "100", "95", "1000", "20", "200", "1200", "2400", "", "",
                         "GS", "11", "105", "2026-07-04", "110", "-5",
                         "2026-07-03T10:00:00", "doc-id-1", "uploads/invoices/test.jpg",
@@ -425,7 +431,7 @@ def test_insert_into_existing_spreadsheet_prepends_block_and_separator():
                         "", "", "Нет в справочнике", "", "", "",
                         "", "", "", "",
                         "", "", "", "", "",
-                        "Нет", "item-2", "item-us-2", "kg", "pcs", "20", "18",
+                        "Нет", "item-2", "item-us-2", "kg", "pcs", "20", "", "18",
                         "200", "190", "2000", "20", "400", "2400", "", "", "",
                         "GS", "22", "205", "2026-07-05", "210", "-10",
                         "", "", "",
@@ -466,29 +472,40 @@ def test_insert_into_existing_spreadsheet_prepends_block_and_separator():
     assert requests[-1]["copyPaste"]["source"]["startColumnIndex"] == 40
 
     value_update = fake_service.spreadsheets_resource.values_resource.updated[0]
-    assert value_update["range"] == "Накладная!A3:AN5"
+    assert value_update["range"] == "Накладная!A3:AO5"
     written = value_update["body"]["values"]
     assert len(written) == 3
-    assert len(written[0]) == 40
+    assert len(written[0]) == 41
     assert written[0][16] == "item-1"
     assert written[0][20] == "10"
-    assert written[0][37] == "2026-07-03T10:00:00"
-    assert written[0][38] == "doc-id-1"
-    assert written[0][39] == "uploads/invoices/test.jpg"
+    assert written[0][21] == ""
+    assert written[0][38] == "2026-07-03T10:00:00"
+    assert written[0][39] == "doc-id-1"
+    assert written[0][40] == "uploads/invoices/test.jpg"
     assert written[0][10] == "Shipper"
     assert written[1][16] == "item-2"
     assert written[1][2] == "Нет в справочнике"
     assert written[1][20] == "20"
-    assert written[1][39] == ""
-    assert written[2] == [""] * 40
+    assert written[1][40] == ""
+    assert written[2] == [""] * 41
 
     border_update = fake_service.spreadsheets_resource.batch_updates[1]
-    border_request = border_update["body"]["requests"][0]["updateBorders"]
-    assert border_request["range"] == {
+    border_requests = border_update["body"]["requests"]
+    assert border_requests[0]["updateBorders"] == {
+        "range": {
+            "sheetId": 321,
+            "startRowIndex": 3,
+            "endRowIndex": 4,
+            "startColumnIndex": 41,
+            "endColumnIndex": 47,
+        },
+        "bottom": {"style": "NONE"},
+    }
+    assert border_requests[1]["updateBorders"]["range"] == {
         "sheetId": 321,
         "startRowIndex": 3,
         "endRowIndex": 4,
         "startColumnIndex": 0,
-        "endColumnIndex": 47,
+        "endColumnIndex": 41,
     }
-    assert border_request["bottom"]["style"] == "SOLID"
+    assert border_requests[1]["updateBorders"]["bottom"]["style"] == "SOLID"

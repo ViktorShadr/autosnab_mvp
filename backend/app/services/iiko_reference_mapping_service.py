@@ -15,12 +15,19 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any
+
+from sqlalchemy.orm import Session
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from app.config import settings
 from app.services.iiko_incoming_invoice_service import IikoConfigurationError, IikoRequestError
+from app.services.reference_catalog_service import (
+    find_local_reference,
+    load_local_reference_entries,
+    upsert_reference_entry,
+)
 
 _CACHE_TTL_SECONDS = 300
 _CACHE: dict[str, Any] = {"loaded_at": 0, "context": None, "error": None}
@@ -36,7 +43,14 @@ class MatchResult:
     extra: dict[str, Any]
 
 
-def auto_fill_iiko_fields(header: dict[str, Any], items: list[dict[str, Any]], *, supplier_name: str | None, venue: str | None) -> dict[str, Any]:
+def auto_fill_iiko_fields(
+    header: dict[str, Any],
+    items: list[dict[str, Any]],
+    *,
+    supplier_name: str | None,
+    venue: str | None,
+    db: Session | None = None,
+) -> dict[str, Any]:
     """Return header/items enriched with iiko ids/articles/units/tax fields.
 
     The function is safe for local MVP runs: if iiko is disabled or unavailable,
@@ -46,32 +60,63 @@ def auto_fill_iiko_fields(header: dict[str, Any], items: list[dict[str, Any]], *
     enriched_header = dict(header or {})
     enriched_items = [dict(item) for item in items]
     notes: list[str] = []
+    discovered_references: list[dict[str, Any]] = []
+    local_suppliers = load_local_reference_entries(db, "supplier") if db is not None else []
+    local_products = load_local_reference_entries(db, "product", venue) if db is not None else []
 
     context_result = get_iiko_reference_context()
     context = context_result.get("context") or {}
-    if context_result.get("status") != "ready":
+    context_status = context_result.get("status") or "error"
+    if context_status != "ready":
         message = context_result.get("message") or "Справочники iiko недоступны; технические поля требуют проверки"
         notes.append(message)
-        header_missing = []
-        if not enriched_header.get("iiko_supplier_id"):
-            header_missing.append("не заполнен iiko_supplier_id")
-        if not enriched_header.get("iiko_default_store_id"):
-            header_missing.append("не заполнен iiko_default_store_id/defaultStore")
-        enriched_header["iiko_mapping_status"] = "ready" if not header_missing else "needs_review"
-        enriched_header["iiko_mapping_error"] = "; ".join(header_missing) if header_missing else ""
-        for item in enriched_items:
-            if item.get("iiko_product_id") or item.get("product_article"):
-                item.setdefault("mapping_status", "ready")
-                item.setdefault("amount_unit", item.get("amount_unit") or item.get("unit") or "шт")
-            else:
-                _mark_item_if_missing(item, "needs_review", message)
-        return {"header": enriched_header, "items": enriched_items, "notes": notes, "context_status": context_result.get("status")}
 
-    supplier_match = _match_supplier(supplier_name, context.get("suppliers", []))
-    if not enriched_header.get("iiko_supplier_id") and supplier_match.value:
+    supplier_match, supplier_source = _match_with_local_first(
+        supplier_name,
+        local_suppliers,
+        context.get("suppliers", []),
+        _match_supplier,
+        external_status=context_status,
+    )
+    if enriched_header.get("iiko_supplier_id"):
+        supplier_match = MatchResult(
+            str(enriched_header["iiko_supplier_id"]),
+            enriched_header.get("iiko_supplier_name") or supplier_name,
+            1.0,
+            "ready",
+            "iiko supplier id передан явно",
+            {},
+        )
+        supplier_source = "provided"
+        supplier_reference_status = "matched"
+    else:
+        supplier_reference_status = _reference_status(supplier_match, supplier_source)
+    if (
+        not enriched_header.get("iiko_supplier_id")
+        and supplier_match.value
+        and supplier_reference_status == "matched"
+    ):
         enriched_header["iiko_supplier_id"] = supplier_match.value
     enriched_header["iiko_supplier_name"] = supplier_match.name or supplier_name
     enriched_header["iiko_supplier_match_confidence"] = supplier_match.confidence
+    enriched_header["iiko_supplier_reference_source"] = supplier_source
+    enriched_header["iiko_supplier_reference_status"] = supplier_reference_status
+    if db is not None and supplier_name:
+        supplier_entry, supplier_created = upsert_reference_entry(
+            db,
+            kind="supplier",
+            venue=None,
+            raw_name=supplier_name,
+            external_id=supplier_match.value,
+            external_name=supplier_match.name,
+            unit=None,
+            status=supplier_reference_status,
+            confidence=supplier_match.confidence,
+            source=supplier_source,
+            candidates=_candidate_payloads(supplier_name, context.get("suppliers", []), ["name", "legalName", "code", "taxpayerIdNumber"]),
+        )
+        if supplier_created:
+            discovered_references.append(_reference_entry_payload(supplier_entry))
 
     store_match = _match_store(
         enriched_header.get("iiko_default_store_id") or enriched_header.get("iiko_organization") or venue,
@@ -91,9 +136,26 @@ def auto_fill_iiko_fields(header: dict[str, Any], items: list[dict[str, Any]], *
     enriched_header["iiko_mapping_error"] = "; ".join(err for err in header_errors if err)
 
     for item in enriched_items:
-        _auto_fill_item(item, enriched_header, context)
+        discovered = _auto_fill_item(
+            item,
+            enriched_header,
+            context,
+            local_products=local_products,
+            venue=venue,
+            db=db,
+            context_status=context_status,
+        )
+        if discovered is not None:
+            discovered_references.append(discovered)
+            local_products.append(discovered)
 
-    return {"header": enriched_header, "items": enriched_items, "notes": notes, "context_status": "ready"}
+    return {
+        "header": enriched_header,
+        "items": enriched_items,
+        "notes": notes,
+        "context_status": context_status,
+        "discovered_references": discovered_references,
+    }
 
 
 def get_iiko_reference_context(force_refresh: bool = False) -> dict[str, Any]:
@@ -127,17 +189,56 @@ def invalidate_iiko_reference_cache() -> None:
     _CACHE.update({"loaded_at": 0, "context": None, "error": None})
 
 
-def _auto_fill_item(item: dict[str, Any], header: dict[str, Any], context: dict[str, Any]) -> None:
+def _auto_fill_item(
+    item: dict[str, Any],
+    header: dict[str, Any],
+    context: dict[str, Any],
+    *,
+    local_products: list[dict[str, Any]],
+    venue: str | None,
+    db: Session | None,
+    context_status: str,
+) -> dict[str, Any] | None:
     item_name = item.get("name") or ""
-    product_match = _match_product(item_name, context.get("products", []))
-    if not item.get("iiko_product_id") and product_match.value:
+    product_match, product_source = _match_with_local_first(
+        item_name,
+        local_products,
+        context.get("products", []),
+        _match_product,
+        external_status=context_status,
+    )
+    if item.get("iiko_product_id") or item.get("product_article"):
+        product_match = MatchResult(
+            item.get("iiko_product_id") or item.get("product_article"),
+            item.get("iiko_product_name") or item_name,
+            1.0,
+            "ready",
+            "iiko product id/article передан явно",
+            {"num": item.get("product_article")},
+        )
+        product_source = "provided"
+        product_reference_status = "matched"
+    else:
+        product_reference_status = _reference_status(product_match, product_source)
+    if (
+        not item.get("iiko_product_id")
+        and product_match.value
+        and product_reference_status == "matched"
+    ):
         item["iiko_product_id"] = product_match.value
-    if not item.get("product_article"):
+    if not item.get("product_article") and product_reference_status == "matched":
         article = product_match.extra.get("num") or product_match.extra.get("code")
         if article:
             item["product_article"] = article
     item["iiko_product_name"] = product_match.name or item_name
     item["iiko_product_match_confidence"] = product_match.confidence
+    item["reference_source"] = product_source
+    item["reference_status"] = product_reference_status
+    item["reference_candidates"] = _candidate_payloads(
+        item_name,
+        context.get("products", []),
+        ["name", "num", "code", "description"],
+    )
 
     unit_match = _match_unit(item.get("unit") or item.get("amount_unit"), context.get("units", []))
     if not item.get("amount_unit"):
@@ -161,7 +262,7 @@ def _auto_fill_item(item: dict[str, Any], header: dict[str, Any], context: dict[
             pass
 
     errors = []
-    if not (item.get("iiko_product_id") or item.get("product_article")):
+    if product_reference_status != "matched" or not (item.get("iiko_product_id") or item.get("product_article")):
         errors.append(product_match.reason)
     if not item.get("amount_unit"):
         errors.append(unit_match.reason)
@@ -169,6 +270,22 @@ def _auto_fill_item(item: dict[str, Any], header: dict[str, Any], context: dict[
         errors.append("не определен склад/defaultStore для позиции")
     item["mapping_status"] = "ready" if not errors else "needs_review"
     item["mapping_error"] = "; ".join(err for err in errors if err)
+    if db is None or not item_name:
+        return None
+    entry, created = upsert_reference_entry(
+        db,
+        kind="product",
+        venue=venue,
+        raw_name=item_name,
+        external_id=product_match.value,
+        external_name=product_match.name,
+        unit=item.get("amount_unit") or item.get("unit"),
+        status=product_reference_status,
+        confidence=product_match.confidence,
+        source=product_source,
+        candidates=item["reference_candidates"],
+    )
+    return _reference_entry_payload(entry) if created else None
 
 
 def _mark_item_if_missing(item: dict[str, Any], status: str, message: str) -> None:
@@ -212,11 +329,100 @@ def _best_match(query: str | None, entities: list[dict[str, Any]], fields: list[
             if score > best_score:
                 best_score = score
                 best_entity = entity
-    if best_entity and best_score >= 0.72:
+    if best_entity and best_score >= settings.iiko_mapping_min_confidence:
         return MatchResult(best_entity.get("id") or best_entity.get("code") or best_entity.get("num"), best_entity.get("name"), best_score, "ready", "сопоставлено автоматически", best_entity)
-    if best_entity and best_score >= 0.55:
+    if best_entity and best_score >= settings.iiko_mapping_review_confidence:
         return MatchResult(best_entity.get("id") or best_entity.get("code") or best_entity.get("num"), best_entity.get("name"), best_score, "needs_review", "низкая уверенность автоматического сопоставления", best_entity)
     return MatchResult(None, best_entity.get("name") if best_entity else None, best_score, "needs_review", not_found_reason, best_entity or {})
+
+
+def _match_with_local_first(
+    query: str | None,
+    local_entries: list[dict[str, Any]],
+    external_entities: list[dict[str, Any]],
+    external_matcher,
+    *,
+    external_status: str = "ready",
+) -> tuple[MatchResult, str]:
+    local = find_local_reference(query, local_entries, settings.iiko_mapping_min_confidence)
+    if local is not None and local.get("status") == "matched":
+        return (
+            MatchResult(
+                local.get("external_id"),
+                local.get("external_name") or local.get("raw_name"),
+                float(local.get("match_confidence") or local.get("confidence") or 1.0),
+                "ready",
+                "сопоставлено по локальному справочнику MVP",
+                local,
+            ),
+            "local",
+        )
+    if external_status != "ready":
+        return (
+            MatchResult(
+                None,
+                None,
+                0.0,
+                "needs_review",
+                "справочник учетной системы недоступен",
+                {},
+            ),
+            external_status,
+        )
+    return external_matcher(query, external_entities), "iiko"
+
+
+def _reference_status(match: MatchResult, source: str = "iiko") -> str:
+    if match.value and match.confidence >= settings.iiko_mapping_min_confidence:
+        return "matched"
+    if source not in {"local", "iiko"}:
+        return "needs_review"
+    if match.confidence >= settings.iiko_mapping_review_confidence:
+        return "needs_review"
+    return "new"
+
+
+def _candidate_payloads(
+    query: str | None,
+    entities: list[dict[str, Any]],
+    fields: list[str],
+    limit: int = 3,
+) -> list[dict[str, Any]]:
+    query_norm = _normalize_text(query)
+    ranked: list[tuple[float, dict[str, Any]]] = []
+    for entity in entities:
+        score = max((_similarity(query_norm, _normalize_text(entity.get(field))) for field in fields), default=0.0)
+        if score > 0:
+            ranked.append((score, entity))
+    ranked.sort(key=lambda pair: pair[0], reverse=True)
+    return [
+        {
+            "external_id": entity.get("id") or entity.get("code") or entity.get("num"),
+            "name": entity.get("name"),
+            "confidence": round(score, 4),
+        }
+        for score, entity in ranked[:limit]
+    ]
+
+
+def _reference_entry_payload(entry) -> dict[str, Any]:
+    try:
+        candidates = json.loads(entry.candidates_json or "[]")
+    except json.JSONDecodeError:
+        candidates = []
+    return {
+        "kind": entry.kind,
+        "venue": entry.venue,
+        "raw_name": entry.raw_name,
+        "normalized_name": entry.normalized_name,
+        "external_id": entry.external_id,
+        "external_name": entry.external_name,
+        "unit": entry.unit,
+        "status": entry.status,
+        "confidence": entry.confidence,
+        "source": entry.source,
+        "candidates": candidates,
+    }
 
 
 def _similarity(left: str, right: str) -> float:
