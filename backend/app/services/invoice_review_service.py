@@ -1805,15 +1805,17 @@ def _extract_first_inn(value: Any) -> str | None:
 
 
 def _detect_document_form_from_text(value: str | None) -> str | None:
+    # Values and casing match the live sheet's own "Форма документа" dropdown
+    # (E3:E16 data validation in `АвтоСнаб Кафе Ромашка (ориг).xlsx`):
+    # "Торг-12,УПД,Кассовый чек,...". "Счет-фактура" is not one of the
+    # allowed dropdown values, so it is intentionally not returned here.
     if not value:
         return None
     lowered = value.lower()
     if "универсаль" in lowered and "передаточ" in lowered:
         return "УПД"
     if "торг-12" in lowered or "товарная накладная" in lowered:
-        return "ТОРГ-12"
-    if "счет-фактура" in lowered or "счёт-фактура" in lowered:
-        return "Счет-фактура"
+        return "Торг-12"
     if "накладная" in lowered:
         return "Накладная"
     return None
