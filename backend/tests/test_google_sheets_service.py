@@ -469,13 +469,13 @@ def test_insert_into_existing_spreadsheet_prepends_block_and_separator():
         "PASTE_DATA_VALIDATION",
         "PASTE_FORMULA",
     ]
-    assert requests[-1]["copyPaste"]["source"]["startColumnIndex"] == 40
+    assert requests[-1]["copyPaste"]["source"]["startColumnIndex"] == len(SHARED_INVOICE_HEADERS) - 1
 
     value_update = fake_service.spreadsheets_resource.values_resource.updated[0]
-    assert value_update["range"] == "Накладная!A3:AO5"
+    assert value_update["range"] == "Накладная!A3:AQ5"
     written = value_update["body"]["values"]
     assert len(written) == 3
-    assert len(written[0]) == 41
+    assert len(written[0]) == len(SHARED_INVOICE_HEADERS)
     assert written[0][16] == "item-1"
     assert written[0][20] == "10"
     assert written[0][21] == ""
@@ -487,7 +487,7 @@ def test_insert_into_existing_spreadsheet_prepends_block_and_separator():
     assert written[1][2] == "Нет в справочнике"
     assert written[1][20] == "20"
     assert written[1][40] == ""
-    assert written[2] == [""] * 41
+    assert written[2] == [""] * len(SHARED_INVOICE_HEADERS)
 
     border_update = fake_service.spreadsheets_resource.batch_updates[1]
     border_requests = border_update["body"]["requests"]
@@ -496,7 +496,7 @@ def test_insert_into_existing_spreadsheet_prepends_block_and_separator():
             "sheetId": 321,
             "startRowIndex": 3,
             "endRowIndex": 4,
-            "startColumnIndex": 41,
+            "startColumnIndex": len(SHARED_INVOICE_HEADERS),
             "endColumnIndex": 47,
         },
         "bottom": {"style": "NONE"},
@@ -506,6 +506,6 @@ def test_insert_into_existing_spreadsheet_prepends_block_and_separator():
         "startRowIndex": 3,
         "endRowIndex": 4,
         "startColumnIndex": 0,
-        "endColumnIndex": 41,
+        "endColumnIndex": len(SHARED_INVOICE_HEADERS),
     }
     assert border_requests[1]["updateBorders"]["bottom"]["style"] == "SOLID"

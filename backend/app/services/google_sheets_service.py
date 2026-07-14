@@ -14,39 +14,53 @@ SHARED_INVOICE_HEADERS = [
     "Статус загрузки", "Статус строки", "Корректировка", "Дубль", "Форма документа",
     "Загрузка", "Дата документа", "№ Документа", "Поставщик", "ИНН Поставщика",
     "Грузоотправитель", "Получатель", "Торговая точка", "Склад", "Основание",
-    "Товар найден в справочнике", "Наименование товара из документа",
-    "Наименование товара в УС", "Ед.изм. в документе", "Ед.изм. в УС",
-    "Кол-во в документе", "Кол-во в упаковке", "Кол-во в УС", "Цена за ед-цу", "Цена в УС",
+    "Статус сопоставления товара", "Наименование товара из документа",
+    "Наименование товара в УС", "Код товара УС", "Ед.изм. в документе", "Ед.изм. в УС",
+    "Состав упаковки", "Кол-во в документе", "Кол-во в УС", "Цена за ед-цу", "Цена в УС",
     "Стоимость без НДС", "Ставка НДС", "Сумма НДС", "Общая стоимость",
     "Сумма накладной", "Дата приема", "Принял, Ф.И.О.", "Госсистемы",
     "Кол-во в заявке", "Цена по прайсу", "Предыдущая дата поставки",
     "Предыдущая цена", "Отклонение от цены прайса", "Время загрузки документа",
-    "ID документа", "Ссылка на исходный документ",
+    "ID документа", "ID строки", "Ссылка на исходный документ",
 ]
+# Live sheet column order/names as of 2026-07-14 (see docs/wiki/log.md).
+# "Товар найден в справочнике" was renamed to "Статус сопоставления товара",
+# "Кол-во в упаковке" was renamed and moved to "Состав упаковки", and
+# "Код товара УС" / "ID строки" were added as new columns directly in the
+# live spreadsheet, ahead of any code change.
 
 
+_INVOICE_REGISTER_COLUMN_WIDTHS_BY_NAME = {
+    "Статус строки": 160,
+    "Корректировка": 220,
+    "Дубль": 120,
+    "Загрузка": 130,
+    "Грузоотправитель": 220,
+    "Статус сопоставления товара": 220,
+    "Наименование товара из документа": 280,
+    "Наименование товара в УС": 240,
+    "Код товара УС": 140,
+    "Ед.изм. в документе": 190,
+    "Состав упаковки": 180,
+    "Кол-во в документе": 190,
+    "Цена за ед-цу": 150,
+    "Стоимость без НДС": 180,
+    "Ставка НДС": 130,
+    "Госсистемы": 180,
+    "Предыдущая дата поставки": 240,
+    "Предыдущая цена": 190,
+    "Отклонение от цены прайса": 230,
+    "Время загрузки документа": 205,
+    "ID документа": 130,
+    "ID строки": 130,
+    "Ссылка на исходный документ": 250,
+}
+# Widths are keyed by column name and resolved against SHARED_INVOICE_HEADERS
+# at import time, so a future header insertion/reorder cannot silently point
+# formatting (or any other index-based logic) at the wrong column.
 INVOICE_REGISTER_COLUMN_WIDTHS = {
-    0: 160,   # Статус строки
-    1: 220,   # Корректировка
-    2: 120,   # Дубль
-    4: 130,   # Загрузка
-    9: 220,   # Грузоотправитель
-    14: 220,  # Товар найден в справочнике
-    15: 280,  # Наименование товара из документа
-    16: 240,  # Наименование товара в УС
-    17: 190,  # Ед.изм. в документе
-    20: 190,  # Кол-во в документе
-    21: 180,  # Кол-во в упаковке
-    23: 150,  # Цена за ед-цу
-    25: 180,  # Стоимость без НДС
-    26: 130,  # Ставка НДС
-    32: 180,  # Госсистемы
-    35: 240,  # Предыдущая дата поставки
-    36: 190,  # Предыдущая цена
-    37: 230,  # Отклонение от цены прайса
-    38: 205,  # Время загрузки документа
-    39: 130,  # ID документа
-    40: 250,  # Ссылка на исходный документ
+    SHARED_INVOICE_HEADERS.index(name): width
+    for name, width in _INVOICE_REGISTER_COLUMN_WIDTHS_BY_NAME.items()
 }
 
 HEADER_BACKGROUND_COLOR = {
@@ -66,7 +80,7 @@ DOCUMENT_SEPARATOR_BORDER_COLOR = {
     "green": 96 / 255,
     "blue": 105 / 255,
 }
-INVOICE_REGISTER_COLUMN_COUNT = 41
+INVOICE_REGISTER_COLUMN_COUNT = len(SHARED_INVOICE_HEADERS)
 
 
 class GoogleSheetsConfigurationError(RuntimeError):
@@ -827,7 +841,7 @@ def _read_target_headers(
         raise GoogleSheetsConfigurationError(f"Строка заголовков {header_row_number} листа '{sheet_name}' пуста.")
 
     missing = [header for header in SHARED_INVOICE_HEADERS if header not in headers]
-    if missing == ["Кол-во в упаковке"]:
+    if missing == ["Состав упаковки"]:
         _insert_units_per_package_column(
             sheets_service,
             values_resource,
@@ -885,7 +899,7 @@ def _insert_units_per_package_column(
     if sheet_id is None:
         raise GoogleSheetsConfigurationError(f"В target spreadsheet не найден лист '{sheet_name}'.")
 
-    column_index = SHARED_INVOICE_HEADERS.index("Кол-во в упаковке")
+    column_index = SHARED_INVOICE_HEADERS.index("Состав упаковки")
     sheets_service.spreadsheets().batchUpdate(
         spreadsheetId=spreadsheet_id,
         body={
@@ -925,7 +939,7 @@ def _insert_units_per_package_column(
         spreadsheetId=spreadsheet_id,
         range=f"{sheet_name}!{column_name}{header_row_number}",
         valueInputOption="RAW",
-        body={"values": [["Кол-во в упаковке"]]},
+        body={"values": [["Состав упаковки"]]},
     ).execute()
 
 
@@ -971,13 +985,14 @@ def _remap_source_rows_to_shared_sheet(
             "Торговая точка": row_map.get("Торговая точка", ""),
             "Склад": row_map.get("Склад", ""),
             "Основание": document_meta.get("basis") or row_map.get("Основание", ""),
-            "Товар найден в справочнике": product_found,
+            "Статус сопоставления товара": product_found,
             "Наименование товара из документа": row_map.get("Наименование товара из документа", ""),
             "Наименование товара в УС": row_map.get("Наименование товара в УС", ""),
+            "Код товара УС": row_map.get("Код товара УС", ""),
             "Ед.изм. в документе": row_map.get("Ед.изм.", ""),
             "Ед.изм. в УС": row_map.get("Ед.изм. в УС", ""),
+            "Состав упаковки": row_map.get("Состав упаковки", "") or row_map.get("Кол-во в упаковке", ""),
             "Кол-во в документе": row_map.get("Кол-во из документа", ""),
-            "Кол-во в упаковке": row_map.get("Кол-во в упаковке", ""),
             "Кол-во в УС": row_map.get("Кол-во в УС", ""),
             "Цена за ед-цу": row_map.get("Цена за единицу", ""),
             "Цена в УС": row_map.get("Цена в УС", ""),
@@ -996,6 +1011,7 @@ def _remap_source_rows_to_shared_sheet(
             "Отклонение от цены прайса": row_map.get("Отклонение от цены прайса", ""),
             "Время загрузки документа": row_map.get("Время загрузки документа", ""),
             "ID документа": row_map.get("ID документа", ""),
+            "ID строки": row_map.get("ID строки", ""),
             "Ссылка на исходный документ": (
                 (getattr(receiving, "documents", None) and getattr(receiving.documents[-1], "file_url", ""))
                 or ""
