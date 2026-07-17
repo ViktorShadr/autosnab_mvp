@@ -731,6 +731,32 @@ def test_invalid_inn_checksum_requires_review():
     )
 
 
+def test_missing_document_number_requires_review():
+    payload = _parsed_invoice()
+    payload["document"]["document_number"] = ""
+
+    normalized = normalize_invoice_result(InvoiceParserResult.model_validate(payload))
+
+    assert normalized.upload_status == "Требует проверки"
+    assert any(
+        flag.field == "document_number" and flag.severity == "error"
+        for flag in normalized.review_flags
+    )
+
+
+def test_missing_supplier_name_requires_review():
+    payload = _parsed_invoice()
+    payload["document"]["supplier_name"] = ""
+
+    normalized = normalize_invoice_result(InvoiceParserResult.model_validate(payload))
+
+    assert normalized.upload_status == "Требует проверки"
+    assert any(
+        flag.field == "supplier_name" and flag.severity == "error"
+        for flag in normalized.review_flags
+    )
+
+
 @pytest.mark.parametrize(
     ("raw_date", "expected"),
     [

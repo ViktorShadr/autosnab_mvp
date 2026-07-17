@@ -31,6 +31,11 @@ def normalize_invoice_result(
         result.normalization_log,
     )
     result.document.document_number = _clean_text(result.document.document_number)
+    if not result.document.document_number:
+        _flag(result, "document", None, "document_number", "Номер документа не распознан.", "error")
+    result.document.supplier_name = _clean_text(result.document.supplier_name)
+    if not result.document.supplier_name:
+        _flag(result, "document", None, "supplier_name", "Наименование поставщика не распознано.", "error")
     result.document.document_form = _clean_text(result.document.document_form)
     result.document.shipper = _clean_text(result.document.shipper)
     result.document.receiver = _clean_text(result.document.receiver)

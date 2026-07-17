@@ -81,9 +81,18 @@ Google Sheets.
    `..._gives_up_after_exhausting_retries`. Not yet redeployed to the running
    container — needs a rebuild/restart of `autosnab_backend_mvp4` to take
    effect, then a re-test with the same repeated-upload scenario.
-3. The `openai` path sends only OCR/MinerU text and structure, not the source
-   image, although the configured model supports image input and Structured
-   Outputs.
+3. **(Resolved, date unclear — found during 2026-07-17 investigation)** This
+   blocker text was stale: `_build_openai_input` in
+   `openai_invoice_parser_service.py` already sends actual page images
+   (`input_image` content blocks, base64, up to `openai_max_image_pages=12`)
+   alongside the merged OCR text for every `source_type == "image"` page, not
+   just text. `current-status.md`'s 2026-07-04 note that "the current `openai`
+   mode does not send source images" is therefore outdated as of at least
+   2026-07-17 and should not be relied on — Phase 4's multimodal goal appears
+   to already be implemented in code, though it was never explicitly recorded
+   as completed in this plan or the log. Worth a live trace check to confirm
+   images are actually arriving non-empty/non-truncated in a real request,
+   since the fact this was already true wasn't caught by anyone until now.
 4. Upload accepts one file, so a multi-page invoice is split into unrelated
    documents.
 5. Rotated and perspective-distorted photos are not normalized before
