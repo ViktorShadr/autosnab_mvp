@@ -4,7 +4,7 @@ source: session
 created: 2026-07-20
 updated: 2026-07-20
 tags: [integration, diadoc, edo, upstream-main]
-status: on-local-branch-diadoc-integration
+status: merged-into-over_version
 ---
 
 # Diadoc (Kontur) EDO Integration
@@ -13,7 +13,9 @@ status: on-local-branch-diadoc-integration
 
 Originally found in code on `upstream/main` (colleague Andrey Gomzikov, commits `a2f1ebb`/`8b9b4c1`/`0d0fd63`, dated 2026-07-20 in commit metadata but landed 2026-07-19 through 2026-07-20 per his own `log.md`). `upstream/main`'s git history itself was reset that day (`003b736 Clean main branch` deletes nearly everything, then `a2f1ebb` re-adds a full snapshot in one commit) — `main` is no longer a simple fast-forward of earlier `main` history, and a plain `git merge upstream/main` into `over_version` produces real conflicts in ~10 files (confirmed via `git merge-tree`).
 
-**Transplanted into this repo** on local branch `diadoc-integration` (branched from `over_version` at `8a1b236`, commit `df70966`): only the Diadoc-specific files were ported (`models/diadoc.py`, `routers/diadoc.py`, `schemas/diadoc.py`, `services/diadoc_*.py`, `scripts/migrate_diadoc_reliability.py`, `tests/test_diadoc_*.py`), plus the minimal additive wiring `main.py`/`config.py`/`models/__init__.py`/`.env.example` needed to register the scheduler and router. Not merged into `over_version` itself yet — that's a separate step once the branch has been reviewed/tested against a real mailbox.
+Transplanted onto local branch `diadoc-integration` (branched from `over_version` at `8a1b236`, commit `df70966`): only the Diadoc-specific files were ported (`models/diadoc.py`, `routers/diadoc.py`, `schemas/diadoc.py`, `services/diadoc_*.py`, `scripts/migrate_diadoc_reliability.py`, `tests/test_diadoc_*.py`), plus the minimal additive wiring `main.py`/`config.py`/`models/__init__.py`/`.env.example` needed to register the scheduler and router.
+
+**Correction (2026-07-20, later session):** the two wiki-only commits that followed the transplant (`c33de9a`, `896f263`) described this as done/verified but never actually merged `diadoc-integration` into `over_version` itself — `git cat-file -e HEAD:backend/app/services/diadoc_client.py` confirmed the file was genuinely absent from `over_version`'s tree despite the wiki claim. Caught and fixed in this session: `git merge diadoc-integration` (clean, no conflicts, as the merge-tree check had predicted) is now actually on `over_version`. Re-verified after the real merge: `test_diadoc_*.py` + `test_google_sheets_service.py` = 29/29 passing, full suite = 181 passed / 8 failed (identical pre-existing `test_receiving.py` failures, zero new ones). Diadoc code is now genuinely present and tested on `over_version`, not just documented as such.
 
 ## What it does (per Andrey's own wiki page, copied verbatim below with light trimming)
 

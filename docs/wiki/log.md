@@ -824,6 +824,13 @@
 - Recorded the full effort breakdown and sandbox findings in `docs/wiki/sbis-edo-integration.md` under new sections "Test environment / sandbox (confirmed 2026-07-20)" and "Effort estimate (2026-07-20)": ~1.5-2.5 developer-weeks to a one-document MVP, with SBIS auth/access discovery flagged as the main risk (not in-repo coding, since the shared document core, dedupe pattern, and raw-storage pattern from the bot work are all directly reusable).
 - No code changes this session.
 
+## [2026-07-20] fix | actually merged diadoc-integration into over_version, corrected stale wiki claim
+
+- Found that the prior same-day session's wiki commits (`c33de9a`, `896f263`) claimed the Diadoc transplant was "done" but had only committed it to a separate branch `diadoc-integration` (`df70966`) — `over_version` itself never received the merge. Confirmed via `git cat-file -e HEAD:backend/app/services/diadoc_client.py` (missing on `over_version`, present on `diadoc-integration`).
+- Ran `git merge diadoc-integration` into `over_version`: clean, no conflicts (as the earlier `git merge-tree` check had predicted). Verified: `test_diadoc_*.py` + `test_google_sheets_service.py` = 29/29 passing; full suite = 181 passed / 8 failed, identical pre-existing `test_receiving.py` failures, zero regressions.
+- Corrected `docs/wiki/diadoc-integration.md` (frontmatter `status`, Status section) and `docs/wiki/current-status.md` to reflect the real, now-true state instead of the earlier overclaim.
+- Started planning a separate clean reference repository (`../autosnab-core`): `main`/`develop` branches, code reorganized by functional domain, no wiki-system carryover, single clean initial commit. Plan approved by user; execution in progress (see next log entries).
+
 ## [2026-07-20] review | Diadoc EDO integration found on upstream/main
 
 - User reported Andrey merged Diadoc EDO integration into `main`; reviewed the actual git state instead of assuming.
