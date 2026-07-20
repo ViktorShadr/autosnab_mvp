@@ -18,6 +18,7 @@
 - [workbook-export-3-analysis.md](./workbook-export-3-analysis.md)
 - [ocr-parser-provider-strategy.md](./ocr-parser-provider-strategy.md)
 - [sbis-edo-integration.md](./sbis-edo-integration.md)
+- [diadoc-integration.md](./diadoc-integration.md)
 - [bot-sbis-implementation-plan.md](./bot-sbis-implementation-plan.md)
 - [n8n-bot-implementation-plan.md](./n8n-bot-implementation-plan.md)
 - [bot-backend-api-contract.md](./bot-backend-api-contract.md)
