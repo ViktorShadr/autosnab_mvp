@@ -101,6 +101,35 @@ class Settings(BaseSettings):
     diadoc_parse_unstructured_attachments: bool = True
     diadoc_unstructured_extraction_method: str = "openai"
 
+    # SBIS (Saby) JSON-RPC integration. Login/password session auth (SID),
+    # not OAuth — simpler than Diadoc's OIDC flow.
+    sbis_integration_enabled: bool = False
+    sbis_api_base_url: str = "https://online.sbis.ru"
+    sbis_auth_url: str = "https://online.sbis.ru/auth/service/"
+    sbis_login: str | None = None
+    sbis_password: str | None = None
+    sbis_account_number: str | None = None
+    sbis_timeout_seconds: float = 30.0
+    sbis_sync_limit: int = 100
+    sbis_documents_dir: str = "uploads/sbis"
+    sbis_scheduler_enabled: bool = True
+    sbis_sync_interval_seconds: int = 300
+    sbis_retry_max_attempts: int = 5
+    sbis_retry_base_delay_seconds: int = 60
+    sbis_retry_batch_size: int = 50
+    sbis_delivery_stale_seconds: int = 600
+    sbis_sync_lease_seconds: int = 1800
+    sbis_max_pages_per_sync: int = 10
+    sbis_initial_sync_days_back: int = 7
+    sbis_document_types: str = "ДокОтгрВх,СчетВх"
+    sbis_http_retry_attempts: int = 4
+    sbis_http_retry_base_delay_seconds: float = 1.0
+    sbis_http_retry_max_delay_seconds: float = 30.0
+    sbis_max_attachment_bytes: int = 100_000_000
+    sbis_admin_api_key: str | None = None
+    sbis_parse_unstructured_attachments: bool = True
+    sbis_unstructured_extraction_method: str = "openai"
+
     # OpenAI structures extracted evidence. Business rules and sheet writes stay local.
     openai_api_key: str | None = None
     openai_invoice_model: str = "gpt-5-mini"

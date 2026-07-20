@@ -28,6 +28,11 @@
 
 - Recorded the final MVP plan: freeze the shared contract, keep the PDF flow intact, add SBIS as a source adapter, and use one writer for both sources.
 
+## [2026-07-20] integration | GitLab target repo checked
+
+- Checked `gitlab.testant.online/antipov-backend/auto-snab-document-parser`, the future push target for the finished project. SSH access is not reachable from this workstation (port 22 filtered, 443 is plain HTTPS); access confirmed via HTTPS + Personal Access Token instead. Repo is an empty GitLab scaffold (default README only, one commit on `main`/`develop`) — nothing to merge against yet. Recorded in `docs/wiki/github-and-raw-strategy.md` and `docs/wiki/current-status.md`.
+- Configured persistent push access: `git config --global credential.helper store` now stores the GitLab PAT in `~/.git-credentials`; verified with a successful authenticated `git push --dry-run`. Future push/pull to this GitLab repo needs no manual token entry.
+
 ## [2026-07-03] coordination | delivery priority update
 
 - Registered the new screenshot intake and captured the updated priority: show the document-recognition/table MVP this week, then move to SBIS EDO next week.
@@ -848,3 +853,35 @@
 - Diffed `SHARED_INVOICE_HEADERS` and `_detect_document_form_from_text` between `upstream/main` and local `over_version`: confirmed `main` still carries the pre-2026-07-14 41-column sheet contract and the `"ТОРГ-12"`/`"Счет-фактура"` regression that `over_version` already fixed twice. This is a real, concrete blocker for Diadoc's Google Sheets delivery path against the live production sheet — recorded in `diadoc-integration.md` and `current-status.md`.
 - Flagged an open business question for the user: Diadoc and SBIS are different EDO providers; worth confirming SBIS is still needed now that Diadoc exists, before spending the previously-estimated 1.5-2.5 dev-weeks on it.
 - No code merged or changed on `over_version` this session — review only.
+
+## [2026-07-20] review | SBIS task-file plan checked against wiki + Diadoc, two open questions resolved by user
+
+- Reviewed root `claude_cli_task_sbis_integration_v2.md` against `sbis-edo-integration.md` and `diadoc-integration.md`.
+- Flagged mismatch: the task file cites `sbis_api_test.py` as a real, present reference script confirming live SBIS API access, but that file does not exist in this repo, and the wiki previously recorded SBIS test-stand credentials as not yet obtained.
+- User confirmed directly: SBIS API access is genuinely real (script just is not in this repo yet), and SBIS is still required in production alongside the already-merged Diadoc adapter (different counterparties use different EDO providers).
+- Recorded a full plan-review verdict in `docs/wiki/sbis-edo-integration.md`: architecture direction is correct, but implementation should mirror the existing Diadoc adapter (scheduler/sync/lease/delivery pattern) and reuse the existing OCR/OpenAI PDF-extraction + status pipeline instead of building parallel ones.
+- No code changed.
+
+## [2026-07-20] plan | rewrote SBIS task file to mirror Diadoc adapter, generalize XML parser
+
+- Rewrote `claude_cli_task_sbis_integration_v2.md` in place after reading the actual Diadoc adapter code (`diadoc_client.py`, `diadoc_sync_service.py`, `diadoc_scheduler_service.py`, `routers/diadoc.py`, `models/diadoc.py`, `config.py`, `diadoc_xml_parser_service.py`).
+- Added a concrete file-by-file Diadoc-to-SBIS mapping table plus per-item notes on real protocol differences (SID login/password vs OIDC, single-call `СписокИзменений` vs GetNewEvents/GetMessage/GetEntityContent chain, dedupe key `Документ.Идентификатор` vs message_id+entity_id).
+- Key finding: `parse_diadoc_invoice_xml` is already a generic ФНС УПД/счёт-фактура XML parser (government tag names, not Diadoc-specific) with only 3 Diadoc-literal fields — plan now calls for generalizing it into `fns_upd_xml_parser_service.parse_fns_invoice_xml(..., provider=...)` and reusing for SBIS instead of writing a second XML parser.
+- Plan now explicitly forbids a separate PDF-fallback engine and a separate status vocabulary — calls out `_parse_unstructured_document`/`extract_invoice_document`/`create_invoice_review`/`create_real_google_sheet_for_review` as the exact functions to reuse.
+- Recorded a summary of this rewrite in `docs/wiki/sbis-edo-integration.md` under "Plan rewritten (2026-07-20)".
+- No implementation code changed — this was a planning/task-file revision only.
+
+## [2026-07-20] verify | real SBIS API dump checked field-by-field against plan, sbis_api_test.py brought into repo
+
+- User provided `sbis_api_test.py` (now saved at repo root) and a real `СБИС.СписокИзменений` production response (org ИНН 7604094967, period 2026-06-30..2026-07-13). Dump saved and registered as `src_20260720_sbis_dump` in `../autosnab_mvp_raw/inbox/sbis_changes_dump_2026-07-13.json` (contains real counterparty INNs/names/amounts).
+- Confirmed correct: `Документ.Тип` really does carry `ДокОтгрВх`/`СчетВх`/`АктСверВх`/`ДоговорВх` on real data, resolving the earlier doubt raised from `sbis_api_test.py`'s keyword-only heuristic — filtering by `Документ.Тип` is valid as the plan claimed. Dedup by `Документ.Идентификатор` confirmed necessary (same doc repeats 3-5x). `Служебный` flag confirmed reliable regardless of attachment `Направление`. ~1 month `expire_date` window confirmed.
+- Found four new gaps not covered by the original task file, now added to `claude_cli_task_sbis_integration_v2.md` and `docs/wiki/sbis-edo-integration.md`: (1) `Вложение.Тип` is a separate vocabulary from `Документ.Тип`, must not be conflated; (2) `Вложение.Файл.Ссылка` can be an empty string on a real non-служебный attachment — needs defensive handling, not an assumption it's always populated; (3) УПД and Счёт attachments use different XML schema versions (`ВерсияФормата` 5.x vs 1.03/TENSOR_1) — the planned shared XML parser needs separate verification for `СчетВх`, not blind reuse; (4) a single document can bundle multiple non-служебный attachments beyond the target file, so a PDF-only fallback needs a secondary match heuristic, not "grab any PDF".
+- No code implemented yet — this was dump verification against the plan.
+
+## [2026-07-20] implement | SBIS EDO adapter built on new branch sbis-edo-integration, mirroring Diadoc
+
+- Created dedicated branch `sbis-edo-integration` off `over_version` at user's request (all changes since the plan-rewrite session were carried onto it, uncommitted).
+- Implemented the SBIS adapter per the twice-revised plan: `fns_upd_xml_parser_service.parse_fns_invoice_xml(..., provider=...)` generalized from `diadoc_xml_parser_service.py` (kept as a thin wrapper, existing Diadoc test still passes unchanged); `models/sbis.py` (SbisSyncState/SbisDocument/SbisArtifact/SbisDelivery/SbisLease); `sbis_client.py` (SID auth with module-level cache + single reauth on session-error, plain GET download, HTTP retry/backoff refactored into `_send_post_once`/`_send_get_once` primitives so tests can patch below the retry loop); `sbis_sync_service.py` (dedup via `_group_by_document_id`/`_merge_occurrences`, `Документ.Тип` filtering, `_pick_target_attachment` encoding all four real-dump findings, PDF-fallback via existing `extract_invoice_document`, feeds into existing `create_invoice_review`/`update_invoice_review`/`create_real_google_sheet_for_review`, `_normalize_datetime_for_filter` fixing the dots-vs-colons cursor mismatch); `sbis_scheduler_service.py`/`schemas/sbis.py`/`routers/sbis.py` (X-Sbis-Api-Key admin gate, falls back to `bot_api_shared_secret`); wired into `main.py`.
+- Added `sbis_*` settings to `config.py` and `.env.example`, mirroring `diadoc_*` naming (`sbis_document_types` defaults to `ДокОтгрВх,СчетВх`).
+- Wrote 16 new tests across `test_fns_upd_xml_parser_service.py`, `test_sbis_client_reliability.py`, `test_sbis_sync_service.py`, `test_sbis_router_reliability.py` — all HTTP-mocked, no real SBIS calls. Full suite: 197 passed / 8 failed, identical pre-existing `test_receiving.py` failure names as the documented 181/8 baseline — zero regressions.
+- Not done: no manual DB migration (new tables only, `Base.metadata.create_all` handles it), no live smoke test against the real SBIS account, `СчетВх` XML parsing via the shared parser unverified against a real Счёт sample. Nothing committed yet — working tree only on the new branch.
