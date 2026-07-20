@@ -59,6 +59,48 @@ class Settings(BaseSettings):
     iiko_mapping_min_confidence: float = 0.72
     iiko_mapping_review_confidence: float = 0.55
 
+    # Diadoc HTTP API integration. OIDC Authorization Code Flow is the
+    # primary authentication method; a pre-issued access token remains
+    # supported for backward compatibility.
+    diadoc_integration_enabled: bool = False
+    diadoc_api_base_url: str = "https://diadoc-api.kontur.ru"
+    diadoc_identity_base_url: str = "https://identity.kontur.ru"
+    diadoc_oauth_authorize_uri: str = "https://identity.kontur.ru/connect/authorize"
+    diadoc_oauth_token_uri: str = "https://identity.kontur.ru/connect/token"
+    diadoc_oauth_redirect_uri: str = "http://localhost:8000/api/v1/diadoc/oauth/callback"
+    diadoc_oauth_scope: str = "openid profile email offline_access Diadoc.PublicAPI"
+    diadoc_client_id: str | None = None
+    diadoc_client_secret: str | None = None
+    diadoc_access_token: str | None = None
+    diadoc_refresh_token: str | None = None
+    diadoc_token_expiry: str | None = None
+    diadoc_box_id: str | None = None
+    diadoc_department_id: str | None = None
+    diadoc_type_named_ids: str | None = None
+    diadoc_timeout_seconds: float = 30.0
+    diadoc_sync_limit: int = 100
+    diadoc_documents_dir: str = "uploads/diadoc"
+    diadoc_scheduler_enabled: bool = True
+    diadoc_sync_interval_seconds: int = 300
+    diadoc_retry_max_attempts: int = 5
+    diadoc_retry_base_delay_seconds: int = 60
+    diadoc_retry_batch_size: int = 50
+    diadoc_delivery_stale_seconds: int = 600
+    diadoc_sync_lease_seconds: int = 1800
+    diadoc_max_pages_per_sync: int = 10
+    diadoc_initial_sync_mode: str = "latest"
+    diadoc_http_retry_attempts: int = 4
+    diadoc_http_retry_base_delay_seconds: float = 1.0
+    diadoc_http_retry_max_delay_seconds: float = 30.0
+    diadoc_max_attachment_bytes: int = 100_000_000
+    diadoc_max_xml_bytes: int = 20_000_000
+    diadoc_admin_api_key: str | None = None
+    diadoc_generate_print_form: bool = True
+    diadoc_print_form_attempts: int = 5
+    diadoc_download_all_attachments: bool = True
+    diadoc_parse_unstructured_attachments: bool = True
+    diadoc_unstructured_extraction_method: str = "openai"
+
     # OpenAI structures extracted evidence. Business rules and sheet writes stay local.
     openai_api_key: str | None = None
     openai_invoice_model: str = "gpt-5-mini"
