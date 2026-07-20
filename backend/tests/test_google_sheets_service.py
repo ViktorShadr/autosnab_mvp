@@ -271,7 +271,7 @@ def test_reference_catalog_loader_reads_fixed_google_sheet_tabs(monkeypatch):
     assert values.kwargs["ranges"] == [
         "'Товары'!A1:H",
         "'Поставщики'!A1:H",
-        "'Справочник фасовок'!A1:M",
+        "'Справочник фасовок'!A1:Z",
     ]
     assert catalogs["products"][0]["Наименование"] == "Кефир"
     assert catalogs["suppliers"][0]["Поставщик"] == "ООО Молоко"

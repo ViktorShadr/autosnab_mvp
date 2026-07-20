@@ -50,6 +50,12 @@ _UNIT_ALIASES = {
     "БУТ": "бут",
 }
 
+_METHOD_NO_RECALC = {"без пересчета", "без пересчёта"}
+_METHOD_BY_UNITS = {"по количеству вложений", "по вложениям"}
+_METHOD_BY_WEIGHT = {"по весу/объему", "по весу/объёму", "по весу", "по объему", "по объёму"}
+_METHOD_BY_DRY_WEIGHT = {"по сухому весу"}
+_METHOD_MANUAL = {"ручная проверка"}
+
 
 def normalize_item_candidate(item: InvoiceParsedItem) -> list[dict[str, str]]:
     """Normalize one model candidate and return deterministic review issues."""
@@ -126,12 +132,12 @@ def apply_reference_mapping_to_payload(
     corrections = metadata.setdefault("item_corrections", {})
     parser_notes = result.setdefault("parser_notes", [])
     conversion_exceptions = conversion_exceptions or []
+    rules = _merge_rule_sources(packages, conversion_exceptions)
 
     for index, item in enumerate(result.get("items") or [], start=1):
         line_number = int(item.get("line_number") or index)
         item["us_product_name"] = _fallback_us_product_name(item)
         product_match = _match_product(item, products)
-        package_match = _match_package(item, packages)
         product_unit = ""
 
         if product_match["status"] == "matched":
@@ -164,87 +170,61 @@ def apply_reference_mapping_to_payload(
                 parser_notes,
             )
 
-        multiplier, accounting_unit, conversion_method = _calculate_conversion(item)
-        package_raw = _package_raw(item)
-        if package_match["status"] == "matched":
-            item["package_reference_id"] = package_match.get("id")
-            package_unit = package_match["accounting_unit"]
-            stored_multiplier = package_match["multiplier"]
-            if accounting_unit and package_unit and accounting_unit != package_unit:
-                multiplier = None
-                _add_mapping_problem(
-                    item,
-                    line_number,
-                    "package",
-                    "Расчетная единица фасовки не совпадает с единицей в «Справочник фасовок».",
-                    "Сопоставление",
-                    review_flags,
-                    corrections,
-                    parser_notes,
-                )
-            elif stored_multiplier is not None and multiplier is not None and not _numbers_equal(
-                stored_multiplier,
-                multiplier,
-            ):
-                item["stored_conversion_factor"] = stored_multiplier
-                multiplier = None
-                _add_mapping_problem(
-                    item,
-                    line_number,
-                    "conversion_factor",
-                    "Расчетный коэффициент не совпадает с сохраненным коэффициентом фасовки.",
-                    "Сопоставление",
-                    review_flags,
-                    corrections,
-                    parser_notes,
-                )
-            elif multiplier is None and stored_multiplier is not None:
-                multiplier = stored_multiplier
-                accounting_unit = package_unit
-                conversion_method = "package_reference"
-        elif package_raw and multiplier is None:
+        resolution = _resolve_conversion(item, product_match, rules)
+        multiplier = resolution.get("multiplier")
+        accounting_unit = resolution.get("accounting_unit") or ""
+        conversion_method = resolution.get("method") or "unresolved"
+        rule_id = resolution.get("rule_id")
+
+        if resolution["status"] in {"ambiguous", "manual", "unresolved"}:
+            multiplier = None
+            accounting_unit = ""
+            conversion_method = "unresolved"
+            if resolution.get("stored_conversion_factor") is not None:
+                item["stored_conversion_factor"] = resolution["stored_conversion_factor"]
             _add_mapping_problem(
                 item,
                 line_number,
-                "package",
-                "Фасовка не найдена в листе «Справочник фасовок».",
+                "conversion_factor",
+                resolution.get("reason") or "Не удалось детерминированно рассчитать пересчет количества.",
                 "Сопоставление",
                 review_flags,
                 corrections,
                 parser_notes,
             )
-        target_unit = product_unit or package_match.get("accounting_unit") or accounting_unit
-        if target_unit and accounting_unit and target_unit != accounting_unit:
-            exception_match = _match_conversion_exception(
+        elif resolution["status"] == "no_rule":
+            note = resolution.get("reason") or "Правило пересчета не найдено, количество оставлено без пересчета."
+            if note not in parser_notes:
+                parser_notes.append(note)
+            flag = {
+                "scope": "item",
+                "line_number": line_number,
+                "field": "conversion_factor",
+                "reason": note,
+                "severity": "warning",
+            }
+            if flag not in review_flags:
+                review_flags.append(flag)
+        elif product_unit and accounting_unit and product_unit != accounting_unit and rule_id is None:
+            multiplier = None
+            accounting_unit = ""
+            conversion_method = "unresolved"
+            _add_mapping_problem(
                 item,
-                product_match,
-                conversion_exceptions,
-                target_unit=target_unit,
+                line_number,
+                "accounting_unit_candidate",
+                "Единица расчета не совпадает с единицей товара в «Товары», а подтверждающее правило не найдено.",
+                "Сопоставление",
+                review_flags,
+                corrections,
+                parser_notes,
             )
-            if exception_match["status"] == "matched":
-                multiplier = exception_match["factor"]
-                accounting_unit = exception_match["accounting_unit"]
-                conversion_method = "product_exception"
-                item["conversion_source_id"] = exception_match.get("id")
-            else:
-                multiplier = None
-                reason = (
-                    "Найдено несколько подходящих исключений пересчета."
-                    if exception_match["status"] == "ambiguous"
-                    else "Единица товара не совпадает с расчетной единицей и исключение пересчета не найдено."
-                )
-                _add_mapping_problem(
-                    item,
-                    line_number,
-                    "accounting_unit_candidate",
-                    reason,
-                    "Сопоставление",
-                    review_flags,
-                    corrections,
-                    parser_notes,
-                )
-        elif target_unit:
-            accounting_unit = target_unit
+        elif product_unit:
+            accounting_unit = product_unit
+
+        if rule_id is not None:
+            item["package_reference_id"] = rule_id
+            item["conversion_source_id"] = rule_id
 
         if multiplier is not None and multiplier <= 0:
             multiplier = None
@@ -343,6 +323,281 @@ def _calculate_conversion(item: dict[str, Any]) -> tuple[float | None, str, str]
     if package.raw:
         return None, "", "unresolved"
     return None, "", "unresolved"
+
+
+def _merge_rule_sources(*sources: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Combine package/exception reference rows into one deduplicated rule list.
+
+    `Справочник фасовок` and a legacy separate exceptions sheet may both be
+    configured; rows are deduplicated so the same physical rule row read from
+    two ranges is not matched twice.
+    """
+    seen: set[tuple[tuple[str, Any], ...]] = set()
+    merged: list[dict[str, Any]] = []
+    for source in sources:
+        for row in source or []:
+            try:
+                key = tuple(sorted(row.items()))
+            except TypeError:
+                key = None
+            if key is not None:
+                if key in seen:
+                    continue
+                seen.add(key)
+            merged.append(row)
+    return merged
+
+
+def _resolve_conversion(
+    item: dict[str, Any],
+    product_match: dict[str, Any],
+    rules: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Determine the final Кол-во в УС conversion for one item.
+
+    A `Справочник фасовок` / `Правила пересчета` row is authoritative when
+    found. Package-shaped text in the name (`0,5Л 12ШТ`, `12 РУЛ`, ...) is
+    only ever a *candidate*: without a matching active rule, the accounting
+    quantity defaults to the document quantity unchanged (`identity_no_rule`)
+    instead of silently decomposing it. Document-unit identity (`document_unit`
+    already equal to the accounting unit, e.g. goods sold by weight in `кг`)
+    is safe without a rule because no package-based guess is involved.
+    """
+    document_unit = _normalize_unit(item.get("document_unit") or item.get("unit"))
+    computed_multiplier, computed_unit, computed_method = _calculate_conversion(item)
+    rule_match = _match_conversion_rule(item, product_match, rules, document_unit=document_unit)
+
+    if rule_match["status"] == "ambiguous":
+        return {"status": "ambiguous", "reason": "Найдено несколько подходящих правил пересчета."}
+
+    if rule_match["status"] == "matched":
+        rule = rule_match["rule"]
+        match_kind = rule_match["match_kind"]
+        rule_id = _catalog_value(rule, "ID", "id")
+        method_label = _normalize_method_label(_catalog_value(rule, "Способ пересчета", "conversion_method"))
+        rule_factor = _number(_catalog_value(rule, "Коэффициент пересчета", "Вес 1 шт", "factor"))
+        rule_unit = _normalize_unit(
+            _catalog_value(rule, "Единица учета в УС", "Ед.изм. в УС", "accounting_unit")
+        )
+
+        if method_label in _METHOD_MANUAL:
+            return {"status": "manual", "reason": "Правило пересчета требует ручной проверки."}
+
+        if method_label in _METHOD_NO_RECALC:
+            return {
+                "status": "resolved",
+                "multiplier": 1.0,
+                "accounting_unit": rule_unit or document_unit,
+                "method": "no_recalculation_rule",
+                "rule_id": rule_id,
+            }
+
+        if method_label in _METHOD_BY_DRY_WEIGHT:
+            dry_multiplier, dry_unit = _dry_weight_multiplier(item)
+            if dry_multiplier is None:
+                return {
+                    "status": "unresolved",
+                    "reason": "Правило требует пересчета по сухому весу, но сухой вес не указан в документе.",
+                }
+            return {
+                "status": "resolved",
+                "multiplier": dry_multiplier,
+                "accounting_unit": rule_unit or dry_unit,
+                "method": "dry_weight_rule",
+                "rule_id": rule_id,
+            }
+
+        if method_label in _METHOD_BY_UNITS:
+            multiplier = rule_factor if rule_factor is not None else computed_multiplier
+            if multiplier is None:
+                return {
+                    "status": "unresolved",
+                    "reason": "Не удалось определить коэффициент пересчета по количеству вложений.",
+                }
+            return {
+                "status": "resolved",
+                "multiplier": multiplier,
+                "accounting_unit": rule_unit or computed_unit or document_unit,
+                "method": "package_units_rule",
+                "rule_id": rule_id,
+            }
+
+        if method_label in _METHOD_BY_WEIGHT:
+            multiplier = rule_factor if rule_factor is not None else computed_multiplier
+            if multiplier is None:
+                return {
+                    "status": "unresolved",
+                    "reason": "Не удалось определить коэффициент пересчета по весу/объему.",
+                }
+            return {
+                "status": "resolved",
+                "multiplier": multiplier,
+                "accounting_unit": rule_unit or computed_unit,
+                "method": "weight_volume_rule",
+                "rule_id": rule_id,
+            }
+
+        # Legacy `Справочник фасовок` rows with no `Способ пересчета` value yet.
+        if match_kind == "product":
+            # Product-identity exception (eggs/avocado/olives style): the
+            # rule's own factor always wins, the computed guess is not
+            # comparable (usually just an identity default).
+            if rule_factor is None:
+                return {"status": "unresolved", "reason": "Правило пересчета не содержит коэффициента."}
+            return {
+                "status": "resolved",
+                "multiplier": rule_factor,
+                "accounting_unit": rule_unit or computed_unit or document_unit,
+                "method": "product_exception",
+                "rule_id": rule_id,
+            }
+
+        # Package-text match: keep the pre-existing behavior of confirming
+        # the computed physical conversion against a stored coefficient, or
+        # filling in when nothing was computed.
+        if rule_unit and computed_unit and rule_unit != computed_unit:
+            return {
+                "status": "unresolved",
+                "reason": "Расчетная единица фасовки не совпадает с единицей в «Справочник фасовок».",
+            }
+        if rule_factor is not None and computed_multiplier is not None and not _numbers_equal(
+            rule_factor,
+            computed_multiplier,
+        ):
+            return {
+                "status": "unresolved",
+                "reason": "Расчетный коэффициент не совпадает с сохраненным коэффициентом фасовки.",
+                "stored_conversion_factor": rule_factor,
+            }
+        if computed_multiplier is not None:
+            return {
+                "status": "resolved",
+                "multiplier": computed_multiplier,
+                "accounting_unit": rule_unit or computed_unit,
+                "method": computed_method,
+                "rule_id": rule_id,
+            }
+        if rule_factor is not None:
+            return {
+                "status": "resolved",
+                "multiplier": rule_factor,
+                "accounting_unit": rule_unit or document_unit,
+                "method": "package_reference",
+                "rule_id": rule_id,
+            }
+        return {"status": "unresolved", "reason": "Правило пересчета не содержит коэффициента."}
+
+    # No matching rule at all.
+    if computed_method in {"identity", "identity_document_unit"}:
+        return {
+            "status": "resolved",
+            "multiplier": computed_multiplier,
+            "accounting_unit": computed_unit,
+            "method": computed_method,
+            "rule_id": None,
+        }
+    if _package_raw(item):
+        return {
+            "status": "no_rule",
+            "reason": "Фасовка не найдена в справочнике «Справочник фасовок» — количество оставлено без пересчета.",
+            "multiplier": 1.0,
+            "accounting_unit": document_unit,
+            "method": "identity_no_rule",
+            "rule_id": None,
+        }
+    if computed_method == "unresolved":
+        return {"status": "unresolved", "reason": "Не удалось уверенно определить фасовку или единицу учета."}
+    return {
+        "status": "resolved",
+        "multiplier": computed_multiplier,
+        "accounting_unit": computed_unit,
+        "method": computed_method,
+        "rule_id": None,
+    }
+
+
+def _match_conversion_rule(
+    item: dict[str, Any],
+    product_match: dict[str, Any],
+    rules: list[dict[str, Any]],
+    *,
+    document_unit: str,
+) -> dict[str, Any]:
+    package_raw = _normalize_compact(_package_raw(item))
+    raw_name = _normalize_name(item.get("raw_name") or item.get("name"))
+    item_names = {
+        _normalize_name(item.get("normalized_name_candidate")),
+        _normalize_name(item.get("clean_name")),
+        _normalize_name(product_match.get("name")),
+    }
+    item_names.discard("")
+    product_code = str(product_match.get("code") or "").strip()
+
+    matches = []
+    for rule in rules:
+        if str(_catalog_value(rule, "Активна", "active") or "да").strip().lower() in {"нет", "false", "0"}:
+            continue
+
+        rule_document_unit = _normalize_unit(
+            _catalog_value(rule, "Ед.изм. в документе", "Единица документа", "document_unit")
+        )
+        if rule_document_unit and rule_document_unit != document_unit:
+            continue
+
+        package_variants = {
+            _normalize_compact(value)
+            for value in (
+                _catalog_value(rule, "Фасовка в документе", "Состав упаковки", "document_package"),
+                _catalog_value(rule, "Основная фасовка", "primary_package"),
+                *str(_catalog_value(rule, "Варианты", "variants") or "").split(";"),
+            )
+            if value
+        }
+        package_hit = bool(package_raw) and package_raw in package_variants
+
+        rule_product_name = _normalize_name(
+            _catalog_value(rule, "Наименование товара УС", "Наименование товара", "Товар", "product_name")
+        )
+        rule_product_code = str(
+            _catalog_value(rule, "Код товара УС", "Код товара поставщика", "product_code") or ""
+        ).strip()
+        product_hit = bool(rule_product_name) and rule_product_name in item_names
+        product_code_hit = bool(rule_product_code) and bool(product_code) and rule_product_code == product_code
+
+        if not (package_hit or product_hit or product_code_hit):
+            continue
+
+        qualifier = _normalize_name(_catalog_value(rule, "Вариант", "Квалификатор", "qualifier"))
+        if qualifier and qualifier not in raw_name:
+            continue
+
+        # A rule matched purely by package text is a physical packaging fact
+        # and can be sanity-checked against the regex-computed conversion.
+        # A rule matched by product identity (weight-exception style, e.g.
+        # eggs/avocado/olives) overrides the computed guess outright, since
+        # the computed value for such items is usually a meaningless identity
+        # default rather than a real package decomposition candidate.
+        match_kind = "package" if package_hit else "product"
+        matches.append({"rule": rule, "match_kind": match_kind})
+
+    if not matches:
+        return {"status": "missing"}
+    if len(matches) > 1:
+        return {"status": "ambiguous"}
+    return {"status": "matched", "rule": matches[0]["rule"], "match_kind": matches[0]["match_kind"]}
+
+
+def _dry_weight_multiplier(item: dict[str, Any]) -> tuple[float | None, str]:
+    package = item.get("package") if isinstance(item.get("package"), dict) else {}
+    value = _number(package.get("dry_weight"))
+    unit = _normalize_unit(package.get("dry_weight_unit") or package.get("unit"))
+    return _convert_package_value(value, unit)
+
+
+def _normalize_method_label(value: Any) -> str:
+    text = str(value or "").strip().lower().replace("ё", "е")
+    return re.sub(r"\s+", " ", text)
+
 
 def _positive_number(value: Any) -> float | None:
     number = _number(value)
@@ -494,118 +749,6 @@ def _match_product(item: dict[str, Any], products: list[dict[str, Any]]) -> dict
         "unit": _normalize_unit(_catalog_value(best, "Ед. изм.", "unit")),
         "score": best_score,
     }
-
-
-def _match_package(item: dict[str, Any], packages: list[dict[str, Any]]) -> dict[str, Any]:
-    package_raw = _normalize_compact(_package_raw(item))
-    if not package_raw:
-        return {"status": "not_required"}
-    for package in packages:
-        if str(_catalog_value(package, "Активна", "active") or "").strip().lower() in {"нет", "false", "0"}:
-            continue
-        variants = [
-            _catalog_value(package, "Фасовка в документе", "document_package"),
-            _catalog_value(package, "Основная фасовка", "primary_package"),
-        ]
-        variants.extend(str(_catalog_value(package, "Варианты", "variants") or "").split(";"))
-        if package_raw not in {_normalize_compact(value) for value in variants if value}:
-            continue
-        return {
-            "status": "matched",
-            "id": _catalog_value(package, "ID", "id"),
-            "multiplier": _number(_catalog_value(package, "Коэффициент пересчета", "multiplier")),
-            "accounting_unit": _normalize_unit(
-                _catalog_value(package, "Единица учета в УС", "accounting_unit")
-            ),
-        }
-    return {"status": "missing"}
-
-
-def _match_conversion_exception(
-    item: dict[str, Any],
-    product_match: dict[str, Any],
-    exceptions: list[dict[str, Any]],
-    *,
-    target_unit: str,
-) -> dict[str, Any]:
-    document_unit = _normalize_unit(item.get("document_unit") or item.get("unit"))
-    item_names = {
-        _normalize_name(item.get("normalized_name_candidate")),
-        _normalize_name(item.get("clean_name")),
-        _normalize_name(product_match.get("name")),
-    }
-    item_names.discard("")
-    raw_name = _normalize_name(item.get("raw_name") or item.get("name"))
-    matches = []
-    for exception in exceptions:
-        if str(_catalog_value(exception, "Активна", "active") or "да").strip().lower() in {
-            "нет",
-            "false",
-            "0",
-        }:
-            continue
-        exception_name = _normalize_name(
-            _catalog_value(
-                exception,
-                "Наименование товара",
-                "Товар",
-                "product_name",
-            )
-        )
-        if not exception_name or exception_name not in item_names:
-            continue
-        exception_document_unit = _normalize_unit(
-            _catalog_value(
-                exception,
-                "Ед.изм. в документе",
-                "Единица документа",
-                "document_unit",
-            )
-        )
-        exception_accounting_unit = _normalize_unit(
-            _catalog_value(
-                exception,
-                "Ед.изм. в УС",
-                "Единица учета в УС",
-                "accounting_unit",
-            )
-        )
-        if exception_document_unit and exception_document_unit != document_unit:
-            continue
-        if exception_accounting_unit and exception_accounting_unit != target_unit:
-            continue
-        qualifier = _normalize_name(
-            _catalog_value(exception, "Вариант", "Квалификатор", "qualifier")
-        )
-        if qualifier and qualifier not in raw_name:
-            continue
-        factor = _number(
-            _catalog_value(
-                exception,
-                "Коэффициент пересчета",
-                "Вес 1 шт",
-                "factor",
-            )
-        )
-        if factor is None or factor <= 0:
-            continue
-        matches.append(
-            {
-                "status": "matched",
-                "id": _catalog_value(exception, "ID", "id"),
-                "factor": factor,
-                "accounting_unit": exception_accounting_unit or target_unit,
-            }
-        )
-    if not matches:
-        return {"status": "missing"}
-    unique = {
-        (match["factor"], match["accounting_unit"], match.get("id"))
-        for match in matches
-    }
-    if len(unique) > 1:
-        return {"status": "ambiguous"}
-    return matches[0]
 
 
 def _add_mapping_problem(

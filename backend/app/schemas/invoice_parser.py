@@ -25,6 +25,8 @@ class InvoiceItemPackage(BaseModel):
     value: float | None = None
     unit: str | None = None
     raw: str = ""
+    dry_weight: float | None = None
+    dry_weight_unit: str | None = None
 
 
 class InvoiceParsedItem(BaseModel):

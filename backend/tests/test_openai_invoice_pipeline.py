@@ -181,7 +181,13 @@ def test_item_normalization_extracts_code_package_and_accounting_quantity():
     assert item.clean_name == "КЕФИР ФЕРМЕРСКИЙ"
     assert item.normalized_name_candidate == "Кефир Фермерский"
     assert item.codes == ["N+13968"]
-    assert item.package.model_dump() == {"value": 800.0, "unit": "г", "raw": "800Г"}
+    assert item.package.model_dump() == {
+        "value": 800.0,
+        "unit": "г",
+        "raw": "800Г",
+        "dry_weight": None,
+        "dry_weight_unit": None,
+    }
     assert item.quantity_multiplier == 0.8
     assert item.accounting_quantity_candidate == 4.0
     assert item.accounting_unit_candidate == "кг"
@@ -200,7 +206,13 @@ def test_item_normalization_uses_explicit_units_per_package_from_document_column
     issues = normalize_item_candidate(item)
 
     assert issues == []
-    assert item.package.model_dump() == {"value": 1.5, "unit": "л", "raw": "1,5Л"}
+    assert item.package.model_dump() == {
+        "value": 1.5,
+        "unit": "л",
+        "raw": "1,5Л",
+        "dry_weight": None,
+        "dry_weight_unit": None,
+    }
     assert item.units_per_package == 6
     assert item.quantity_multiplier == 9.0
     assert item.accounting_quantity_candidate == 18.0
@@ -283,7 +295,13 @@ def test_item_normalization_multiplies_nested_liquid_package():
     issues = normalize_item_candidate(item)
 
     assert issues == []
-    assert item.package.model_dump() == {"value": 0.5, "unit": "л", "raw": "0,5Л"}
+    assert item.package.model_dump() == {
+        "value": 0.5,
+        "unit": "л",
+        "raw": "0,5Л",
+        "dry_weight": None,
+        "dry_weight_unit": None,
+    }
     assert item.quantity_multiplier == 6.0
     assert item.accounting_quantity_candidate == 18.0
     assert item.accounting_unit_candidate == "л"
@@ -444,8 +462,12 @@ def test_reference_mapping_marks_missing_product_and_package():
     assert item["correction"] == "Нет в справочнике"
     assert result["parser_metadata"]["upload_status"] == "Требует проверки"
     assert result["parser_metadata"]["row_status"] == "Правка вручную"
-    assert len(result["parser_metadata"]["review_flags"]) == 1
-    assert item["quantity_us"] == 0.666
+    assert len(result["parser_metadata"]["review_flags"]) == 2
+    # No confirming rule for "333Г" exists in "Справочник фасовок" (only "250г"
+    # is registered): quantity stays without recalculation instead of silently
+    # decomposing an unconfirmed package guess (0.333 * 2).
+    assert item["conversion_method"] == "identity_no_rule"
+    assert item["quantity_us"] == 2
 
 
 def test_normalization_clears_basis_when_it_repeats_document_form():

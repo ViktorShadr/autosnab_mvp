@@ -94,7 +94,14 @@ def load_invoice_reference_catalogs() -> dict[str, list[dict[str, Any]]]:
             "Для чтения справочников нужны GOOGLE_SHEETS_ENABLED=true и GOOGLE_TARGET_SPREADSHEET_ID."
         )
     sheets_service, _ = _build_google_services()
-    ranges = ["'Товары'!A1:H", "'Поставщики'!A1:H", "'Справочник фасовок'!A1:M"]
+    # Widened past the historical `M` boundary so the extended "Правила
+    # пересчета" columns (Способ пересчета, Поставщик, ИНН поставщика, Код
+    # товара поставщика, Наименование из документа, Код товара УС,
+    # Наименование товара УС, Склад/назначение, Комментарий) are read once
+    # they are added to the live "Справочник фасовок" sheet. `_table_rows_as_dicts`
+    # keys rows by whatever header text is actually present, so this is a
+    # no-op until those columns exist.
+    ranges = ["'Товары'!A1:H", "'Поставщики'!A1:H", "'Справочник фасовок'!A1:Z"]
     if settings.google_conversion_exceptions_sheet_name:
         escaped_name = settings.google_conversion_exceptions_sheet_name.replace("'", "''")
         ranges.append(f"'{escaped_name}'!A1:Z")
