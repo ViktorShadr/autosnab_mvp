@@ -1,0 +1,82 @@
+import os
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+os.environ["DATABASE_URL"] = "sqlite:///:memory:"
+
+from app.schemas.invoice_review import BotDocumentSummary, BotUploadStatusResponse  # noqa: E402
+from app.telegram_bot.handlers import _matches  # noqa: E402
+from app.telegram_bot.keyboard import MAIN_KEYBOARD  # noqa: E402
+from app.telegram_bot.messages import format_result_message, stage_text_for  # noqa: E402
+
+
+def test_matches_is_case_and_whitespace_insensitive():
+    predicate = _matches("готово", "/done", "done")
+    assert predicate("Готово")
+    assert predicate("  ГОТОВО  ")
+    assert predicate("/done")
+    assert not predicate("статус")
+
+
+def test_matches_handles_none_and_empty_text():
+    predicate = _matches("готово")
+    assert not predicate(None)
+    assert not predicate("")
+
+
+def test_main_keyboard_has_expected_buttons():
+    texts = [button.text for row in MAIN_KEYBOARD.keyboard for button in row]
+    assert texts == ["Готово", "Статус", "Сбросить"]
+
+
+def test_stage_text_for_groups_known_stages_and_ignores_unknown():
+    assert stage_text_for("ocr_start") == stage_text_for("collect_evidence_start")
+    assert stage_text_for("openai_request_start") == stage_text_for("reference_mapping_start")
+    assert stage_text_for("google_sheet_start") is not None
+    assert stage_text_for("job_queued") is None
+    assert stage_text_for("totally_unknown_stage") is None
+
+
+def test_format_result_message_includes_summary_and_sheet_link():
+    status = BotUploadStatusResponse(
+        upload_id="bot-upload-1",
+        status="transferred_to_review",
+        message="Документ обработан и передан в модуль проверки данных.",
+        completed=True,
+        source_channel="telegram_bot",
+        document_kind="primary_document",
+        files_count=1,
+        original_filename="page-1.jpg",
+        google_spreadsheet_url="https://sheets.example/doc",
+        document_summary=BotDocumentSummary(
+            supplier="ООО Тест",
+            invoice_number="INV-1",
+            invoice_date="2026-07-21",
+            total_sum=123.45,
+        ),
+    )
+
+    text = format_result_message(status)
+
+    assert "Документ обработан и передан в модуль проверки данных." in text
+    assert "Поставщик: ООО Тест" in text
+    assert "Номер: INV-1" in text
+    assert "Сумма: 123.45" in text
+    assert "https://sheets.example/doc" in text
+
+
+def test_format_result_message_without_summary_is_just_the_message():
+    status = BotUploadStatusResponse(
+        upload_id="bot-upload-2",
+        status="unsupported_format",
+        message="Формат файла пока не поддерживается.",
+        completed=True,
+        source_channel="telegram_bot",
+        document_kind="primary_document",
+        files_count=1,
+        original_filename="invoice.xml",
+    )
+
+    assert format_result_message(status) == "Формат файла пока не поддерживается."

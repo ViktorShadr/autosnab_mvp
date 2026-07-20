@@ -3,12 +3,26 @@ title: n8n to Native Bot Migration Plan
 source: session
 created: 2026-07-20
 tags: [bot, telegram, n8n, migration, backlog]
-status: planned-not-started
+status: code-built-not-cutover
 ---
 
 # n8n → Native Python Telegram Bot — Migration Plan
 
-**Status: decision made 2026-07-20, recorded here as a backlog item — implementation not started.**
+**Status: decision made 2026-07-20; code built 2026-07-21 on branch `native-telegram-bot`, not yet cut over to production.**
+
+## 2026-07-21 implementation update
+
+All of "Migration design (not yet built)" below is now real code on branch `native-telegram-bot` (off `packaging-conversion-rules`):
+
+- `backend/app/services/bot_gateway_service.py`: mechanical extraction of the five `/bot/drafts/*` + `/bot/uploads/*` endpoint bodies into plain functions (`append_draft_page`, `get_draft_status`, `reset_draft`, `finalize_draft`, `get_latest_upload_status`, `get_upload_status`), reusing the existing `Bot*` Pydantic response schemas directly instead of inventing new result types. Also holds `start_bot_processing`/`_process_bot_upload_background`/`_build_bot_upload_status_response`/`_bot_status_message`, moved verbatim from the router. `ValueError` replaces `HTTPException` for validation failures so the functions stay usable from both FastAPI and aiogram callers.
+- `backend/app/routers/invoice_review.py`: the six `/bot/*` endpoints are now thin wrappers over the gateway (URLs/contracts/`X-Bot-Api-Key` unchanged); the pre-existing bulk `/bot/upload-document-live` endpoint (not one of the six — it predates the draft-based flow) now also calls `bot_gateway_service.start_bot_processing`. `_process_invoice_upload` itself (the ~200-line shared extraction/write engine, also used by the non-bot web-upload endpoint) deliberately stayed in the router; the gateway's background function reaches it via one deferred (function-body) import to avoid a circular import, rather than relocating a function that non-bot code also depends on.
+- `backend/app/telegram_bot/`: `bot.py` (Bot/Dispatcher construction, `start_bot`/`stop_bot` as asyncio-task lifecycle hooks), `keyboard.py` (`MAIN_KEYBOARD`: Готово/Статус/Сбросить via aiogram's typed `ReplyKeyboardMarkup`), `messages.py` (ported Russian text + a `STAGE_TEXT` map keyed by the real `pipeline_logs` stage identifiers — `collect_evidence_start`/`ocr_start`/`ocr_fallback_start`/`mineru_start` → "выгружаем данные", `openai_request_start`/`reference_mapping_start` → "обрабатываем через ИИ", `google_sheet_start` → "загружаем в таблицу"), `handlers.py` (aiogram `Router` with photo/document/text handlers, all delegating to `bot_gateway_service` via `asyncio.to_thread`), `poller.py` (per-chat `asyncio.Task` registry; repeated "Готово" cancels and replaces any still-running poll for that chat, matching the plan's stated rollout-safety requirement).
+- `backend/app/main.py`: `start_bot()`/`stop_bot()` wired into `lifespan` as asyncio tasks (mirrors the existing `start_diadoc_scheduler`/`stop_diadoc_scheduler` thread pattern); no-ops when `TELEGRAM_BOT_ENABLED` is false, so this ships inert by default.
+- `backend/app/config.py` + `.env.example`: new settings `telegram_bot_enabled` (default `false`), `telegram_bot_token`, `telegram_bot_poll_interval_seconds` (5.0), `telegram_bot_max_poll_attempts` (24) — same numbers the n8n workflow already used.
+- **Dependency conflict found and resolved**: `aiogram==3.15.0` requires `pydantic<2.10`, which downgraded the environment's resolved `pydantic` from `2.10.4` to `2.9.2`. Re-pinned `backend/requirements.txt`'s `pydantic==2.10.4` down to `pydantic==2.9.2` so a fresh install resolves deterministically instead of leaving pip to pick silently. Full suite re-verified passing after the downgrade.
+- **Real regression found and fixed during verification**: `test_receiving.py::test_bot_draft_finalize_starts_processing_and_is_visible_via_latest` monkeypatched `invoice_review_router._process_bot_upload_background`, which no longer exists there post-extraction. Updated the test to monkeypatch `bot_gateway_service._process_bot_upload_background` instead (same object the `Thread(target=...)` call resolves at call time). Confirmed via `git stash` of just the code changes that this was the *only* new failure introduced — baseline is 8 pre-existing `test_receiving.py` failures, branch now reproduces exactly that same 8, zero net regressions.
+- New tests: `backend/tests/test_bot_gateway_service.py` (9 tests: draft accumulation, unsupported-format/empty-file rejection incl. the pre-existing quirk that an empty first page still leaves a 0-page draft row behind, reset, finalize-without-pages, finalize-starts-background-processing, latest/by-id status lookups) and `backend/tests/test_telegram_bot.py` (6 tests: the text-matching predicate, keyboard layout, stage-text grouping, result-message formatting). Full suite: 222 passed / 8 pre-existing failures (up from 173/207 non-bot-file baseline + the pre-existing `test_receiving.py` 8).
+- **Not done yet**: `aiogram` was `pip install`-ed into the local venv but the Docker image has not been rebuilt with it; no throwaway-BotFather-token dry run has been performed; production cutover (deactivate n8n workflow, set `TELEGRAM_BOT_TOKEN`/`TELEGRAM_BOT_ENABLED=true`, redeploy VPS) has not happened. n8n continues running the live bot unchanged. Aiogram handler code paths (photo/document download, keyboard rendering, poll-loop stage messages against a real Telegram client) have not been exercised end-to-end — only the underlying gateway functions and pure message-formatting logic have real test coverage so far.
 
 ## Decision
 

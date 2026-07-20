@@ -882,6 +882,7 @@ def test_bot_draft_finalize_without_pages_returns_422():
 
 def test_bot_draft_finalize_starts_processing_and_is_visible_via_latest(monkeypatch, tmp_path):
     from app.routers import invoice_review as invoice_review_router
+    from app.services import bot_gateway_service
 
     monkeypatch.setattr(invoice_review_router.settings, "uploaded_invoices_dir", str(tmp_path))
 
@@ -891,7 +892,7 @@ def test_bot_draft_finalize_starts_processing_and_is_visible_via_latest(monkeypa
         captured.update(kwargs)
         invoice_review_router.finalize_trace(kwargs["trace_id"])
 
-    monkeypatch.setattr(invoice_review_router, "_process_bot_upload_background", fake_background)
+    monkeypatch.setattr(bot_gateway_service, "_process_bot_upload_background", fake_background)
 
     client.post(
         "/api/v1/invoice-review/bot/drafts/pages",

@@ -146,6 +146,10 @@ class Settings(BaseSettings):
     openai_debug_log_dir: str = "exports/openai_debug"
     bot_upload_max_file_bytes: int = 20_000_000
     bot_api_shared_secret: str | None = None
+    telegram_bot_token: str | None = None
+    telegram_bot_enabled: bool = False
+    telegram_bot_poll_interval_seconds: float = 5.0
+    telegram_bot_max_poll_attempts: int = 24
     invoice_allow_header_only_documents: bool = False
     conversion_amount_tolerance: float = 0.01
 

@@ -10,6 +10,7 @@ from app.services.database_health_service import assert_database_writable, datab
 from app.services.diadoc_scheduler_service import start_diadoc_scheduler, stop_diadoc_scheduler
 from app.services.provider_health_service import provider_health
 from app.services.sbis_scheduler_service import start_sbis_scheduler, stop_sbis_scheduler
+from app.telegram_bot.bot import start_bot, stop_bot
 
 
 @asynccontextmanager
@@ -18,11 +19,13 @@ async def lifespan(_app: FastAPI):
     assert_database_writable(target_engine=engine)
     start_diadoc_scheduler()
     start_sbis_scheduler()
+    await start_bot()
     try:
         yield
     finally:
         stop_diadoc_scheduler()
         stop_sbis_scheduler()
+        await stop_bot()
 
 
 app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
