@@ -101,20 +101,52 @@ def load_invoice_reference_catalogs() -> dict[str, list[dict[str, Any]]]:
     # they are added to the live "Справочник фасовок" sheet. `_table_rows_as_dicts`
     # keys rows by whatever header text is actually present, so this is a
     # no-op until those columns exist.
-    ranges = ["'Товары'!A1:H", "'Поставщики'!A1:H", "'Справочник фасовок'!A1:Z"]
+    wanted = {
+        "products": ("Товары", "A1:H"),
+        "suppliers": ("Поставщики", "A1:H"),
+        "packages": ("Справочник фасовок", "A1:Z"),
+    }
     if settings.google_conversion_exceptions_sheet_name:
-        escaped_name = settings.google_conversion_exceptions_sheet_name.replace("'", "''")
-        ranges.append(f"'{escaped_name}'!A1:Z")
-    response = sheets_service.spreadsheets().values().batchGet(
+        wanted["conversion_exceptions"] = (settings.google_conversion_exceptions_sheet_name, "A1:Z")
+
+    # `Справочник фасовок` (and a configured exceptions sheet) may not exist
+    # on a given spreadsheet yet — e.g. it's planned future work, not created
+    # yet. Google Sheets `batchGet` fails the *entire* call with HTTP 400 if
+    # any one range names a nonexistent sheet, which previously took down
+    # `Товары`/`Поставщики` reads too. Check which sheets actually exist
+    # first so a missing/future tab only empties its own catalog.
+    metadata = sheets_service.spreadsheets().get(
         spreadsheetId=spreadsheet_id,
-        ranges=ranges,
-        majorDimension="ROWS",
+        fields="sheets.properties.title",
     ).execute()
-    ranges = response.get("valueRanges") or []
-    products_rows = ranges[0].get("values", []) if len(ranges) > 0 else []
-    suppliers_rows = ranges[1].get("values", []) if len(ranges) > 1 else []
-    packages_rows = ranges[2].get("values", []) if len(ranges) > 2 else []
-    exceptions_rows = ranges[3].get("values", []) if len(ranges) > 3 else []
+    existing_titles = {
+        sheet.get("properties", {}).get("title")
+        for sheet in metadata.get("sheets") or []
+    }
+
+    keys: list[str] = []
+    ranges: list[str] = []
+    for key, (sheet_name, cell_range) in wanted.items():
+        if sheet_name not in existing_titles:
+            continue
+        keys.append(key)
+        escaped_name = sheet_name.replace("'", "''")
+        ranges.append(f"'{escaped_name}'!{cell_range}")
+
+    rows_by_key: dict[str, list[list[Any]]] = {key: [] for key in wanted}
+    if ranges:
+        response = sheets_service.spreadsheets().values().batchGet(
+            spreadsheetId=spreadsheet_id,
+            ranges=ranges,
+            majorDimension="ROWS",
+        ).execute()
+        for key, value_range in zip(keys, response.get("valueRanges") or []):
+            rows_by_key[key] = value_range.get("values", [])
+
+    products_rows = rows_by_key["products"]
+    suppliers_rows = rows_by_key["suppliers"]
+    packages_rows = rows_by_key["packages"]
+    exceptions_rows = rows_by_key.get("conversion_exceptions", [])
     return {
         "products": _confirmed_reference_rows(_table_rows_as_dicts(products_rows)),
         "suppliers": _confirmed_reference_rows(_table_rows_as_dicts(suppliers_rows)),

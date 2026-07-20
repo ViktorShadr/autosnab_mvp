@@ -240,15 +240,21 @@ def test_reference_catalog_loader_reads_fixed_google_sheet_tabs(monkeypatch):
             )
 
     class ReferenceSpreadsheets:
-        def __init__(self, values):
+        def __init__(self, values, sheet_titles):
             self._values = values
+            self._sheet_titles = sheet_titles
 
         def values(self):
             return self._values
 
+        def get(self, **kwargs):
+            return _FakeExecute(
+                {"sheets": [{"properties": {"title": title}} for title in self._sheet_titles]}
+            )
+
     class ReferenceService:
-        def __init__(self, values):
-            self._spreadsheets = ReferenceSpreadsheets(values)
+        def __init__(self, values, sheet_titles):
+            self._spreadsheets = ReferenceSpreadsheets(values, sheet_titles)
 
         def spreadsheets(self):
             return self._spreadsheets
@@ -260,7 +266,7 @@ def test_reference_catalog_loader_reads_fixed_google_sheet_tabs(monkeypatch):
     settings.google_target_spreadsheet_id = "sheet-id"
     monkeypatch.setattr(
         "app.services.google_sheets_service._build_google_services",
-        lambda: (ReferenceService(values), None),
+        lambda: (ReferenceService(values, ["Товары", "Поставщики", "Справочник фасовок"]), None),
     )
     try:
         catalogs = load_invoice_reference_catalogs()
@@ -276,6 +282,67 @@ def test_reference_catalog_loader_reads_fixed_google_sheet_tabs(monkeypatch):
     assert catalogs["products"][0]["Наименование"] == "Кефир"
     assert catalogs["suppliers"][0]["Поставщик"] == "ООО Молоко"
     assert catalogs["packages"][0]["Коэффициент пересчета"] == 0.8
+
+
+def test_reference_catalog_loader_tolerates_missing_future_sheet(monkeypatch):
+    """`Справочник фасовок` may not exist yet (planned future work); Товары/
+    Поставщики must still load instead of the whole batchGet failing."""
+
+    class ReferenceValues:
+        def __init__(self):
+            self.kwargs = None
+
+        def batchGet(self, **kwargs):
+            self.kwargs = kwargs
+            return _FakeExecute(
+                {
+                    "valueRanges": [
+                        {"values": [["Наименование", "Код"], ["Кефир", "01-00017"]]},
+                        {"values": [["Поставщик", "Код"], ["ООО Молоко", "SUP-1"]]},
+                    ]
+                }
+            )
+
+    class ReferenceSpreadsheets:
+        def __init__(self, values, sheet_titles):
+            self._values = values
+            self._sheet_titles = sheet_titles
+
+        def values(self):
+            return self._values
+
+        def get(self, **kwargs):
+            return _FakeExecute(
+                {"sheets": [{"properties": {"title": title}} for title in self._sheet_titles]}
+            )
+
+    class ReferenceService:
+        def __init__(self, values, sheet_titles):
+            self._spreadsheets = ReferenceSpreadsheets(values, sheet_titles)
+
+        def spreadsheets(self):
+            return self._spreadsheets
+
+    values = ReferenceValues()
+    old_enabled = settings.google_sheets_enabled
+    old_spreadsheet_id = settings.google_target_spreadsheet_id
+    settings.google_sheets_enabled = True
+    settings.google_target_spreadsheet_id = "sheet-id"
+    monkeypatch.setattr(
+        "app.services.google_sheets_service._build_google_services",
+        # "Справочник фасовок" deliberately absent from this spreadsheet.
+        lambda: (ReferenceService(values, ["Товары", "Поставщики"]), None),
+    )
+    try:
+        catalogs = load_invoice_reference_catalogs()
+    finally:
+        settings.google_sheets_enabled = old_enabled
+        settings.google_target_spreadsheet_id = old_spreadsheet_id
+
+    assert values.kwargs["ranges"] == ["'Товары'!A1:H", "'Поставщики'!A1:H"]
+    assert catalogs["products"][0]["Наименование"] == "Кефир"
+    assert catalogs["suppliers"][0]["Поставщик"] == "ООО Молоко"
+    assert catalogs["packages"] == []
 
 
 def test_insert_into_existing_spreadsheet_prepends_block_and_separator():
