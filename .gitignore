@@ -221,6 +221,11 @@ __marimo__/
 .env
 service-account.json
 
+# АвтоСнаб raw screenshots/attachments at repo root — registered in
+# manifests/raw_sources.csv instead, per the wiki-first raw-files-stay-
+# outside-git rule (see CLAUDE.md).
+/img_*.png
+
 # IDE and local vault state
 .idea/
 .obsidian/
