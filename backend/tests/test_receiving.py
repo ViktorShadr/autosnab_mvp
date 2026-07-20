@@ -14,9 +14,12 @@ from sqlalchemy.pool import StaticPool
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
+os.environ["BOT_API_SHARED_SECRET"] = ""
 
 from app.db.session import Base, get_db  # noqa: E402
 from app.main import app  # noqa: E402
+from app.config import settings  # noqa: E402
+settings.bot_api_shared_secret = None
 from app.models import *  # noqa: F401,F403,E402
 
 engine = create_engine(
