@@ -133,7 +133,11 @@ class Settings(BaseSettings):
     # OpenAI structures extracted evidence. Business rules and sheet writes stay local.
     openai_api_key: str | None = None
     openai_invoice_model: str = "gpt-5-mini"
-    openai_timeout_seconds: float = 120.0
+    # "minimal" per OpenAI's own guidance for deterministic extraction/formatting tasks:
+    # cuts hidden reasoning-token latency with negligible accuracy impact for this use case.
+    openai_reasoning_effort: str | None = "minimal"
+    openai_timeout_seconds: float = 180.0
+    openai_timeout_retry_seconds: float = 240.0
     openai_max_evidence_chars: int = 120_000
     openai_max_image_pages: int = 12
     openai_max_image_bytes: int = 12_000_000

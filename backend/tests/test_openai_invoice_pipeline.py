@@ -16,7 +16,11 @@ from app.services.invoice_normalization_service import (
 )
 from app.services.normalization import canonical_invoice_number
 from app.routers.invoice_review import _apply_duplicate_status
-from app.services.openai_invoice_parser_service import SYSTEM_PROMPT, parse_invoice_with_openai
+from app.services.openai_invoice_parser_service import (
+    SYSTEM_PROMPT,
+    OpenAIInvoiceParserError,
+    parse_invoice_with_openai,
+)
 from app.services.invoice_review_service import ensure_upload_status_allows_send
 
 
@@ -105,6 +109,7 @@ def test_openai_parser_uses_structured_response_and_returns_legacy_payload(tmp_p
 
     assert responses.kwargs["text_format"] is InvoiceParserResult
     assert responses.kwargs["input"][0]["content"][0]["type"] == "input_text"
+    assert responses.kwargs["reasoning"] == {"effort": "minimal"}
     assert result["parser_provider"] == "openai"
     assert result["invoice_date"] == "2026-07-04"
     assert result["supplier_inn"] == "3900040690"
@@ -112,6 +117,67 @@ def test_openai_parser_uses_structured_response_and_returns_legacy_payload(tmp_p
     assert result["parser_metadata"]["upload_status"] == "Проверить"
     assert "Справочник фасовок" in SYSTEM_PROMPT
     assert "quantity_multiplier" in SYSTEM_PROMPT
+
+
+def test_openai_parser_retries_once_on_timeout_with_longer_timeout(monkeypatch):
+    from openai import APITimeoutError
+
+    parsed = InvoiceParserResult.model_validate(_parsed_invoice())
+    monkeypatch.setattr("app.services.openai_invoice_parser_service.settings.openai_debug_log_enabled", False)
+    monkeypatch.setattr(
+        "app.services.openai_invoice_parser_service.settings.openai_timeout_retry_seconds", 240.0
+    )
+
+    class FlakyResponses:
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        def parse(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                raise APITimeoutError(request=None)
+            return SimpleNamespace(output_parsed=parsed)
+
+    responses = FlakyResponses()
+    result = parse_invoice_with_openai(
+        {
+            "filename": "invoice.jpg",
+            "source_type": "image",
+            "raw_text": "invoice evidence",
+        },
+        client=SimpleNamespace(responses=responses),
+    )
+
+    assert len(responses.calls) == 2
+    assert "timeout" not in responses.calls[0]
+    assert responses.calls[1]["timeout"] == 240.0
+    assert result["parser_provider"] == "openai"
+
+
+def test_openai_parser_gives_up_after_second_timeout(monkeypatch):
+    from openai import APITimeoutError
+
+    monkeypatch.setattr("app.services.openai_invoice_parser_service.settings.openai_debug_log_enabled", False)
+
+    class AlwaysTimesOut:
+        def __init__(self):
+            self.calls = 0
+
+        def parse(self, **kwargs):
+            self.calls += 1
+            raise APITimeoutError(request=None)
+
+    responses = AlwaysTimesOut()
+    with pytest.raises(OpenAIInvoiceParserError):
+        parse_invoice_with_openai(
+            {
+                "filename": "invoice.jpg",
+                "source_type": "image",
+                "raw_text": "invoice evidence",
+            },
+            client=SimpleNamespace(responses=responses),
+        )
+    assert responses.calls == 2
 
 
 def test_openai_parser_sends_prepared_pages_as_ordered_image_inputs(tmp_path: Path, monkeypatch):

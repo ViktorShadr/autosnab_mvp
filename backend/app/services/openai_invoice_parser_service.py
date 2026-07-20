@@ -97,13 +97,16 @@ def parse_invoice_with_openai(
     api_client = client or _create_client()
     request_payload = _build_evidence_payload(evidence)
     request_input = _build_openai_input(evidence, request_payload)
+    request_kwargs: dict[str, Any] = {
+        "model": settings.openai_invoice_model,
+        "instructions": SYSTEM_PROMPT,
+        "input": request_input,
+        "text_format": InvoiceParserResult,
+    }
+    if settings.openai_reasoning_effort:
+        request_kwargs["reasoning"] = {"effort": settings.openai_reasoning_effort}
     try:
-        response = api_client.responses.parse(
-            model=settings.openai_invoice_model,
-            instructions=SYSTEM_PROMPT,
-            input=request_input,
-            text_format=InvoiceParserResult,
-        )
+        response = _call_responses_parse_with_timeout_retry(api_client, request_kwargs)
     except Exception as exc:  # noqa: BLE001 - provider failures are pipeline errors
         _write_debug_log(evidence, None, None, error=str(exc))
         raise OpenAIInvoiceParserError(f"OpenAI invoice parsing failed: {exc}") from exc
@@ -129,6 +132,22 @@ def parse_invoice_with_openai(
     payload = to_legacy_invoice_payload(normalized)
     _write_debug_log(evidence, validated, normalized)
     return payload
+
+
+def _call_responses_parse_with_timeout_retry(api_client: Any, request_kwargs: dict[str, Any]) -> Any:
+    try:
+        from openai import APITimeoutError
+    except ImportError:
+        APITimeoutError = ()  # noqa: N806 - no SDK means no timeout-specific retry possible
+    try:
+        return api_client.responses.parse(**request_kwargs)
+    except APITimeoutError:
+        logger.warning(
+            "OpenAI request timed out after %.0fs, retrying once with %.0fs timeout.",
+            settings.openai_timeout_seconds,
+            settings.openai_timeout_retry_seconds,
+        )
+        return api_client.responses.parse(**request_kwargs, timeout=settings.openai_timeout_retry_seconds)
 
 
 def _create_client() -> Any:
