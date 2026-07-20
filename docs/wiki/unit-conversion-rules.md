@@ -231,6 +231,55 @@ Updated 2026-07-20. Remaining gaps:
   provided, then a dry-run diff against Lilia's expected values before any
   live sheet write).
 
+## Rule authorship handoff (2026-07-20)
+
+`Метро.pdf` was live-retested this session (registered `src_2f8d118756`,
+plus two more scans of the same supplier: `Метро2.pdf`/`src_3e21489c9e`,
+`Метро3.pdf`/`src_e69285ed7e`). With no `Способ пересчета` column or rule
+rows on the live sheet yet, every item across all three documents correctly
+fell through to `identity_no_rule` (or plain `identity` when the document
+unit already was the accounting unit) — confirming the fix behaves as
+designed: it never guesses, it just waits for a rule.
+
+Lilia separately forwarded a second round of feedback, restating the same
+seven `Метро.pdf` examples as corrections against the *old* (pre-fix)
+decomposed values, and asking whether a script/AI could ever reliably decide
+*when* to decompose a package vs. keep it as-is. Answer given to relay back:
+no, and not as a limitation — the engine deliberately does not infer this
+from invoice text (it can't know if a product is food, or how a specific
+kitchen actually uses it). It requires a one-time human-authored rule per
+product via `Способ пересчета`, then applies it automatically on every
+future delivery of that item. Mapping of her seven examples to the method
+they need (for reference — not pre-filled sheet rows):
+
+| Item | `Способ пересчета` | Expected result |
+|---|---|---|
+| Салфетки (250 шт/пач × 3 пач) | `Без пересчета` | keep `3` |
+| Туалетная бумага (12 рул/уп × 2 уп) | `По количеству вложений`, factor 12 | `24` рул |
+| Оливки (строки 1 и 5) | `По сухому весу` | dry/drained weight |
+| Вода 0,5Л × 24 бут | `Без пересчета` | keep `24` бут |
+| Мешки для мусора (10 шт/рул × 6 рул) | `Без пересчета` | keep `6` рул |
+| Чипсы 150г × 15 шт | context-dependent — `Ручная проверка`, or `По весу/объему` if this kitchen always cooks with it | Lilia's call per actual usage |
+| Трубочки (150 шт/уп × 2 уп) | `Без пересчета` | keep `2` уп |
+
+**Decision**: Lilia will author the `Способ пересчета` column and the rule
+rows herself directly on the live `Справочник фасовок` sheet on 2026-07-21.
+No rule rows or rule-authoring tool are being built in this repo for that —
+`load_invoice_reference_catalogs()` already reads `A1:Z` and the matcher
+already resolves the extended column names via alias lookup
+(`_catalog_value`), so nothing on the code side blocks her from adding the
+column/rows directly.
+
+Separately, Lilia asked whether mixed food + хозтовары invoices, or invoices
+spanning multiple warehouses/departments, should be split into separate
+documents, and whether that's supported today. Confirmed it is not — one
+uploaded file/page-set is always exactly one logical document with one
+document-level `Склад`/`Торговая точка` (`Receiving.venue`, `_invoice_...`
+row builders in `invoice_review_service.py` blank the value on every row
+after the first). Building this would be a real, separate feature
+(product-category taxonomy, one-upload-to-N-documents support, multi-block
+Sheets writes). Explicitly postponed — not scoped into this session's work.
+
 ## Required tests
 
 - `250 g -> 0.25 kg`;
