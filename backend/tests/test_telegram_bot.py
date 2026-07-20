@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -6,7 +7,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 
-from app.schemas.invoice_review import BotDocumentSummary, BotUploadStatusResponse  # noqa: E402
+from app.config import settings  # noqa: E402
+from app.schemas.invoice_review import BotDocumentSummary, BotUploadStatusResponse, PipelineLogEntry  # noqa: E402
+from app.telegram_bot import poller  # noqa: E402
 from app.telegram_bot.handlers import _matches  # noqa: E402
 from app.telegram_bot.keyboard import MAIN_KEYBOARD  # noqa: E402
 from app.telegram_bot.messages import format_result_message, stage_text_for  # noqa: E402
@@ -80,3 +83,65 @@ def test_format_result_message_without_summary_is_just_the_message():
     )
 
     assert format_result_message(status) == "Формат файла пока не поддерживается."
+
+
+class _FakeBot:
+    def __init__(self):
+        self.sent: list[str] = []
+
+    async def send_message(self, chat_id, text):
+        self.sent.append(text)
+
+
+def _status(stages: list[str], *, completed: bool = False, message: str = "Готово") -> BotUploadStatusResponse:
+    return BotUploadStatusResponse(
+        upload_id="bot-upload-poll",
+        status="processing",
+        message=message,
+        completed=completed,
+        source_channel="telegram_bot",
+        document_kind="primary_document",
+        files_count=1,
+        original_filename="page-1.jpg",
+        pipeline_logs=[PipelineLogEntry(stage=stage, status="running", message=stage) for stage in stages],
+    )
+
+
+def test_poll_loop_sends_each_stage_message_once_even_as_pipeline_logs_keeps_growing(monkeypatch):
+    """Regression test for a real production bug (img_14.png, 2026-07-21): the poll loop used to
+    re-scan the whole (ever-growing) `pipeline_logs` list on every tick and compare against a single
+    last-sent value, so any tick with 2+ distinct stage groups re-sent every earlier stage message
+    again — producing dozens of alternating "Выгружаем данные"/"Обрабатываем через ИИ" messages.
+    """
+    monkeypatch.setattr(settings, "telegram_bot_poll_interval_seconds", 0)
+    monkeypatch.setattr(settings, "telegram_bot_max_poll_attempts", 10)
+
+    ticks = [
+        _status(["collect_evidence_start"]),
+        _status(["collect_evidence_start", "openai_request_start"]),
+        _status(["collect_evidence_start", "openai_request_start", "google_sheet_start"]),
+        _status(
+            ["collect_evidence_start", "openai_request_start", "google_sheet_start"],
+            completed=True,
+            message="Документ обработан.",
+        ),
+    ]
+    call_count = {"n": 0}
+
+    def fake_fetch_status(upload_id):
+        index = min(call_count["n"], len(ticks) - 1)
+        call_count["n"] += 1
+        return ticks[index]
+
+    monkeypatch.setattr(poller, "_fetch_status", fake_fetch_status)
+
+    bot = _FakeBot()
+    asyncio.run(poller._poll_loop(bot, "chat-1", "upload-1"))
+
+    stage_messages = [msg for msg in bot.sent if msg != "Документ обработан."]
+    assert stage_messages == [
+        "🔎 Выгружаем данные из документа...",
+        "🤖 Обрабатываем через ИИ...",
+        "📊 Загружаем в таблицу...",
+    ]
+    assert bot.sent[-1] == "Документ обработан."

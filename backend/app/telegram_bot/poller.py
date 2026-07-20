@@ -30,11 +30,17 @@ def start_poll(bot: Bot, chat_id: str, upload_id: str) -> None:
 
 async def _poll_loop(bot: Bot, chat_id: str, upload_id: str) -> None:
     last_stage_text: str | None = None
+    processed_logs = 0
     try:
         for _ in range(settings.telegram_bot_max_poll_attempts):
             await asyncio.sleep(settings.telegram_bot_poll_interval_seconds)
             status = await asyncio.to_thread(_fetch_status, upload_id)
-            for log in status.pipeline_logs:
+            # `pipeline_logs` is append-only across polls of the same upload; only scan the
+            # entries that arrived since the last tick, or every stage re-triggers a resend
+            # every 5s as the loop re-walks the whole (growing) log from the start.
+            new_logs = status.pipeline_logs[processed_logs:]
+            processed_logs = len(status.pipeline_logs)
+            for log in new_logs:
                 stage_text = stage_text_for(log.stage)
                 if stage_text and stage_text != last_stage_text:
                     last_stage_text = stage_text

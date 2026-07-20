@@ -3,12 +3,34 @@ title: n8n to Native Bot Migration Plan
 source: session
 created: 2026-07-20
 tags: [bot, telegram, n8n, migration, backlog]
-status: code-built-not-cutover
+status: deployed-live
 ---
 
 # n8n → Native Python Telegram Bot — Migration Plan
 
-**Status: decision made 2026-07-20; code built 2026-07-21 on branch `native-telegram-bot`, not yet cut over to production.**
+**Status: decision made 2026-07-20; code built 2026-07-21 on branch `native-telegram-bot`; deployed live and cut over to production the same day.**
+
+## 2026-07-21 cutover to production
+
+Deployed directly to production (user's explicit choice — skipped the throwaway-bot-token dry run) on VPS `78.17.160.248`:
+
+1. Shipped `native-telegram-bot` (commit `7ae1ae5`) to `/opt/autosnab_mvp` via `git archive` + `scp` + remote `tar -x`, same method as prior deploys (plain directory, not a git clone; all gitignored state — `.env`, `uploads/`, `autosnab_mvp.db` — untouched by the extract).
+2. Appended `TELEGRAM_BOT_ENABLED=true`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_POLL_INTERVAL_SECONDS=5.0`, `TELEGRAM_BOT_MAX_POLL_ATTEMPTS=24` to the server `.env` (piped via SSH stdin heredoc, not as a command-line argument, to avoid the token landing in shell history).
+3. User deactivated the n8n workflow in the cloud n8n editor before rebuild/restart, confirmed by `getWebhookInfo` showing `pending_update_count: 0` both before and after — no window where both consumers held the token.
+4. `docker compose --profile public-ip build backend` — first attempt failed with `no space left on device` (VPS was at 79% disk / 3.0G free before the build; the `torch`/`mineru`/`transformers` dependency chain plus new `aiogram` needs real headroom during layer export). Retried after disk pressure eased on its own (67% used) and it succeeded; `docker image prune -f` + `docker builder prune -f` afterward reclaimed the build cache (332.9MB) as routine cleanup, same pattern as the 2026-07-20 VPS disk cleanup.
+5. `docker compose --profile public-ip up -d --no-deps backend` recreated only the backend container (Caddy/VPN containers untouched). `/health/runtime` returned healthy immediately.
+6. **Verification**: `docker logs` showed clean startup with no errors, but also no explicit "bot started" line — expected, since `logging.getLogger(__name__).info(...)` calls in `bot.py`/`poller.py` are below Python's default root log level and nothing in `handlers.py` logs per-message by design. Confirmed the poller was actually alive via `/proc/1/net/tcp` inside the container showing live ESTABLISHED connections to `149.154.166.110` (a real Telegram Bot API IP). Final proof: user sent `/start` in Telegram and received the menu reply with the Готово/Статус/Сбросить keyboard — full end-to-end confirmation.
+7. **Not yet done**: no real invoice photo/PDF has been run through the native bot's full draft→finalize→poll→result flow yet — only the `/start` menu round-trip is confirmed live. n8n workflow is deactivated (not deleted) per the plan's rollback window.
+
+## 2026-07-21 real production bug: stage-message spam (`img_14.png`)
+
+The user ran a real document through the freshly cut-over bot and it sent dozens of alternating "🔎 Выгружаем данные из документа..." / "🤖 Обрабатываем через ИИ..." messages over more than a minute (`img_14.png`, registered as `src_285b68038c`) instead of one message per stage.
+
+**Root cause**: `poller.py`'s `_poll_loop` re-scanned the *entire* `pipeline_logs` list (which only ever grows across polls of the same upload) on every 5-second tick, and deduped against a single `last_stage_text` value. Once the log had 2+ distinct stage groups (which is the normal case for any real document — evidence collection then OpenAI then Sheets write), each tick would walk back through *earlier* entries whose text no longer matched whatever `last_stage_text` had most recently been set to inside that same tick's loop, and resend them — every tick, forever, until completion.
+
+**Fix**: track how many log entries have already been scanned (`processed_logs`) and only iterate the new slice (`status.pipeline_logs[processed_logs:]`) each tick, keeping the existing dedup-against-last-sent-text check for genuine consecutive duplicates within/across ticks. Added `test_poll_loop_sends_each_stage_message_once_even_as_pipeline_logs_keeps_growing` in `backend/tests/test_telegram_bot.py`, confirmed to fail against the pre-fix code (produces 8 stage messages including the alternating pattern) and pass against the fix (produces exactly 3, one per stage). Full suite re-verified: 223 passed / 8 pre-existing failures.
+
+Redeployed to `78.17.160.248` the same way as the initial cutover (`git archive`+SFTP, rebuild, `docker compose up -d --no-deps backend`) immediately after the fix, since the bug was live and actively spamming the user's chat.
 
 ## 2026-07-21 implementation update
 
