@@ -98,6 +98,32 @@ Google Sheets.
 5. Rotated and perspective-distorted photos are not normalized before
    extraction.
 6. There is no executable golden-set comparison for the five reviewed photos.
+7. **(New, found 2026-07-17)** `hybrid`/`mineru`-only extraction is
+   consistently non-functional for scanned/rotated table-form documents like
+   ТОРГ-12, not just occasionally unreliable. Reproduced by running the
+   `УПМК003248` page-1 fixture (`5321471953447098411 (1).jpg`) through
+   `extract_invoice_document(..., extraction_method="hybrid")` 8 times in a
+   row: every single run returned `supplier: null`, `supplier_inn: null`,
+   `items: []`, `invoice_number: "ТОРГ-12"` (the form label, not the real
+   document number `УПМК3003248`), and a bogus `total_sum: 1.0`. MinerU itself
+   ran successfully and returned 3466 characters of real content (confirmed
+   via `pipeline_logs`: `mineru_start` → `mineru_complete`, both `ok`), but its
+   `raw_text` is HTML table markup (`<table><tr><td>...`), and the downstream
+   parser (`_normalize_mineru_payload` → `extract_invoice_payload_with_fallback`
+   in `document_extraction_service.py`) is a legacy regex/heuristic parser
+   built for plain OCR text lines, not HTML-escaped table cells — it silently
+   finds nothing. The secondary structured path
+   (`_extract_mineru_content_list_fields`, meant to read MinerU's
+   `content_list.json`) also produced nothing for this run. Unlike the
+   `openai`-mode variance found the same day (cosmetic `raw_name` drift only,
+   see `docs/wiki/lilia-feedback-2026-07-17-parsing-instability.md`), this is
+   not flaky — it is deterministically broken, 8/8 runs, for this document
+   shape. Practical implication: `hybrid`/`mineru` cannot currently be trusted
+   as a real fallback for rotated/table-form invoices; `openai` is the only
+   mode that actually extracts data from this kind of document today. Not
+   fixed yet — would need either teaching the legacy regex parser to strip
+   HTML table markup first, or making `_extract_mineru_content_list_fields`
+   the primary path with the regex parser only as a last-resort fallback.
 
 ## Delivery order
 

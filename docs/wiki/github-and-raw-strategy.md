@@ -92,3 +92,31 @@ If the PR review shows that `main` contributes no critical behavior missing from
 `codex/invoice-recognition-hardening`, then do not perform a second large merge
 from `main` into the hardening branch first. Let the PR itself be the
 integration point.
+
+## Second Target Repo: GitLab `auto-snab-document-parser`
+
+- Target: `https://gitlab.testant.online/antipov-backend/auto-snab-document-parser`
+  (self-hosted GitLab CE).
+- Confirmed on 2026-07-20: this is an **empty scaffold repo** — one `Initial
+  commit`, only the GitLab-generated default `README.md`, no code, no
+  `.gitlab-ci.yml`. `main` and `develop` both point at the same commit. There
+  is no existing content to reconcile; the finished project will be pushed
+  into it later, not merged against prior work.
+- Network access note: SSH is not reachable from this workstation for this
+  host — port 22 times out, and port 443 serves plain HTTPS (openresty), not
+  SSH-over-443/altssh. HTTPS + a GitLab Personal Access Token
+  (`oauth2:<token>@gitlab.testant.online/...`) is therefore the only viable
+  access path from here, not SSH keys.
+- When the finished project is ready to push here: exclude local artifacts the
+  same way as the GitHub plan above (`autosnab_mvp.db`, `.env`, raw
+  exports/uploads) and confirm with the user which branch (`main` vs
+  `develop`) and which source branch (`over_version` vs a squashed snapshot)
+  should be published.
+- Push auth is configured on this workstation as of 2026-07-20: global
+  `git config credential.helper store` persists the GitLab PAT in
+  `~/.git-credentials` (mode 600), verified working for both read
+  (`git ls-remote`) and write (`git push --dry-run origin develop` authenticated
+  successfully) against this repo. No token re-entry is needed for future
+  push/pull on this machine unless the token is rotated or revoked — if the
+  user mentioned revoking the token shared in chat earlier, the stored
+  credential must be refreshed with the new token afterward.
