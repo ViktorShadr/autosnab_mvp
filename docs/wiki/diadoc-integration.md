@@ -2,17 +2,18 @@
 title: Diadoc (Kontur) EDO Integration
 source: session
 created: 2026-07-20
+updated: 2026-07-20
 tags: [integration, diadoc, edo, upstream-main]
-status: not-merged-into-over_version
+status: on-local-branch-diadoc-integration
 ---
 
 # Diadoc (Kontur) EDO Integration
 
 ## Status
 
-This integration exists in code on `upstream/main` (colleague Andrey Gomzikov, commits `a2f1ebb`/`8b9b4c1`/`0d0fd63`, dated 2026-07-20 in commit metadata but landed 2026-07-19 through 2026-07-20 per his own `log.md`). It has **not** been merged into `over_version`, which is the branch this project's own sessions have been working from. Do not assume it is live until an explicit merge/review happens.
+Originally found in code on `upstream/main` (colleague Andrey Gomzikov, commits `a2f1ebb`/`8b9b4c1`/`0d0fd63`, dated 2026-07-20 in commit metadata but landed 2026-07-19 through 2026-07-20 per his own `log.md`). `upstream/main`'s git history itself was reset that day (`003b736 Clean main branch` deletes nearly everything, then `a2f1ebb` re-adds a full snapshot in one commit) — `main` is no longer a simple fast-forward of earlier `main` history, and a plain `git merge upstream/main` into `over_version` produces real conflicts in ~10 files (confirmed via `git merge-tree`).
 
-`upstream/main`'s git history itself was reset on 2026-07-20 (`003b736 Clean main branch` deletes nearly everything, then `a2f1ebb` re-adds a full snapshot in one commit) — `main` is no longer a simple fast-forward of earlier `main` history. Treat `upstream/main` as a fresh snapshot to diff against, not as a branch to `git merge` blindly.
+**Transplanted into this repo** on local branch `diadoc-integration` (branched from `over_version` at `8a1b236`, commit `df70966`): only the Diadoc-specific files were ported (`models/diadoc.py`, `routers/diadoc.py`, `schemas/diadoc.py`, `services/diadoc_*.py`, `scripts/migrate_diadoc_reliability.py`, `tests/test_diadoc_*.py`), plus the minimal additive wiring `main.py`/`config.py`/`models/__init__.py`/`.env.example` needed to register the scheduler and router. Not merged into `over_version` itself yet — that's a separate step once the branch has been reviewed/tested against a real mailbox.
 
 ## What it does (per Andrey's own wiki page, copied verbatim below with light trimming)
 
@@ -35,11 +36,11 @@ New code: `backend/app/models/diadoc.py`, `backend/app/routers/diadoc.py`, `back
 
 Full env var list and first-run steps: see the "Environment variables" / "First run" sections this page inherits from `upstream/main:docs/wiki/diadoc-integration.md` — re-fetch that file directly (`git show upstream/main:docs/wiki/diadoc-integration.md`) rather than trusting a stale copy here if planning an actual deployment.
 
-## Known gap found during 2026-07-20 review (not yet fixed anywhere)
+## Known gap found during 2026-07-20 review, resolved by the transplant
 
-`upstream/main`'s `SHARED_INVOICE_HEADERS` in `google_sheets_service.py` is still the **old 41-column contract** (`"Товар найден в справочнике"`, `"Кол-во в упаковке"`, no `"Код товара УС"`/`"ID строки"`). `over_version` fixed this to the **live 43-column contract** on 2026-07-14 (see [[current-status]] entries around that date) after the real spreadsheet was found to have been manually renamed/extended. `upstream/main` also still has the `_detect_document_form_from_text` regression ( `"ТОРГ-12"` uppercase + invented `"Счет-фактура"` ) that `over_version` fixed twice (`e1e07e2`, then re-applied as `55c1023` after `d063b31` silently reverted it).
+`upstream/main`'s `SHARED_INVOICE_HEADERS` in `google_sheets_service.py` was still the **old 41-column contract** (`"Товар найден в справочнике"`, `"Кол-во в упаковке"`, no `"Код товара УС"`/`"ID строки"`), and `_detect_document_form_from_text` still had the `"ТОРГ-12"`/`"Счет-фактура"` regression that `over_version` fixed twice (`e1e07e2`, re-applied as `55c1023` after `d063b31` silently reverted it). If Diadoc's Sheets delivery had been pointed at the real production sheet using `main`'s versions of those functions, it would have hit the same `отсутствуют обязательные заголовки` failure from 2026-07-14.
 
-Practical implication: if Diadoc's Google Sheets delivery path in its current `upstream/main` form is pointed at the real production `Накладная` sheet as-is, it will hit the same `отсутствуют обязательные заголовки: Товар найден в справочнике, Кол-во в упаковке` failure that blocked bot uploads on 2026-07-14, and will re-introduce the `Форма документа` dropdown-mismatch bug. This needs to be reconciled (most likely: rebase/cherry-pick Diadoc's diadoc-specific files onto `over_version`'s current `google_sheets_service.py`/`invoice_review_service.py`, not merge `main` wholesale) before Diadoc goes live against the real sheet.
+**Resolved by construction**, not by patching: the `diadoc-integration` branch transplant (see Status above) never touched `google_sheets_service.py` or `invoice_review_service.py` at all. Checked `diadoc_sync_service.py`'s imports from `invoice_review_service` (`create_invoice_review`, `update_invoice_review`, `create_real_google_sheet_for_review`) — it calls these generically and never hardcodes a header name itself, so it runs correctly against `over_version`'s current, already-correct 43-column contract with zero changes. Verified: `test_google_sheets_service.py` (7/7) and all `test_diadoc_*` (22/22) pass on the branch, full suite shows the same pre-existing 8 `test_receiving.py` failures as plain `over_version` — no regression introduced.
 
 ## Relationship to SBIS EDO planning
 
