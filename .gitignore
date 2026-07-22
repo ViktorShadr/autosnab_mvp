@@ -220,6 +220,8 @@ __marimo__/
 # АвтоСнаб local secrets and uploaded invoice files
 .env
 service-account.json
+*-service-account*.json
+personal-*.json
 
 # АвтоСнаб raw screenshots/attachments at repo root — registered in
 # manifests/raw_sources.csv instead, per the wiki-first raw-files-stay-

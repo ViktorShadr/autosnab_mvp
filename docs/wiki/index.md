@@ -28,4 +28,6 @@
 - [github-and-raw-strategy.md](./github-and-raw-strategy.md)
 - [runtime-profile.md](./runtime-profile.md)
 - [lilia-feedback-2026-07-17-parsing-instability.md](./lilia-feedback-2026-07-17-parsing-instability.md)
+- [google-oauth-production-readiness.md](./google-oauth-production-readiness.md)
+- [google-auth-vision-migration-plan.md](./google-auth-vision-migration-plan.md)
 - [log.md](./log.md)
