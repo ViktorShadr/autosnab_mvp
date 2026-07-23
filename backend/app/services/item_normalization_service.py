@@ -5,7 +5,7 @@ from difflib import SequenceMatcher
 from typing import Any
 
 from app.config import settings
-from app.schemas.invoice_parser import InvoiceItemPackage, InvoiceParsedItem
+from app.schemas.invoice_parser import InvoiceItemPackage, NormalizedInvoiceItem, PackagingFact
 
 
 _CODE_RE = re.compile(r"(?<![A-ZА-ЯЁ0-9])(?:[NM]\+|\+)\d+", re.IGNORECASE)
@@ -54,10 +54,16 @@ _METHOD_NO_RECALC = {"без пересчета", "без пересчёта"}
 _METHOD_BY_UNITS = {"по количеству вложений", "по вложениям"}
 _METHOD_BY_WEIGHT = {"по весу/объему", "по весу/объёму", "по весу", "по объему", "по объёму"}
 _METHOD_BY_DRY_WEIGHT = {"по сухому весу"}
+_METHOD_BY_COEFFICIENT = {"по коэффициенту", "по коэффициенту пересчета"}
+_METHOD_BY_AVG_WEIGHT = {"по среднему весу штуки", "по среднему весу"}
 _METHOD_MANUAL = {"ручная проверка"}
 
+_RULE_ACTIVE = "active"
+_RULE_INACTIVE = "inactive"
+_RULE_NEEDS_REVIEW = "review"
 
-def normalize_item_candidate(item: InvoiceParsedItem) -> list[dict[str, str]]:
+
+def normalize_item_candidate(item: NormalizedInvoiceItem) -> list[dict[str, str]]:
     """Normalize one model candidate and return deterministic review issues."""
     issues: list[dict[str, str]] = []
     raw_name = _clean_spaces(item.raw_name)
@@ -70,11 +76,7 @@ def normalize_item_candidate(item: InvoiceParsedItem) -> list[dict[str, str]]:
     if package.raw:
         item.package = package
     else:
-        item.package = InvoiceItemPackage(
-            value=_number(item.package.value),
-            unit=_normalize_unit(item.package.unit) or None,
-            raw=_clean_spaces(item.package.raw),
-        )
+        item.package = _package_from_facts(item.packaging_facts)
 
     document_unit = _normalize_document_unit(item.document_unit or item.unit)
     item.document_unit = document_unit
@@ -93,6 +95,8 @@ def normalize_item_candidate(item: InvoiceParsedItem) -> list[dict[str, str]]:
     if multiplier is None:
         multiplier, accounting_unit = _fallback_multiplier(item.package, document_unit)
     units_per_package = _positive_number(item.units_per_package)
+    if units_per_package is None:
+        units_per_package = _positive_number(_units_per_package_from_facts(item.packaging_facts))
     item.units_per_package = units_per_package
     multiplier = _apply_units_per_package(multiplier, units_per_package)
     item.quantity_multiplier = multiplier
@@ -124,6 +128,7 @@ def apply_reference_mapping_to_payload(
     products: list[dict[str, Any]],
     packages: list[dict[str, Any]],
     conversion_exceptions: list[dict[str, Any]] | None = None,
+    warehouse: str | None = None,
 ) -> dict[str, Any]:
     """Map parser candidates to sheet references without model involvement."""
     result = copy.deepcopy(payload)
@@ -133,6 +138,8 @@ def apply_reference_mapping_to_payload(
     parser_notes = result.setdefault("parser_notes", [])
     conversion_exceptions = conversion_exceptions or []
     rules = _merge_rule_sources(packages, conversion_exceptions)
+    supplier_inn = str(result.get("supplier_inn") or "")
+    supplier_name = str(result.get("supplier") or result.get("supplier_legal_name") or "")
 
     for index, item in enumerate(result.get("items") or [], start=1):
         line_number = int(item.get("line_number") or index)
@@ -170,7 +177,14 @@ def apply_reference_mapping_to_payload(
                 parser_notes,
             )
 
-        resolution = _resolve_conversion(item, product_match, rules)
+        resolution = _resolve_conversion(
+            item,
+            product_match,
+            rules,
+            warehouse=warehouse,
+            supplier_inn=supplier_inn,
+            supplier_name=supplier_name,
+        )
         multiplier = resolution.get("multiplier")
         accounting_unit = resolution.get("accounting_unit") or ""
         conversion_method = resolution.get("method") or "unresolved"
@@ -352,10 +366,14 @@ def _resolve_conversion(
     item: dict[str, Any],
     product_match: dict[str, Any],
     rules: list[dict[str, Any]],
+    *,
+    warehouse: str | None = None,
+    supplier_inn: str | None = None,
+    supplier_name: str | None = None,
 ) -> dict[str, Any]:
     """Determine the final Кол-во в УС conversion for one item.
 
-    A `Справочник фасовок` / `Правила пересчета` row is authoritative when
+    A `Справочник фасовок` / `Правила фасовок` row is authoritative when
     found. Package-shaped text in the name (`0,5Л 12ШТ`, `12 РУЛ`, ...) is
     only ever a *candidate*: without a matching active rule, the accounting
     quantity defaults to the document quantity unchanged (`identity_no_rule`)
@@ -365,19 +383,38 @@ def _resolve_conversion(
     """
     document_unit = _normalize_unit(item.get("document_unit") or item.get("unit"))
     computed_multiplier, computed_unit, computed_method = _calculate_conversion(item)
-    rule_match = _match_conversion_rule(item, product_match, rules, document_unit=document_unit)
+    rule_match = _match_conversion_rule(
+        item,
+        product_match,
+        rules,
+        document_unit=document_unit,
+        warehouse=warehouse,
+        supplier_inn=supplier_inn,
+        supplier_name=supplier_name,
+    )
 
     if rule_match["status"] == "ambiguous":
-        return {"status": "ambiguous", "reason": "Найдено несколько подходящих правил пересчета."}
+        return {"status": "ambiguous", "reason": "Найдено несколько подходящих правил пересчета одинаковой точности."}
 
     if rule_match["status"] == "matched":
         rule = rule_match["rule"]
         match_kind = rule_match["match_kind"]
-        rule_id = _catalog_value(rule, "ID", "id")
-        method_label = _normalize_method_label(_catalog_value(rule, "Способ пересчета", "conversion_method"))
-        rule_factor = _number(_catalog_value(rule, "Коэффициент пересчета", "Вес 1 шт", "factor"))
+        rule_id = _catalog_value(rule, "ID", "ID правила", "id")
+        method_label = _normalize_method_label(
+            _catalog_value(rule, "Способ пересчета", "Режим пересчета", "conversion_method")
+        )
+        rule_factor = _number(
+            _catalog_value(
+                rule,
+                "Коэффициент пересчета",
+                "Коэффициент",
+                "Вес 1 шт",
+                "Вес / объем единицы",
+                "factor",
+            )
+        )
         rule_unit = _normalize_unit(
-            _catalog_value(rule, "Единица учета в УС", "Ед.изм. в УС", "accounting_unit")
+            _catalog_value(rule, "Единица учета в УС", "Ед.изм. в УС", "Ед. изм. в УС", "accounting_unit")
         )
 
         if method_label in _METHOD_MANUAL:
@@ -434,6 +471,42 @@ def _resolve_conversion(
                 "multiplier": multiplier,
                 "accounting_unit": rule_unit or computed_unit,
                 "method": "weight_volume_rule",
+                "rule_id": rule_id,
+            }
+
+        if method_label in _METHOD_BY_COEFFICIENT:
+            # The rule's own confirmed coefficient only -- never fall back to
+            # the computed/regex guess, per explicit tester requirement that
+            # AI/code must never invent this value.
+            if rule_factor is None:
+                return {
+                    "status": "unresolved",
+                    "reason": "Правило требует коэффициент, но он не задан.",
+                }
+            return {
+                "status": "resolved",
+                "multiplier": rule_factor,
+                "accounting_unit": rule_unit or computed_unit or document_unit,
+                "method": "coefficient_rule",
+                "rule_id": rule_id,
+            }
+
+        if method_label in _METHOD_BY_AVG_WEIGHT:
+            # Average weight per piece (avocado/lettuce/microgreens style):
+            # only the rule's own confirmed average is used today. A real
+            # scale-printed weight on the document should override this once
+            # an `actual_weight` packaging fact is wired through -- not done
+            # yet, deliberately deferred (see docs/wiki/unit-conversion-rules.md).
+            if rule_factor is None:
+                return {
+                    "status": "unresolved",
+                    "reason": "Правило пересчета по среднему весу штуки не содержит веса.",
+                }
+            return {
+                "status": "resolved",
+                "multiplier": rule_factor,
+                "accounting_unit": rule_unit or document_unit,
+                "method": "average_weight_rule",
                 "rule_id": rule_id,
             }
 
@@ -516,13 +589,44 @@ def _resolve_conversion(
     }
 
 
+def _rule_activity_state(rule: dict[str, Any]) -> str:
+    """3-state rule activity (`Правила фасовок`'s `Активность правила`), kept
+    backward compatible with the legacy boolean-ish `Активна` column (which
+    only ever yields active/inactive, never review)."""
+    raw = _catalog_value(rule, "Активность правила", "Активна", "active")
+    text = str(raw or "").strip().lower().replace("ё", "е")
+    if text in {"неактивно", "нет", "false", "0", "inactive"}:
+        return _RULE_INACTIVE
+    if text in {"требует проверки", "проверка", "review"}:
+        return _RULE_NEEDS_REVIEW
+    if text in {"активно", "да", "true", "1", "active", ""}:
+        return _RULE_ACTIVE
+    return _RULE_NEEDS_REVIEW  # unknown value -> safe default, never auto-applied
+
+
 def _match_conversion_rule(
     item: dict[str, Any],
     product_match: dict[str, Any],
     rules: list[dict[str, Any]],
     *,
     document_unit: str,
+    warehouse: str | None = None,
+    supplier_inn: str | None = None,
+    supplier_name: str | None = None,
 ) -> dict[str, Any]:
+    """Find the active rule that applies to this item.
+
+    Matching is specificity-tiered: a rule that names the УС product code,
+    warehouse/destination, supplier INN, or supplier product code is more
+    specific than one matched only by product name or package text. A rule
+    that *specifies* a constraint the item fails is disqualified outright
+    (not merely un-scored) -- this is what makes "most specific wins" safe,
+    e.g. a warehouse-scoped rule must not apply to a document from a
+    different warehouse just because the product code also matched. Only
+    when more than one rule remains at the single highest specificity tier
+    (after a `Приоритет правила` tiebreak) is the result "ambiguous",
+    forcing manual review instead of an automatic pick.
+    """
     package_raw = _normalize_compact(_package_raw(item))
     raw_name = _normalize_name(item.get("raw_name") or item.get("name"))
     item_names = {
@@ -532,14 +636,20 @@ def _match_conversion_rule(
     }
     item_names.discard("")
     product_code = str(product_match.get("code") or "").strip()
+    supplier_codes = {str(code).strip() for code in (item.get("codes") or []) if str(code).strip()}
+    doc_warehouse = _normalize_name(warehouse)
+    doc_supplier_inn = str(supplier_inn or "").strip()
+    doc_supplier_name = _normalize_name(supplier_name)
 
-    matches = []
+    candidates: list[dict[str, Any]] = []
     for rule in rules:
-        if str(_catalog_value(rule, "Активна", "active") or "да").strip().lower() in {"нет", "false", "0"}:
+        if _rule_activity_state(rule) != _RULE_ACTIVE:
             continue
 
         rule_document_unit = _normalize_unit(
-            _catalog_value(rule, "Ед.изм. в документе", "Единица документа", "document_unit")
+            _catalog_value(
+                rule, "Ед.изм. в документе", "Ед. изм. документа", "Единица документа", "document_unit"
+            )
         )
         if rule_document_unit and rule_document_unit != document_unit:
             continue
@@ -558,18 +668,64 @@ def _match_conversion_rule(
         rule_product_name = _normalize_name(
             _catalog_value(rule, "Наименование товара УС", "Наименование товара", "Товар", "product_name")
         )
-        rule_product_code = str(
-            _catalog_value(rule, "Код товара УС", "Код товара поставщика", "product_code") or ""
+        # `Код товара УС` (matched product's catalog code) and `Код товара
+        # поставщика` (supplier-side code extracted from the raw text) are
+        # distinct vocabularies on the new sheet -- compared separately
+        # against separate item fields, not conflated into one lookup.
+        rule_us_code = str(_catalog_value(rule, "Код товара УС", "product_code") or "").strip()
+        rule_supplier_code = str(
+            _catalog_value(rule, "Код товара поставщика", "supplier_product_code") or ""
         ).strip()
         product_hit = bool(rule_product_name) and rule_product_name in item_names
-        product_code_hit = bool(rule_product_code) and bool(product_code) and rule_product_code == product_code
+        us_code_hit = bool(rule_us_code) and bool(product_code) and rule_us_code == product_code
+        supplier_code_hit = bool(rule_supplier_code) and rule_supplier_code in supplier_codes
 
-        if not (package_hit or product_hit or product_code_hit):
+        if not (package_hit or product_hit or us_code_hit or supplier_code_hit):
             continue
 
         qualifier = _normalize_name(_catalog_value(rule, "Вариант", "Квалификатор", "qualifier"))
         if qualifier and qualifier not in raw_name:
             continue
+
+        score = 0
+        disqualified = False
+
+        if rule_us_code:
+            if us_code_hit:
+                score += 100
+            else:
+                disqualified = True
+        rule_warehouse = _normalize_name(
+            _catalog_value(rule, "Склад / назначение", "Склад/назначение", "warehouse")
+        )
+        if rule_warehouse:
+            if doc_warehouse and rule_warehouse == doc_warehouse:
+                score += 40
+            else:
+                disqualified = True
+        rule_supplier_inn = str(_catalog_value(rule, "ИНН поставщика", "supplier_inn") or "").strip()
+        if rule_supplier_inn:
+            if doc_supplier_inn and rule_supplier_inn == doc_supplier_inn:
+                score += 20
+            else:
+                disqualified = True
+        if rule_supplier_code:
+            if supplier_code_hit:
+                score += 30
+            else:
+                disqualified = True
+        rule_supplier_name = _normalize_name(_catalog_value(rule, "Поставщик", "supplier_name"))
+        if rule_supplier_name:
+            if doc_supplier_name and rule_supplier_name == doc_supplier_name:
+                score += 10
+            else:
+                disqualified = True
+        if disqualified:
+            continue
+        if product_hit:
+            score += 5
+        if package_hit:
+            score += 3
 
         # A rule matched purely by package text is a physical packaging fact
         # and can be sanity-checked against the regex-computed conversion.
@@ -577,14 +733,28 @@ def _match_conversion_rule(
         # eggs/avocado/olives) overrides the computed guess outright, since
         # the computed value for such items is usually a meaningless identity
         # default rather than a real package decomposition candidate.
-        match_kind = "package" if package_hit else "product"
-        matches.append({"rule": rule, "match_kind": match_kind})
+        match_kind = "product" if (us_code_hit or product_hit or supplier_code_hit) else "package"
+        priority = _number(_catalog_value(rule, "Приоритет правила", "Приоритет", "priority"))
+        candidates.append(
+            {
+                "rule": rule,
+                "match_kind": match_kind,
+                "score": score,
+                "priority": priority if priority is not None else float("inf"),
+            }
+        )
 
-    if not matches:
+    if not candidates:
         return {"status": "missing"}
-    if len(matches) > 1:
+
+    top_score = max(candidate["score"] for candidate in candidates)
+    top_tier = [candidate for candidate in candidates if candidate["score"] == top_score]
+    if len(top_tier) > 1:
+        best_priority = min(candidate["priority"] for candidate in top_tier)
+        top_tier = [candidate for candidate in top_tier if candidate["priority"] == best_priority]
+    if len(top_tier) > 1:
         return {"status": "ambiguous"}
-    return {"status": "matched", "rule": matches[0]["rule"], "match_kind": matches[0]["match_kind"]}
+    return {"status": "matched", "rule": top_tier[0]["rule"], "match_kind": top_tier[0]["match_kind"]}
 
 
 def _dry_weight_multiplier(item: dict[str, Any]) -> tuple[float | None, str]:
@@ -660,6 +830,28 @@ def _extract_package(raw_name: str) -> tuple[InvoiceItemPackage, float | None, s
         multiplier,
         accounting_unit,
     )
+
+
+_PACKAGE_VALUE_FACT_TYPES = {"unit_weight", "unit_volume", "declared_package_mass", "capacity"}
+
+
+def _package_from_facts(facts: list[PackagingFact]) -> InvoiceItemPackage:
+    """Backend-only compatibility view: derive a legacy InvoiceItemPackage from AI-supplied
+    packaging_facts, used only when regex extraction from raw_name found nothing."""
+    value_fact = next((fact for fact in facts if fact.type in _PACKAGE_VALUE_FACT_TYPES), None)
+    dry_weight_fact = next((fact for fact in facts if fact.type == "dry_weight"), None)
+    return InvoiceItemPackage(
+        value=_number(value_fact.value) if value_fact else None,
+        unit=(_normalize_unit(value_fact.unit) or None) if value_fact else None,
+        raw=_clean_spaces(value_fact.source) if value_fact else "",
+        dry_weight=_number(dry_weight_fact.value) if dry_weight_fact else None,
+        dry_weight_unit=(_normalize_unit(dry_weight_fact.unit) or None) if dry_weight_fact else None,
+    )
+
+
+def _units_per_package_from_facts(facts: list[PackagingFact]) -> float | None:
+    count_fact = next((fact for fact in facts if fact.type == "count_in_package"), None)
+    return _number(count_fact.value) if count_fact else None
 
 
 def _fallback_multiplier(package: InvoiceItemPackage, document_unit: str) -> tuple[float | None, str]:

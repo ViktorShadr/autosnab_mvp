@@ -4,7 +4,12 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from app.schemas.invoice_parser import InvoiceParsedItem, InvoiceParserResult
+from app.schemas.invoice_parser import (
+    InvoiceParsedItem,
+    InvoiceParserResult,
+    NormalizedInvoiceItem,
+    PackagingFact,
+)
 from app.services.item_normalization_service import (
     apply_reference_mapping_to_payload,
     normalize_item_candidate,
@@ -75,10 +80,29 @@ def test_parser_contract_forbids_unknown_fields():
 
 def test_parser_contract_forbids_unknown_package_fields():
     payload = _parsed_invoice()
-    payload["items"][0]["package"] = {"value": 1, "unit": "л", "raw": "1Л", "unknown": True}
+    payload["items"][0]["packaging_facts"] = [
+        {"type": "unit_weight", "value": 1, "unit": "л", "source": "1Л", "unknown": True}
+    ]
 
     with pytest.raises(ValidationError):
         InvoiceParserResult.model_validate(payload)
+
+
+def test_ai_schema_omits_business_decision_fields():
+    """The AI-facing schema must not expose fields that are backend-only
+    business decisions -- Lilia's explicit requirement after the 2026-07-20
+    packaging bugs (the model can't know the accounting unit before product
+    matching)."""
+    for forbidden_field, value in (
+        ("package", {"value": 1, "unit": "л", "raw": "1Л"}),
+        ("quantity_multiplier", 1.0),
+        ("accounting_quantity_candidate", 1.0),
+        ("accounting_unit_candidate", "л"),
+    ):
+        bad_payload = _parsed_invoice()
+        bad_payload["items"][0][forbidden_field] = value
+        with pytest.raises(ValidationError):
+            InvoiceParserResult.model_validate(bad_payload)
 
 
 def test_openai_parser_uses_structured_response_and_returns_legacy_payload(tmp_path, monkeypatch):
@@ -115,8 +139,10 @@ def test_openai_parser_uses_structured_response_and_returns_legacy_payload(tmp_p
     assert result["supplier_inn"] == "3900040690"
     assert result["items"][0]["sum"] == 100.0
     assert result["parser_metadata"]["upload_status"] == "Проверить"
-    assert "Справочник фасовок" in SYSTEM_PROMPT
-    assert "quantity_multiplier" in SYSTEM_PROMPT
+    assert "Правила фасовок" in SYSTEM_PROMPT
+    assert "packaging_facts" in SYSTEM_PROMPT
+    assert "packaging_risk_flags" in SYSTEM_PROMPT
+    assert "quantity_multiplier" not in SYSTEM_PROMPT
 
 
 def test_openai_parser_retries_once_on_timeout_with_longer_timeout(monkeypatch):
@@ -233,7 +259,7 @@ def test_openai_parser_sends_prepared_pages_as_ordered_image_inputs(tmp_path: Pa
 
 
 def test_item_normalization_extracts_code_package_and_accounting_quantity():
-    item = InvoiceParsedItem(
+    item = NormalizedInvoiceItem(
         raw_name="3 ТОВАР : ШТ. [N+13968 КЕФИР ФЕРМЕРСКИЙ 800Г",
         unit="ШТ",
         quantity=5,
@@ -261,7 +287,7 @@ def test_item_normalization_extracts_code_package_and_accounting_quantity():
 
 
 def test_item_normalization_uses_explicit_units_per_package_from_document_column():
-    item = InvoiceParsedItem(
+    item = NormalizedInvoiceItem(
         raw_name="1,5Л ВОДА КРАСНЫЙ КЛЮЧ ГАЗ",
         document_unit="УП",
         quantity_document=2,
@@ -283,6 +309,63 @@ def test_item_normalization_uses_explicit_units_per_package_from_document_column
     assert item.quantity_multiplier == 9.0
     assert item.accounting_quantity_candidate == 18.0
     assert item.accounting_unit_candidate == "л"
+
+
+def test_packaging_facts_adapter_maps_unit_weight_and_dry_weight():
+    """When regex extraction from raw_name finds nothing, the fallback should
+    derive item.package from the AI-supplied packaging_facts instead."""
+    item = NormalizedInvoiceItem(
+        raw_name="Оливки без косточки",
+        document_unit="БАН",
+        quantity_document=2,
+        confidence=0.95,
+        packaging_facts=[
+            PackagingFact(type="declared_package_mass", value=300, unit="г", source="300г"),
+            PackagingFact(type="dry_weight", value=150, unit="г", source="150г отж.вес"),
+        ],
+    )
+
+    normalize_item_candidate(item)
+
+    assert item.package.value == 300.0
+    assert item.package.unit == "г"
+    assert item.package.raw == "300г"
+    assert item.package.dry_weight == 150.0
+    assert item.package.dry_weight_unit == "г"
+
+
+def test_packaging_facts_count_in_package_feeds_units_per_package_when_column_empty():
+    item = NormalizedInvoiceItem(
+        raw_name="Бумага туалетная упаковка",
+        document_unit="УП",
+        quantity_document=2,
+        confidence=0.95,
+        packaging_facts=[
+            PackagingFact(type="count_in_package", value=12, source="12 рулонов в упаковке"),
+        ],
+    )
+
+    normalize_item_candidate(item)
+
+    assert item.units_per_package == 12.0
+
+
+def test_normalized_item_adds_backend_fields_after_normalization():
+    """package/quantity_multiplier/accounting_* only ever appear on the
+    backend-enriched NormalizedInvoiceItem, never on the AI-facing schema."""
+    assert "package" not in InvoiceParsedItem.model_fields
+    assert "quantity_multiplier" not in InvoiceParsedItem.model_fields
+    assert "accounting_quantity_candidate" not in InvoiceParsedItem.model_fields
+    assert "accounting_unit_candidate" not in InvoiceParsedItem.model_fields
+    assert "package" in NormalizedInvoiceItem.model_fields
+    assert "quantity_multiplier" in NormalizedInvoiceItem.model_fields
+
+
+def test_line_id_uses_document_number_and_line_number():
+    parsed = InvoiceParserResult.model_validate(_parsed_invoice())
+    result = normalize_invoice_result(parsed)
+
+    assert result.items[0].line_id == "A-42:1"
 
 
 def test_reference_mapping_applies_units_per_package_after_package_reference_check():
@@ -333,7 +416,7 @@ def test_reference_mapping_applies_units_per_package_after_package_reference_che
     assert item.get("correction", "") == ""
 
 def test_item_normalization_fixes_common_latin_kg_ocr_alias():
-    item = InvoiceParsedItem(
+    item = NormalizedInvoiceItem(
         raw_name="1Еноки вес",
         document_unit="KT",
         quantity_document=3.14,
@@ -351,7 +434,7 @@ def test_item_normalization_fixes_common_latin_kg_ocr_alias():
 
 
 def test_item_normalization_multiplies_nested_liquid_package():
-    item = InvoiceParsedItem(
+    item = NormalizedInvoiceItem(
         raw_name="ВОДА ПИТЬЕВАЯ 0,5Л 12ШТ",
         document_unit="УПАК",
         quantity_document=3,
@@ -374,7 +457,7 @@ def test_item_normalization_multiplies_nested_liquid_package():
 
 
 def test_item_normalization_keeps_identity_for_weight_document_unit_even_if_raw_name_contains_weight():
-    item = InvoiceParsedItem(
+    item = NormalizedInvoiceItem(
         raw_name='Окорок "Пармский" 3,954 КГ',
         document_unit="КГ",
         quantity_document=3.954,
@@ -414,7 +497,7 @@ def test_item_normalization_keeps_identity_for_weight_document_unit_even_if_raw_
 
 
 def test_item_normalization_cleans_packaging_noise_for_fallback_name():
-    item = InvoiceParsedItem(
+    item = NormalizedInvoiceItem(
         raw_name="7 ТОВАР : ШТ. ПАКЕТ-МАЙКА ВИКТОРИЯ 65*40СМ",
         unit="ШТ",
         quantity=1,
@@ -429,7 +512,7 @@ def test_item_normalization_cleans_packaging_noise_for_fallback_name():
 
 
 def test_item_normalization_flags_ambiguous_sheets_unit():
-    item = InvoiceParsedItem(
+    item = NormalizedInvoiceItem(
         raw_name="САЛФЕТКИ БУМ 24Х24 100Л",
         document_unit="УПАК",
         quantity_document=1,
@@ -785,6 +868,255 @@ def test_reference_mapping_rejects_conflicting_stored_factor():
     assert item["conversion_method"] == "unresolved"
     assert item["stored_conversion_factor"] == 0.4
     assert item["correction"] == "Сопоставление"
+
+
+def _reference_mapping_payload(item_overrides):
+    item = {
+        "line_number": 1,
+        "package": {},
+    }
+    item.update(item_overrides)
+    return {
+        "items": [item],
+        "parser_metadata": {
+            "upload_status": "Проверить",
+            "row_status": "Распознано",
+            "review_flags": [],
+            "item_corrections": {},
+        },
+        "parser_notes": [],
+    }
+
+
+def test_specificity_prefers_us_code_over_package_text():
+    """A rule scoped to the matched УС product code must win over a rule
+    matched only by generic package text, per the most-specific-first
+    requirement (docs/wiki/unit-conversion-rules.md, Логика фасовок)."""
+    payload = _reference_mapping_payload(
+        {
+            "name": "ЧИПСЫ 150Г",
+            "raw_name": "ЧИПСЫ 150Г",
+            "normalized_name_candidate": "Чипсы",
+            "document_unit": "пач",
+            "quantity": 15,
+            "quantity_document": 15,
+            "price": 50,
+            "package": {"value": 150, "unit": "г", "raw": "150г"},
+        }
+    )
+
+    result = apply_reference_mapping_to_payload(
+        payload,
+        products=[{"Наименование": "Чипсы", "Код": "01-00073", "Ед. изм.": "кг"}],
+        packages=[
+            {
+                "ID": "generic-weight",
+                "Активна": "да",
+                "Фасовка в документе": "150г",
+                "Способ пересчета": "По весу/объему",
+                "Коэффициент пересчета": 0.15,
+                "Единица учета в УС": "кг",
+            },
+            {
+                "ID правила": "PKG-MVP-CHIPS",
+                "Активность правила": "Активно",
+                "Код товара УС": "01-00073",
+                "Режим пересчета": "Без пересчета",
+                "Ед. изм. в УС": "пач",
+            },
+        ],
+    )
+
+    item = result["items"][0]
+    assert item["conversion_method"] == "no_recalculation_rule"
+    assert item["quantity_us"] == 15.0
+    assert item["conversion_source_id"] == "PKG-MVP-CHIPS"
+
+
+def test_priority_breaks_tie_within_equally_specific_rules():
+    payload = _reference_mapping_payload(
+        {
+            "name": "АВОКАДО",
+            "normalized_name_candidate": "Авокадо",
+            "document_unit": "шт",
+            "unit": "шт",
+            "quantity": 2,
+            "quantity_document": 2,
+            "price": 100,
+        }
+    )
+    exceptions = [
+        {
+            "ID": "avocado-350",
+            "Товар": "Авокадо",
+            "Единица документа": "шт",
+            "Единица учета в УС": "кг",
+            "Коэффициент пересчета": 0.35,
+            "Приоритет правила": 2,
+        },
+        {
+            "ID": "avocado-400",
+            "Товар": "Авокадо",
+            "Единица документа": "шт",
+            "Единица учета в УС": "кг",
+            "Коэффициент пересчета": 0.4,
+            "Приоритет правила": 1,
+        },
+    ]
+
+    result = apply_reference_mapping_to_payload(
+        payload,
+        products=[{"Наименование": "Авокадо", "Ед. изм.": "кг"}],
+        packages=[],
+        conversion_exceptions=exceptions,
+    )
+
+    item = result["items"][0]
+    assert item["conversion_method"] == "product_exception"
+    assert item["conversion_factor"] == 0.4
+    assert item["conversion_source_id"] == "avocado-400"
+
+
+def test_inactive_and_needs_review_rules_never_apply():
+    payload = _reference_mapping_payload(
+        {
+            "name": "САЛФЕТКИ БУМ 250ШТ",
+            "raw_name": "САЛФЕТКИ БУМ 250ШТ",
+            "normalized_name_candidate": "Салфетки",
+            "document_unit": "пач",
+            "quantity": 3,
+            "quantity_document": 3,
+            "price": 100,
+            "package": {"value": 250, "unit": "шт", "raw": "250ШТ"},
+        }
+    )
+
+    result = apply_reference_mapping_to_payload(
+        payload,
+        products=[],
+        packages=[
+            {
+                "ID правила": "inactive-rule",
+                "Активность правила": "Неактивно",
+                "Фасовка в документе": "250ШТ",
+                "Режим пересчета": "По количеству вложений",
+                "Коэффициент": 250,
+            },
+            {
+                "ID правила": "review-rule",
+                "Активность правила": "Требует проверки",
+                "Фасовка в документе": "250ШТ",
+                "Режим пересчета": "По количеству вложений",
+                "Коэффициент": 250,
+            },
+        ],
+    )
+
+    item = result["items"][0]
+    assert item["conversion_method"] == "identity_no_rule"
+    assert item["quantity_us"] == 3.0
+
+
+def test_by_coefficient_never_falls_back_to_computed_value():
+    payload = _reference_mapping_payload(
+        {
+            "name": "ТОВАР С КОЭФФИЦИЕНТОМ 2КГ",
+            "raw_name": "ТОВАР С КОЭФФИЦИЕНТОМ 2КГ",
+            "normalized_name_candidate": "Товар",
+            "document_unit": "шт",
+            "quantity": 4,
+            "quantity_document": 4,
+            "price": 100,
+            "package": {"value": 2, "unit": "кг", "raw": "2КГ"},
+        }
+    )
+
+    result = apply_reference_mapping_to_payload(
+        payload,
+        products=[],
+        packages=[
+            {
+                "ID правила": "coef-rule-no-value",
+                "Активность правила": "Активно",
+                "Фасовка в документе": "2КГ",
+                "Режим пересчета": "По коэффициенту",
+            }
+        ],
+    )
+
+    item = result["items"][0]
+    assert item["conversion_method"] == "unresolved"
+    assert item["quantity_us"] is None
+
+
+def test_by_average_weight_per_piece_uses_rule_value():
+    payload = _reference_mapping_payload(
+        {
+            "name": "АВОКАДО ХАСС",
+            "raw_name": "АВОКАДО ХАСС",
+            "normalized_name_candidate": "Авокадо Хасс",
+            "document_unit": "шт",
+            "quantity": 10,
+            "quantity_document": 10,
+            "price": 50,
+        }
+    )
+
+    result = apply_reference_mapping_to_payload(
+        payload,
+        products=[{"Наименование": "Авокадо Хасс", "Код": "AVO-HASS", "Ед. изм.": "кг"}],
+        packages=[
+            {
+                "ID правила": "avo-hass-avg",
+                "Активность правила": "Активно",
+                "Код товара УС": "AVO-HASS",
+                "Режим пересчета": "По среднему весу штуки",
+                "Коэффициент": 0.18,
+                "Ед. изм. в УС": "кг",
+            }
+        ],
+    )
+
+    item = result["items"][0]
+    assert item["conversion_method"] == "average_weight_rule"
+    assert item["conversion_factor"] == 0.18
+    assert item["quantity_us"] == pytest.approx(1.8)
+
+
+def test_supplier_product_code_matches_against_item_codes_not_product_match_code():
+    """Regression test for a real conflation bug found during Phase 3 review:
+    `Код товара поставщика` (supplier-side code from the raw text) must match
+    against item.codes, never against the matched product's own УС code."""
+    payload = _reference_mapping_payload(
+        {
+            "name": "КЕФИР ФЕРМЕРСКИЙ",
+            "raw_name": "N+13968 КЕФИР ФЕРМЕРСКИЙ",
+            "normalized_name_candidate": "Кефир Фермерский",
+            "document_unit": "шт",
+            "quantity": 5,
+            "quantity_document": 5,
+            "price": 100,
+            "codes": ["N+13968"],
+        }
+    )
+
+    result = apply_reference_mapping_to_payload(
+        payload,
+        products=[{"Наименование": "Кефир", "Код": "01-00017", "Ед. изм.": "шт"}],
+        packages=[
+            {
+                "ID правила": "supplier-code-rule",
+                "Активность правила": "Активно",
+                "Код товара поставщика": "N+13968",
+                "Режим пересчета": "Без пересчета",
+                "Ед. изм. в УС": "шт",
+            }
+        ],
+    )
+
+    item = result["items"][0]
+    assert item["conversion_method"] == "no_recalculation_rule"
+    assert item["conversion_source_id"] == "supplier-code-rule"
 
 
 @pytest.mark.parametrize(

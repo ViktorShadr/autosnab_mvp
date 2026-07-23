@@ -444,6 +444,7 @@ def _backfill_invoice_reference_mapping_if_needed(
             payload,
             products=references["products"],
             packages=references["packages"],
+            warehouse=header_meta.get("warehouse") or header_meta.get("trade_point") or "",
         )
     except Exception:
         return header_meta, item_meta

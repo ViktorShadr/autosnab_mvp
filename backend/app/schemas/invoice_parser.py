@@ -29,6 +29,41 @@ class InvoiceItemPackage(BaseModel):
     dry_weight_unit: str | None = None
 
 
+PackagingFactType = Literal[
+    "package_type",
+    "count_in_package",
+    "unit_weight",
+    "unit_volume",
+    "declared_package_mass",
+    "dry_weight",
+    "capacity",
+    "length",
+    "diameter",
+    "thickness",
+    "actual_weight",
+]
+
+PackagingRiskFlag = Literal[
+    "in_brine",
+    "in_syrup",
+    "in_marinade",
+    "in_oil",
+    "dry_weight_unknown",
+    "multiple_ambiguous_values",
+    "actual_weight_required",
+]
+
+
+class PackagingFact(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: PackagingFactType
+    value: float | None = None
+    unit: str | None = None
+    source: str = ""
+    confidence: float | None = Field(default=None, ge=0, le=1)
+
+
 class InvoiceParsedItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -37,13 +72,11 @@ class InvoiceParsedItem(BaseModel):
     clean_name: str = ""
     normalized_name_candidate: str = ""
     brand_or_descriptor: str = ""
-    package: InvoiceItemPackage = Field(default_factory=InvoiceItemPackage)
+    packaging_facts: list[PackagingFact] = Field(default_factory=list)
+    packaging_risk_flags: list[PackagingRiskFlag] = Field(default_factory=list)
     document_unit: str = ""
     quantity_document: float | None = None
     units_per_package: float | None = None
-    quantity_multiplier: float | None = None
-    accounting_quantity_candidate: float | None = None
-    accounting_unit_candidate: str = ""
     codes: list[str] = Field(default_factory=list)
     unit: str = ""
     quantity: float | None = None
@@ -56,6 +89,24 @@ class InvoiceParsedItem(BaseModel):
     needs_review: bool = False
     review_reason: str = ""
     source_fragment: str = ""
+
+
+class NormalizedInvoiceItem(InvoiceParsedItem):
+    """Backend-only enrichment of a parsed item.
+
+    `package`, `quantity_multiplier`, `accounting_quantity_candidate`, and
+    `accounting_unit_candidate` are deliberately absent from `InvoiceParsedItem`
+    (the AI-facing schema) so the model can never populate them -- these are
+    business decisions made after product matching, not recognition facts.
+    They only exist on this subclass, set by
+    `item_normalization_service.normalize_item_candidate`.
+    """
+
+    package: InvoiceItemPackage = Field(default_factory=InvoiceItemPackage)
+    quantity_multiplier: float | None = None
+    accounting_quantity_candidate: float | None = None
+    accounting_unit_candidate: str = ""
+    line_id: str = ""
 
 
 class InvoiceReviewFlag(BaseModel):
@@ -87,6 +138,7 @@ class InvoiceParserResult(BaseModel):
 
 
 class NormalizedInvoiceResult(InvoiceParserResult):
+    items: list[NormalizedInvoiceItem] = Field(default_factory=list)
     upload_status: Literal["Проверить", "Требует проверки", "Не готово"] = "Проверить"
     row_status: Literal["Распознано", "Правка вручную", "Ошибка загрузки"] = "Распознано"
     duplicate: Literal["", "Да", "?"] = ""

@@ -101,20 +101,29 @@ def load_invoice_reference_catalogs() -> dict[str, list[dict[str, Any]]]:
     # they are added to the live "Справочник фасовок" sheet. `_table_rows_as_dicts`
     # keys rows by whatever header text is actually present, so this is a
     # no-op until those columns exist.
+    #
+    # `conversion_rules` reads the newer, richer "Правила фасовок" tab (2026-07-23)
+    # that a local workbook copy shows replacing "Справочник фасовок" -- kept as a
+    # SEPARATE, additive entry (not a rename) because the live sheet's actual
+    # current tab name is unverified from this environment; both are read and
+    # merged below so either name works until that's confirmed (see
+    # docs/wiki/unit-conversion-rules.md, "Header-drift risk flagged").
     wanted = {
         "products": ("Товары", "A1:H"),
         "suppliers": ("Поставщики", "A1:H"),
         "packages": ("Справочник фасовок", "A1:Z"),
+        "conversion_rules": ("Правила фасовок", "A1:Z"),
     }
     if settings.google_conversion_exceptions_sheet_name:
         wanted["conversion_exceptions"] = (settings.google_conversion_exceptions_sheet_name, "A1:Z")
 
-    # `Справочник фасовок` (and a configured exceptions sheet) may not exist
-    # on a given spreadsheet yet — e.g. it's planned future work, not created
-    # yet. Google Sheets `batchGet` fails the *entire* call with HTTP 400 if
-    # any one range names a nonexistent sheet, which previously took down
-    # `Товары`/`Поставщики` reads too. Check which sheets actually exist
-    # first so a missing/future tab only empties its own catalog.
+    # `Справочник фасовок` / `Правила фасовок` (and a configured exceptions
+    # sheet) may not exist on a given spreadsheet yet — e.g. it's planned
+    # future work, not created yet. Google Sheets `batchGet` fails the
+    # *entire* call with HTTP 400 if any one range names a nonexistent sheet,
+    # which previously took down `Товары`/`Поставщики` reads too. Check which
+    # sheets actually exist first so a missing/future tab only empties its
+    # own catalog.
     metadata = sheets_service.spreadsheets().get(
         spreadsheetId=spreadsheet_id,
         fields="sheets.properties.title",
@@ -146,11 +155,12 @@ def load_invoice_reference_catalogs() -> dict[str, list[dict[str, Any]]]:
     products_rows = rows_by_key["products"]
     suppliers_rows = rows_by_key["suppliers"]
     packages_rows = rows_by_key["packages"]
+    conversion_rules_rows = rows_by_key.get("conversion_rules", [])
     exceptions_rows = rows_by_key.get("conversion_exceptions", [])
     return {
         "products": _confirmed_reference_rows(_table_rows_as_dicts(products_rows)),
         "suppliers": _confirmed_reference_rows(_table_rows_as_dicts(suppliers_rows)),
-        "packages": _table_rows_as_dicts(packages_rows),
+        "packages": _table_rows_as_dicts(packages_rows) + _table_rows_as_dicts(conversion_rules_rows),
         "conversion_exceptions": _table_rows_as_dicts(exceptions_rows),
     }
 

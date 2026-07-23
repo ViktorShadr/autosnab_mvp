@@ -60,6 +60,7 @@ def normalize_invoice_result(
     for position, item in enumerate(result.items, start=1):
         line_number = item.line_number or position
         item.line_number = line_number
+        item.line_id = f"{result.document.document_number}:{line_number}"
         item.raw_name = _clean_text(item.raw_name)
         item.unit = _clean_text(item.unit)
         item.quantity = _number(item.quantity)
@@ -174,12 +175,15 @@ def to_legacy_invoice_payload(result: NormalizedInvoiceResult) -> dict[str, Any]
                 "normalized_name_candidate": item.normalized_name_candidate,
                 "brand_or_descriptor": item.brand_or_descriptor,
                 "package": item.package.model_dump(mode="json"),
+                "packaging_facts": [fact.model_dump(mode="json") for fact in item.packaging_facts],
+                "packaging_risk_flags": list(item.packaging_risk_flags),
                 "document_unit": item.document_unit,
                 "quantity_document": item.quantity_document,
                 "units_per_package": item.units_per_package,
                 "quantity_multiplier": item.quantity_multiplier,
                 "accounting_quantity_candidate": item.accounting_quantity_candidate,
                 "accounting_unit_candidate": item.accounting_unit_candidate,
+                "line_id": item.line_id,
                 "codes": item.codes,
                 "quantity": item.quantity or 0,
                 "unit": item.unit or "шт",

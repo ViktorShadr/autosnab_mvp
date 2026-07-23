@@ -1418,6 +1418,7 @@ def _process_invoice_upload(
                 products=references["products"],
                 packages=references["packages"],
                 conversion_exceptions=references.get("conversion_exceptions") or [],
+                warehouse=venue,
             )
             mapping_complete_log = {
                 "stage": "reference_mapping_complete",
