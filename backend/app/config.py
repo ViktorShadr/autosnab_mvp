@@ -149,7 +149,14 @@ class Settings(BaseSettings):
     telegram_bot_token: str | None = None
     telegram_bot_enabled: bool = False
     telegram_bot_poll_interval_seconds: float = 5.0
-    telegram_bot_max_poll_attempts: int = 24
+    # Must comfortably outlast the OpenAI parsing budget it watches: a single
+    # attempt can take up to openai_timeout_seconds (180s) plus one retry at
+    # openai_timeout_retry_seconds (240s) = 420s worst case, plus OCR export
+    # retries (~24s) and mapping/sheet-write time. 120 * 5s = 600s covers that
+    # with margin. If this is ever lower than the real worst case, the poller
+    # gives up and stops watching before the backend finishes, so the operator
+    # never gets the final result message automatically (see 2026-07-23 bug).
+    telegram_bot_max_poll_attempts: int = 120
     invoice_allow_header_only_documents: bool = False
     conversion_amount_tolerance: float = 0.01
 
