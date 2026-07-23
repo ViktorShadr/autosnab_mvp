@@ -14,7 +14,6 @@ from app.config import settings
 from app.models.accounting import AccountingExport
 from app.models.receiving import Receiving, ReceivingDocument, ReceivingItem, ReceivingItemStatus, ReceivingStatus
 from app.services.google_sheets_service import (
-    SHARED_INVOICE_HEADERS,
     create_invoice_review_spreadsheet,
     load_invoice_reference_catalogs,
     sync_incremental_reference_catalogs,
@@ -379,7 +378,14 @@ def build_shared_invoice_rows(
     item_meta: list[dict[str, Any]] | None = None,
     parser_items: list[dict[str, Any]] | None = None,
     total_sum: Any | None = None,
-) -> list[list[Any]]:
+) -> list[dict[str, Any]]:
+    """Build shared-sheet rows keyed by column name (not a fixed-width
+    positional list). A live spreadsheet can have manually inserted columns
+    ahead of a matching code change (e.g. "Количество исправлено вручную",
+    "ID правила фасовки" -- see docs/wiki/unit-conversion-rules.md); keying
+    by name lets the caller project each row onto whatever the *actual* live
+    header order is, instead of every later value silently shifting one
+    column over."""
     document = receiving.documents[-1] if receiving.documents else None
     meta = _document_meta(document)
     header_meta = meta.get("header", {})
@@ -396,7 +402,7 @@ def build_shared_invoice_rows(
     if header_values is None:
         header_values = _invoice_register_header_values(receiving, document, header_meta, total_sum)
 
-    rows: list[list[Any]] = []
+    rows: list[dict[str, Any]] = []
     if items:
         for index, item in enumerate(items, start=1):
             row_meta = _hydrate_review_sheet_item_meta(
@@ -731,7 +737,7 @@ def _shared_invoice_item_row(
     item: ReceivingItem | None,
     row_meta: dict[str, Any],
     index: int,
-) -> list[Any]:
+) -> dict[str, Any]:
     if item is None:
         item_name = ""
         unit = ""
@@ -852,7 +858,7 @@ def _shared_invoice_item_row(
     }
     if index == 1:
         row_values.update(first_row_only_values)
-    return [row_values.get(header, "") for header in SHARED_INVOICE_HEADERS]
+    return row_values
 
 def build_review_csv(receiving: Receiving) -> str:
     sheet = build_review_sheet(receiving)

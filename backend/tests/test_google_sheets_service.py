@@ -10,8 +10,8 @@ os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 from app.config import settings  # noqa: E402
 from app.services.google_sheets_service import (  # noqa: E402
     SHARED_INVOICE_HEADERS,
-    _align_shared_rows_to_target_headers,
     _insert_into_existing_spreadsheet,
+    _project_shared_rows_to_target_headers,
     _remap_source_rows_to_shared_sheet,
     _table_rows_as_dicts,
     load_invoice_reference_catalogs,
@@ -212,9 +212,43 @@ def test_reference_sheet_rows_are_mapped_by_fixed_headers():
     ]
 
 
-def test_align_shared_rows_to_target_headers_keeps_canonical_width():
-    rows = [["x"] * len(SHARED_INVOICE_HEADERS)]
-    assert _align_shared_rows_to_target_headers(rows, SHARED_INVOICE_HEADERS) == rows
+def test_project_shared_rows_to_target_headers_keeps_canonical_order():
+    rows = [{header: "x" for header in SHARED_INVOICE_HEADERS}]
+    assert _project_shared_rows_to_target_headers(rows, SHARED_INVOICE_HEADERS) == [
+        ["x"] * len(SHARED_INVOICE_HEADERS)
+    ]
+
+
+def test_project_shared_rows_to_target_headers_survives_inserted_live_columns():
+    """Regression test for a real production bug (2026-07-23): the live
+    `Накладная` sheet had two columns manually inserted mid-row ahead of a
+    matching code change (`Количество исправлено вручную` before `Цена за
+    ед-цу`, `ID правила фасовки` before `ID документа`). Projecting by
+    header name must place each value in its own column regardless of where
+    unrelated live-only columns sit, instead of every later value shifting
+    over by the same amount as if it were positional."""
+    live_headers = [
+        "Кол-во в документе",
+        "Кол-во в УС",
+        "Количество исправлено вручную",
+        "Цена за ед-цу",
+        "Время загрузки документа",
+        "ID правила фасовки",
+        "ID документа",
+        "ID строки",
+    ]
+    row = {
+        "Кол-во в документе": 10,
+        "Кол-во в УС": 9,
+        "Цена за ед-цу": 100,
+        "Время загрузки документа": "2026-07-03T10:00:00",
+        "ID документа": "doc-id-1",
+        "ID строки": "5",
+    }
+
+    assert _project_shared_rows_to_target_headers([row], live_headers) == [
+        [10, 9, "", 100, "2026-07-03T10:00:00", "", "doc-id-1", "5"]
+    ]
 
 
 def test_reference_catalog_loader_reads_fixed_google_sheet_tabs(monkeypatch):
@@ -563,7 +597,7 @@ def test_insert_into_existing_spreadsheet_prepends_block_and_separator():
                     ]
                 },
                 "shared_sheet_rows": [
-                    [
+                    dict(zip(SHARED_INVOICE_HEADERS, [
                         "Проверить", "Распознано", "", "", "УПД", "",
                         "2026-07-03", "doc-1", "Supplier", "1234567890",
                         "Shipper", "Recipient", "Main point", "Warehouse", "Basis",
@@ -571,8 +605,8 @@ def test_insert_into_existing_spreadsheet_prepends_block_and_separator():
                         "100", "95", "1000", "20", "200", "1200", "2400", "", "",
                         "GS", "11", "105", "2026-07-04", "110", "-5",
                         "2026-07-03T10:00:00", "doc-id-1", "uploads/invoices/test.jpg",
-                    ],
-                    [
+                    ])),
+                    dict(zip(SHARED_INVOICE_HEADERS, [
                         "", "", "Нет в справочнике", "", "", "",
                         "", "", "", "",
                         "", "", "", "", "",
@@ -580,7 +614,7 @@ def test_insert_into_existing_spreadsheet_prepends_block_and_separator():
                         "200", "190", "2000", "20", "400", "2400", "", "", "",
                         "GS", "22", "205", "2026-07-05", "210", "-10",
                         "", "", "",
-                    ],
+                    ])),
                 ],
             },
         )

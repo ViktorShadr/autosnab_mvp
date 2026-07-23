@@ -533,22 +533,60 @@ Lilia's separate 2026-07-23 `packaging_facts` JSON restructuring request
 sheet's step 3 ("AI extracts only explicitly-stated facts, does not choose
 the accounting method").
 
-### Header-drift risk flagged, not yet verified live (2026-07-23)
+### Header-drift risk confirmed live, and a real misalignment bug found and fixed (2026-07-23)
 
-`Накладная` row 2 in this copy has **45 headers**, not the 43 in
-`SHARED_INVOICE_HEADERS` (`backend/app/services/google_sheets_service.py`).
-Two headers appear that are not in code: `Количество исправлено вручную`
-(inserted between `Кол-во в УС` and `Цена за ед-цу`) and `ID правила
-фасовки` (inserted between `Время загрузки документа` and `ID документа`).
-This is structurally the same class of bug root-caused on 2026-07-14
-(silent manual header insertion ahead of a code change) — if the live sheet
-already has these two extra columns, every write after `Кол-во в УС` would
-land one column off, or the `отсутствуют обязательные заголовки` failure
-would recur. **Not yet confirmed against the actual live Google Sheet** —
-no live OAuth token is available on this workstation right now (matches the
-already-known expired-local-token issue from the 2026-07-20/22 sessions).
-Needs a direct Sheets API header read (or asking Lilia/Andrey directly)
-before any related code change ships, exactly as was required on 2026-07-14.
+User shared the live spreadsheet URL directly; exported it (`export?format=xlsx`,
+publicly link-shared) and inspected it the same way as the local copy. Both
+suspicions were confirmed against production, not just the local file:
+
+- The live sheet has **no `Справочник фасовок` tab at all** — only
+  `Правила фасовок`, matching the local copy exactly.
+- `Накладная` row 2 really does have **45 headers**, not 43: `Количество
+  исправлено вручную` (between `Кол-во в УС` and `Цена за ед-цу`) and `ID
+  правила фасовки` (before `ID документа`) are both live, not just a local
+  draft.
+
+Tracing the actual write path for this drift surfaced a **real, currently-live
+production bug**, unrelated to this session's packaging_facts/rule-engine
+work: `_read_target_headers()` only checks that the 43 codeexpected headers
+are all *present somewhere* in the live row (a subset check) — which passes
+fine against a 45-column superset. But the function that turns a built row
+into the values actually sent to Google Sheets,
+`_align_shared_rows_to_target_headers()`, aligned by **width only**
+(pad/truncate a fixed-order 43-value list out to the live column count) —
+not by column name. Since `_shared_invoice_item_row()` built each row as a
+plain positional list in the old, hardcoded `SHARED_INVOICE_HEADERS` order,
+every value from `Цена за ед-цу` onward was landing **one column to the
+left** of where the live sheet's real header says it belongs (and two
+columns off after `ID правила фасовки`) on every real bot upload — e.g. the
+unit price silently writing into the `Количество исправлено вручную` cell.
+This is the same class of bug as the 2026-07-14 incident, just not yet
+tripped because the missing-header *validation* step doesn't require exact
+width, only presence.
+
+**Fixed**: `_shared_invoice_item_row()`/`build_shared_invoice_rows()` (in
+`invoice_review_service.py`) now return the row as a dict keyed by column
+name instead of a positional list. `google_sheets_service.py`'s
+`_align_shared_rows_to_target_headers` was replaced with
+`_project_shared_rows_to_target_headers()`, which projects each row dict
+onto the actual live header order by name — mirroring the pattern the
+legacy `_remap_source_rows_to_shared_sheet()` path already used correctly.
+A live column inserted ahead of a code change now just gets written blank
+(no matching value), instead of shifting every later value into the wrong
+cell. Added a regression test reproducing the exact live drift
+(`test_project_shared_rows_to_target_headers_survives_inserted_live_columns`)
+plus updated the existing integration test's fixture to the new dict shape.
+Full suite: 232 passed (was 231) / 12 pre-existing failures unchanged — zero
+regressions.
+
+### Header-drift risk: resolved (confirmed live and fixed, see section above)
+
+Originally flagged here as unverified (no live OAuth token available on this
+workstation). The user then shared the live spreadsheet URL directly; both
+the tab rename and the 45-column `Накладная` header count were confirmed
+against production, and the resulting real write-path misalignment bug was
+found and fixed the same session — see "Header-drift risk confirmed live,
+and a real misalignment bug found and fixed (2026-07-23)" above.
 
 ## Open questions before production rollout
 

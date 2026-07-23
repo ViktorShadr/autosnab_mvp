@@ -744,7 +744,7 @@ def _insert_into_existing_spreadsheet(
         settings.google_target_header_row_count,
     )
     document_rows = (
-        _align_shared_rows_to_target_headers(shared_rows, target_headers)
+        _project_shared_rows_to_target_headers(shared_rows, target_headers)
         if shared_rows
         else _remap_source_rows_to_shared_sheet(source_rows, receiving, target_headers)
     )
@@ -1079,24 +1079,25 @@ def _remap_source_rows_to_shared_sheet(
     return result
 
 
-def _align_shared_rows_to_target_headers(
-    source_rows: list[list[Any]],
+def _project_shared_rows_to_target_headers(
+    shared_rows: list[dict[str, Any]],
     target_headers: list[str] | None = None,
 ) -> list[list[Any]]:
-    if not source_rows:
+    """Project header-keyed row dicts onto the *actual* live header order.
+
+    Each shared-sheet row is built (in `invoice_review_service.py`) as a dict
+    keyed by column name, not a fixed-width positional list. Projecting by
+    name here means a manually inserted live column (e.g. "Количество
+    исправлено вручную" / "ID правила фасовки", added directly on the sheet
+    ahead of a matching code change -- see docs/wiki/unit-conversion-rules.md,
+    "Header-drift risk") cannot silently shift every later value one column
+    over. A live header with no corresponding value is written as an empty
+    cell instead of misaligning the rest of the row.
+    """
+    if not shared_rows:
         return []
     target_headers = target_headers or SHARED_INVOICE_HEADERS
-    target_width = len(target_headers)
-    result: list[list[Any]] = []
-    for row in source_rows:
-        if len(row) == target_width:
-            result.append(list(row))
-            continue
-        padded = list(row[:target_width])
-        if len(padded) < target_width:
-            padded.extend([""] * (target_width - len(padded)))
-        result.append(padded)
-    return result
+    return [[row.get(header, "") for header in target_headers] for row in shared_rows]
 
 
 def _shared_sheet_document_meta(receiving: Any) -> dict[str, Any]:
