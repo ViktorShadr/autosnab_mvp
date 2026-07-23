@@ -1090,3 +1090,12 @@
 - A second symptom on the same screenshot ("Не понял команду" then "Страница 1 добавлена") was investigated and ruled not a bug: confirmed via aiogram 3.15.0 source that polling dispatches each update as an independent concurrent task by default, explaining the apparent reply interleaving between two separate user actions.
 - Full non-`test_receiving.py` suite: 200 passed / 2 pre-existing failures unchanged (confirmed via `git stash`), zero regressions.
 - Not yet deployed: production VPS `.env` still has the old `TELEGRAM_BOT_MAX_POLL_ATTEMPTS=24` explicitly set from the 2026-07-21 cutover.
+
+## [2026-07-23] deploy | poll-budget fix live on VPS 78.17.160.248
+
+- Committed `6eb21db` on `native-telegram-bot` (config.py default fix + wiki writeback).
+- Updated production `.env`: `TELEGRAM_BOT_MAX_POLL_ATTEMPTS=24` -> `120`.
+- Deployed `backend/app/config.py` directly (single-file copy, not a full tree sync) to avoid overwriting the repo-tracked `autosnab_mvp.db`/export CSVs on the host; actual runtime DB/uploads/exports live in Docker-managed named volumes regardless.
+- Rebuilt `backend` image, recreated `autosnab_backend_mvp4` with `docker compose --profile public-ip up -d --no-deps backend`; container came up healthy with no errors.
+- Verified inside the running container: `settings.telegram_bot_max_poll_attempts == 120`, `telegram_bot_enabled == True`. One live HTTPS connection to Telegram confirms the poller is active.
+- Disk grew 68% -> 82% (2.6G free) from the rebuild; noted as the same recurring build-cache pattern, not yet automated with a prune cron.
