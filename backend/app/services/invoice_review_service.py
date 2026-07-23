@@ -611,7 +611,12 @@ def _invoice_register_header_values(
         "upload_time": _format_datetime_for_sheet((document.created_at if document else None) or receiving.created_at),
         "document_id": receiving.id,
         "duplicate_indicator": duplicate_indicator,
-        "document_form": _sheet_display_value(header_meta.get("document_form") or _detect_document_form_from_text(raw_text) or ""),
+        "document_form": _sheet_display_value(
+            _detect_document_form_from_text(header_meta.get("document_form"))
+            or _detect_document_form_from_text(raw_text)
+            or header_meta.get("document_form")
+            or ""
+        ),
         "document_date": _sheet_display_value(document_date),
         "document_number": _sheet_display_value(document_number),
         "supplier": supplier,
@@ -1821,7 +1826,7 @@ def _detect_document_form_from_text(value: str | None) -> str | None:
     if not value:
         return None
     lowered = value.lower()
-    if "универсаль" in lowered and "передаточ" in lowered:
+    if "передаточный документ" in lowered or ("универсаль" in lowered and "передаточ" in lowered):
         return "УПД"
     if "торг-12" in lowered or "товарная накладная" in lowered:
         return "Торг-12"

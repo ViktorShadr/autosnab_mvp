@@ -1107,6 +1107,46 @@ def test_invoice_register_header_uses_receiving_id_for_document_id():
     assert header_values["document_id"] == receiving.id
 
 
+def test_invoice_register_header_canonicalizes_document_form_from_openai_free_text():
+    # Real production bug (2026-07-23, live sheet review): OpenAI returns its own
+    # free-text phrasing for document_form ("Универсальный передаточный документ",
+    # "Счет-фактура и передаточный документ (акт)", "Счет-фактура и передаточный
+    # документ" -- three different wordings for the same document across repeat
+    # uploads of the same file), none of which match the live sheet's "Форма
+    # документа" dropdown ("Торг-12,УПД,Кассовый чек,..."). The value must be
+    # canonicalized, not passed through verbatim.
+    from app.services import invoice_review_service
+    from app.schemas.invoice_review import InvoiceReviewCreateRequest, RecognizedInvoiceItem
+
+    payload = InvoiceReviewCreateRequest(
+        supplier="ООО МЕТРО КЭШ ЭНД КЕРРИ",
+        supplier_legal_name="ООО МЕТРО КЭШ ЭНД КЕРРИ",
+        invoice_date="2026-07-23",
+        invoice_number="61 302121 / 068",
+        venue="Кафе Ромашка",
+        items=[RecognizedInvoiceItem(name="Товар", quantity=1, unit="шт", price=100)],
+        parser_metadata={},
+    )
+    db = TestingSessionLocal()
+    try:
+        receiving = invoice_review_service.create_invoice_review(db, payload)
+        document = receiving.documents[-1] if receiving.documents else None
+        for raw_document_form in [
+            "Универсальный передаточный документ",
+            "Счет-фактура и передаточный документ (акт)",
+            "Счет-фактура и передаточный документ",
+        ]:
+            header_values = invoice_review_service._invoice_register_header_values(
+                receiving,
+                document,
+                {"document_form": raw_document_form},
+                total_sum=100,
+            )
+            assert header_values["document_form"] == "УПД"
+    finally:
+        db.close()
+
+
 def test_mvp4_requires_manual_approval_before_send():
     response = client.post(
         "/api/v1/invoice-review/upload",
