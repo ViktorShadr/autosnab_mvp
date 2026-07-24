@@ -111,7 +111,10 @@ async def handle_done(message: Message) -> None:
     except ValueError as exc:
         await message.answer(str(exc))
         return
-    sent = await message.answer(STARTED_REPLY, reply_markup=MAIN_KEYBOARD)
+    # No reply_markup here: Telegram's editMessageText rejects edits on any message
+    # carrying a custom (non-inline) reply keyboard, and the poller edits this message
+    # in place as stages progress. MAIN_KEYBOARD stays visible from earlier replies.
+    sent = await message.answer(STARTED_REPLY)
     poller.start_poll(message.bot, chat_id, accepted.upload_id, sent.message_id)
 
 
