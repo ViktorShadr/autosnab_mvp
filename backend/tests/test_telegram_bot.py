@@ -11,7 +11,7 @@ from app.config import settings  # noqa: E402
 from app.schemas.invoice_review import BotDocumentSummary, BotUploadStatusResponse, PipelineLogEntry  # noqa: E402
 from app.telegram_bot import poller  # noqa: E402
 from app.telegram_bot.handlers import _matches  # noqa: E402
-from app.telegram_bot.keyboard import MAIN_KEYBOARD  # noqa: E402
+from app.telegram_bot.keyboard import DRAFT_ACTIONS_KEYBOARD, sheet_link_keyboard  # noqa: E402
 from app.telegram_bot.messages import format_result_message, stage_text_for  # noqa: E402
 
 
@@ -29,9 +29,15 @@ def test_matches_handles_none_and_empty_text():
     assert not predicate("")
 
 
-def test_main_keyboard_has_expected_buttons():
-    texts = [button.text for row in MAIN_KEYBOARD.keyboard for button in row]
-    assert texts == ["Готово", "Статус", "Сбросить"]
+def test_draft_actions_keyboard_has_done_and_reset_callbacks():
+    buttons = [button for row in DRAFT_ACTIONS_KEYBOARD.inline_keyboard for button in row]
+    assert [b.callback_data for b in buttons] == ["bot:done", "bot:reset"]
+
+
+def test_sheet_link_keyboard_opens_the_given_url():
+    keyboard = sheet_link_keyboard("https://sheets.example/doc")
+    button = keyboard.inline_keyboard[0][0]
+    assert button.url == "https://sheets.example/doc"
 
 
 def test_stage_text_for_groups_known_stages_and_ignores_unknown():
@@ -42,7 +48,9 @@ def test_stage_text_for_groups_known_stages_and_ignores_unknown():
     assert stage_text_for("totally_unknown_stage") is None
 
 
-def test_format_result_message_includes_summary_and_sheet_link():
+def test_format_result_message_includes_summary_but_not_the_raw_sheet_link():
+    """The sheet URL is surfaced as an inline button (`sheet_link_keyboard`), not repeated
+    as raw text in the message body."""
     status = BotUploadStatusResponse(
         upload_id="bot-upload-1",
         status="transferred_to_review",
@@ -67,7 +75,7 @@ def test_format_result_message_includes_summary_and_sheet_link():
     assert "Поставщик: ООО Тест" in text
     assert "Номер: INV-1" in text
     assert "Сумма: 123.45" in text
-    assert "https://sheets.example/doc" in text
+    assert "https://sheets.example/doc" not in text
 
 
 def test_format_result_message_without_summary_is_just_the_message():
@@ -89,9 +97,11 @@ class _FakeBot:
     def __init__(self):
         self.sent: list[str] = []
         self.edited: list[str] = []
+        self.sent_reply_markups: list = []
 
-    async def send_message(self, chat_id, text):
+    async def send_message(self, chat_id, text, reply_markup=None):
         self.sent.append(text)
+        self.sent_reply_markups.append(reply_markup)
 
     async def edit_message_text(self, text, chat_id, message_id):
         self.edited.append(text)

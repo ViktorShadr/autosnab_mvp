@@ -9,6 +9,7 @@ import asyncio
 import logging
 
 from aiogram import Bot, Dispatcher
+from aiogram.types import BotCommand
 
 from app.config import settings
 from app.telegram_bot.handlers import router as bot_router
@@ -18,6 +19,12 @@ logger = logging.getLogger(__name__)
 _bot: Bot | None = None
 _dispatcher: Dispatcher | None = None
 _polling_task: asyncio.Task | None = None
+
+_BOT_COMMANDS = [
+    BotCommand(command="done", description="Завершить загрузку и обработать документ"),
+    BotCommand(command="status", description="Статус текущего черновика или загрузки"),
+    BotCommand(command="reset", description="Сбросить текущий черновик"),
+]
 
 
 async def start_bot() -> None:
@@ -34,6 +41,9 @@ async def start_bot() -> None:
     # Telegram allows only one active delivery mode per bot token; releases any
     # webhook still held by a not-yet-decommissioned n8n workflow before polling.
     await _bot.delete_webhook(drop_pending_updates=False)
+    # Populates the client's native "/" command menu, replacing the old permanent
+    # ReplyKeyboardMarkup as the discoverability mechanism for done/status/reset.
+    await _bot.set_my_commands(_BOT_COMMANDS)
     _polling_task = asyncio.create_task(_dispatcher.start_polling(_bot))
     logger.info("Native Telegram bot polling started.")
 

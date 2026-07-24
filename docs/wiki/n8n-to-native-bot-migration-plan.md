@@ -54,6 +54,17 @@ Minutes after that deploy, the user sent two real documents through the bot. Bot
 
 **Fix**: dropped `reply_markup=MAIN_KEYBOARD` from that one `message.answer(STARTED_REPLY)` call (`backend/app/telegram_bot/handlers.py`). `MAIN_KEYBOARD` stays visible in the chat regardless, since it was already attached to an earlier bot reply (e.g. the page-added confirmation) — a custom reply keyboard persists client-side until explicitly replaced or removed, it does not need to be resent on every message. Full suite re-verified (16 passed across `test_telegram_bot.py`/`test_bot_gateway_service.py`, no regressions). Committed `92e859f`, redeployed to `78.17.160.248`; confirmed via `inspect.getsource` inside the running container that the fix is loaded, and zero new `message can't be edited` errors in the logs since.
 
+## 2026-07-25 UI redesign: `MAIN_KEYBOARD` removed entirely, replaced with inline buttons + native command menu
+
+Later the same day, user shared `img_18.png`: even after the hotfix above, `MAIN_KEYBOARD` (a permanent `ReplyKeyboardMarkup`, 2 rows) was still taking over a large fraction of the chat window, and asked for a friendlier, more product-grade interface.
+
+Removed the permanent reply-keyboard entirely rather than shrinking it — Telegram reply-keyboard button height/width is client-controlled and can't be shrunk much further; the actually-idiomatic fix for a "product" bot is contextual inline buttons plus the native "/" command menu, matching what this page already recommended in the very first UX conversation of this session (2026-07-25, "improve the bot's interface").
+
+- `keyboard.py`: `MAIN_KEYBOARD` replaced by `DRAFT_ACTIONS_KEYBOARD` (inline ✅ Готово / 🗑 Сбросить, `callback_data="bot:done"/"bot:reset"`) attached to page-added confirmations and the in-draft status reply, and `sheet_link_keyboard(url)` (inline 📊 Открыть таблицу) attached to the final result message, replacing the old plain-text `Таблица: <url>` line.
+- `bot.py`: `bot.set_my_commands([...])` registers `/done`/`/status`/`/reset` in Telegram's native command menu at startup — this is now the discoverability mechanism, since the keyboard's button labels are gone.
+- `handlers.py`: extracted `_finalize_and_start_poll` so the text-based `handle_done` and a new callback-driven `handle_done_callback` (and the equivalent pair for reset) share one implementation; callback handlers clear their own inline keyboard after use to prevent double-taps. `ReplyKeyboardRemove()` is now sent on `/start`, no-draft status, reset, and unknown-input replies so any client with the old keyboard still cached gets it cleared without needing a fresh `/start`. Typed "Готово"/"Статус"/"Сбросить" text still works unchanged — only the keyboard UI was removed, not the underlying text-matching handlers.
+- Full suite: 182 passed outside `test_receiving.py`/`test_document_extraction_service.py` (unchanged pre-existing failures). Not yet deployed to the VPS.
+
 **Lesson**: the two real uploads that hit this were still processed correctly end-to-end by the backend — only the Telegram-side notification broke. A poll-loop crash of this kind is silent to anyone not reading server logs; the user only sees a generic failure message with no indication the document actually succeeded. Not yet reconfirmed with a fresh real upload against the fixed code (asked the user to send one; no Telegram client available in this environment to test it directly).
 
 ## 2026-07-21 implementation update

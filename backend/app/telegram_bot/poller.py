@@ -13,6 +13,7 @@ from aiogram import Bot
 from app.config import settings
 from app.db.session import SessionLocal
 from app.services import bot_gateway_service
+from app.telegram_bot.keyboard import sheet_link_keyboard
 from app.telegram_bot.messages import format_result_message, stage_text_for
 
 logger = logging.getLogger(__name__)
@@ -49,10 +50,11 @@ async def _poll_loop(bot: Bot, chat_id: str, upload_id: str, progress_message_id
                     # message updating live instead of N separate chat entries.
                     await bot.edit_message_text(stage_text, chat_id=chat_id, message_id=progress_message_id)
             if status.completed:
-                await bot.send_message(chat_id, format_result_message(status))
+                reply_markup = sheet_link_keyboard(status.google_spreadsheet_url) if status.google_spreadsheet_url else None
+                await bot.send_message(chat_id, format_result_message(status), reply_markup=reply_markup)
                 return
         await bot.edit_message_text(
-            "Обработка документа занимает необычно долго. Проверьте статус позже кнопкой «Статус».",
+            "Обработка документа занимает необычно долго. Проверьте статус позже командой /status.",
             chat_id=chat_id,
             message_id=progress_message_id,
         )
@@ -60,7 +62,7 @@ async def _poll_loop(bot: Bot, chat_id: str, upload_id: str, progress_message_id
         raise
     except Exception:  # noqa: BLE001 - a poll-loop crash must not take down the bot process
         logger.exception("Bot upload poll loop failed for chat_id=%s upload_id=%s", chat_id, upload_id)
-        await bot.send_message(chat_id, "Не удалось получить статус обработки. Попробуйте «Статус» позже.")
+        await bot.send_message(chat_id, "Не удалось получить статус обработки. Попробуйте /status позже.")
     finally:
         _active_polls.pop(chat_id, None)
 
