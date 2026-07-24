@@ -44,6 +44,18 @@ The user ran a real document through the freshly cut-over bot and it sent dozens
 
 Redeployed to `78.17.160.248` the same way as the initial cutover (`git archive`+SFTP, rebuild, `docker compose up -d --no-deps backend`) immediately after the fix, since the bug was live and actively spamming the user's chat.
 
+## 2026-07-25 real production bug: editing the progress message crashed on every real upload
+
+The 2026-07-21 fix above stopped the *spam*, but the underlying UX (3 separate stage messages per upload) remained. On 2026-07-25 that was replaced: `poller.py` was changed to call `bot.edit_message_text` on one message instead of `bot.send_message` per stage, with `handlers.handle_done` passing through the `message_id` of the initial "Принял, обрабатываю..." reply. Deployed to `78.17.160.248` (commit `a36fce3`) and confirmed present in the running container.
+
+Minutes after that deploy, the user sent two real documents through the bot. Both crashed identically on the very first stage-text edit: `aiogram.exceptions.TelegramBadRequest: Telegram server says - Bad Request: message can't be edited`, caught by the poll loop's outer exception handler, which sent the generic "Не удалось получить статус обработки" fallback and returned — meaning the loop never reached the `status.completed` check, so neither upload's real final result message was ever sent to the chat, even though both actually finished processing successfully on the backend (`possible_duplicate`, `review_id 57` and `58`).
+
+**Root cause**: `handlers.handle_done` sent the initial message with `reply_markup=MAIN_KEYBOARD` (a custom `ReplyKeyboardMarkup`). Telegram's `editMessageText` only supports editing messages that have no `reply_markup` or an `InlineKeyboardMarkup` — it unconditionally rejects edits on any message carrying a non-inline reply keyboard. Since every real upload's initial message was sent this way, the poller's very first edit call was guaranteed to fail, 100% reproducible, independent of document content.
+
+**Fix**: dropped `reply_markup=MAIN_KEYBOARD` from that one `message.answer(STARTED_REPLY)` call (`backend/app/telegram_bot/handlers.py`). `MAIN_KEYBOARD` stays visible in the chat regardless, since it was already attached to an earlier bot reply (e.g. the page-added confirmation) — a custom reply keyboard persists client-side until explicitly replaced or removed, it does not need to be resent on every message. Full suite re-verified (16 passed across `test_telegram_bot.py`/`test_bot_gateway_service.py`, no regressions). Committed `92e859f`, redeployed to `78.17.160.248`; confirmed via `inspect.getsource` inside the running container that the fix is loaded, and zero new `message can't be edited` errors in the logs since.
+
+**Lesson**: the two real uploads that hit this were still processed correctly end-to-end by the backend — only the Telegram-side notification broke. A poll-loop crash of this kind is silent to anyone not reading server logs; the user only sees a generic failure message with no indication the document actually succeeded. Not yet reconfirmed with a fresh real upload against the fixed code (asked the user to send one; no Telegram client available in this environment to test it directly).
+
 ## 2026-07-21 implementation update
 
 All of "Migration design (not yet built)" below is now real code on branch `native-telegram-bot` (off `packaging-conversion-rules`):
