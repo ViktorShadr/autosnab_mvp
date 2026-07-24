@@ -111,8 +111,8 @@ async def handle_done(message: Message) -> None:
     except ValueError as exc:
         await message.answer(str(exc))
         return
-    await message.answer(STARTED_REPLY, reply_markup=MAIN_KEYBOARD)
-    poller.start_poll(message.bot, chat_id, accepted.upload_id)
+    sent = await message.answer(STARTED_REPLY, reply_markup=MAIN_KEYBOARD)
+    poller.start_poll(message.bot, chat_id, accepted.upload_id, sent.message_id)
 
 
 def _finalize_draft_sync(chat_id: str):

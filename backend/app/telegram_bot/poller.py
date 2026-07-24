@@ -21,14 +21,14 @@ logger = logging.getLogger(__name__)
 _active_polls: dict[str, asyncio.Task] = {}
 
 
-def start_poll(bot: Bot, chat_id: str, upload_id: str) -> None:
+def start_poll(bot: Bot, chat_id: str, upload_id: str, progress_message_id: int) -> None:
     existing = _active_polls.get(chat_id)
     if existing is not None and not existing.done():
         existing.cancel()
-    _active_polls[chat_id] = asyncio.create_task(_poll_loop(bot, chat_id, upload_id))
+    _active_polls[chat_id] = asyncio.create_task(_poll_loop(bot, chat_id, upload_id, progress_message_id))
 
 
-async def _poll_loop(bot: Bot, chat_id: str, upload_id: str) -> None:
+async def _poll_loop(bot: Bot, chat_id: str, upload_id: str, progress_message_id: int) -> None:
     last_stage_text: str | None = None
     processed_logs = 0
     try:
@@ -44,13 +44,17 @@ async def _poll_loop(bot: Bot, chat_id: str, upload_id: str) -> None:
                 stage_text = stage_text_for(log.stage)
                 if stage_text and stage_text != last_stage_text:
                     last_stage_text = stage_text
-                    await bot.send_message(chat_id, stage_text)
+                    # Edit the single "Принял, обрабатываю..." message in place instead of
+                    # sending a new one per stage, so a run with N stages produces one visible
+                    # message updating live instead of N separate chat entries.
+                    await bot.edit_message_text(stage_text, chat_id=chat_id, message_id=progress_message_id)
             if status.completed:
                 await bot.send_message(chat_id, format_result_message(status))
                 return
-        await bot.send_message(
-            chat_id,
+        await bot.edit_message_text(
             "Обработка документа занимает необычно долго. Проверьте статус позже кнопкой «Статус».",
+            chat_id=chat_id,
+            message_id=progress_message_id,
         )
     except asyncio.CancelledError:
         raise

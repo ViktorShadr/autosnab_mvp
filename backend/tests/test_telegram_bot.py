@@ -88,9 +88,13 @@ def test_format_result_message_without_summary_is_just_the_message():
 class _FakeBot:
     def __init__(self):
         self.sent: list[str] = []
+        self.edited: list[str] = []
 
     async def send_message(self, chat_id, text):
         self.sent.append(text)
+
+    async def edit_message_text(self, text, chat_id, message_id):
+        self.edited.append(text)
 
 
 def _status(stages: list[str], *, completed: bool = False, message: str = "Готово") -> BotUploadStatusResponse:
@@ -107,7 +111,7 @@ def _status(stages: list[str], *, completed: bool = False, message: str = "Го�
     )
 
 
-def test_poll_loop_sends_each_stage_message_once_even_as_pipeline_logs_keeps_growing(monkeypatch):
+def test_poll_loop_edits_progress_message_once_per_stage_even_as_pipeline_logs_keeps_growing(monkeypatch):
     """Regression test for a real production bug (img_14.png, 2026-07-21): the poll loop used to
     re-scan the whole (ever-growing) `pipeline_logs` list on every tick and compare against a single
     last-sent value, so any tick with 2+ distinct stage groups re-sent every earlier stage message
@@ -136,12 +140,11 @@ def test_poll_loop_sends_each_stage_message_once_even_as_pipeline_logs_keeps_gro
     monkeypatch.setattr(poller, "_fetch_status", fake_fetch_status)
 
     bot = _FakeBot()
-    asyncio.run(poller._poll_loop(bot, "chat-1", "upload-1"))
+    asyncio.run(poller._poll_loop(bot, "chat-1", "upload-1", progress_message_id=42))
 
-    stage_messages = [msg for msg in bot.sent if msg != "Документ обработан."]
-    assert stage_messages == [
+    assert bot.edited == [
         "🔎 Выгружаем данные из документа...",
         "🤖 Обрабатываем через ИИ...",
         "📊 Загружаем в таблицу...",
     ]
-    assert bot.sent[-1] == "Документ обработан."
+    assert bot.sent == ["Документ обработан."]

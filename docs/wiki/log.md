@@ -1167,3 +1167,10 @@
 - Confirmed present in `autosnab_mvp` but missing in `auto-snab-document-parser`: the poll-budget fix (`telegram_bot_max_poll_attempts` still 24 there), the `document_form` canonicalization `or`-short-circuit fix, and the shared-sheet writer's name-based column projection (there it was width-only one function earlier, inside `_shared_invoice_item_row`). `packaging_facts`/Phase 1-3 rule-engine work is also entirely absent there.
 - Ported the three confirmed bug fixes only (not `packaging_facts`, which is deliberately deferred pending Lilia's reply) with matching regression tests, on branch `fix/invoice-pipeline-production-bugs` off `develop` in the `auto-snab-document-parser` repo, commit `5e894e1`. Verified via `git stash` before/after: same 8 pre-existing unrelated test failures, zero regressions, new/updated tests pass.
 - User pushed the branch to GitLab themselves. Full detail in `docs/wiki/current-status.md` → 2026-07-25 entry.
+
+## [2026-07-25] ux | native bot progress messages now edit in place instead of spamming 3 separate messages
+
+- User asked for ideas to improve the native Telegram bot's interface; after a quick review of `handlers.py`/`messages.py`/`keyboard.py`/`poller.py`, picked "edit the progress message instead of sending three separate ones" as the first item to implement.
+- `poller.py`: `start_poll`/`_poll_loop` now take a `progress_message_id` and use `bot.edit_message_text` for each stage-text change and for the "taking unusually long" timeout branch, instead of `bot.send_message`. `handlers.handle_done` now captures the `message_id` of the initial "Принял, обрабатываю..." reply and passes it through. Final completion message and the exception-fallback message remain separate `send_message` calls (out of scope).
+- Updated `test_telegram_bot.py`'s `_FakeBot` with an `edit_message_text` method and renamed/reworked the stage-message regression test to assert on `bot.edited` vs `bot.sent`.
+- Full suite: 181 passed outside `test_receiving.py`/`test_document_extraction_service.py` (both pre-existing, unrelated failures). Not deployed to the VPS yet.
