@@ -588,6 +588,174 @@ against production, and the resulting real write-path misalignment bug was
 found and fixed the same session — see "Header-drift risk confirmed live,
 and a real misalignment bug found and fixed (2026-07-23)" above.
 
+## `packaging_facts` are currently not durably saved anywhere; new `Факты фасовки AI` sheet spec (2026-07-24, Lilia spec v2)
+
+Lilia asked, before any new sheet gets created, exactly where `packaging_facts`
+data lives right now. Traced end to end through code (not from memory):
+
+- `packaging_facts` exists on the Pydantic `NormalizedInvoiceItem` right after
+  OpenAI parsing, and `to_legacy_invoice_payload()` (`invoice_normalization_service.py:178`)
+  does include it in its output dict.
+- But `_item_payload()` (`invoice_review_service.py:1937`), the function that
+  actually builds what gets written to `document.recognized_items_json` (the
+  durable per-document SQLite column — see `invoice_review_service.py:128`),
+  **drops `packaging_facts`/`packaging_risk_flags` entirely**. Only the
+  backend-derived `package` view (via `_package_from_facts()`) survives into
+  durable storage.
+- The only other place the raw facts touch disk is the per-request OpenAI
+  debug trace (`_write_debug_log`, `exports/openai_debug/*.json`,
+  `openai_invoice_parser_service.py:277`) — a local, unindexed, per-call JSON
+  file, not linked to `ID документа`/`ID строки`, not reachable by Apps
+  Script, and only present if `openai_debug_log_enabled` is on for that
+  environment.
+- **Conclusion for Lilia: no, `packaging_facts` are not durably/structurally
+  saved anywhere today.** They exist only transiently in memory during one
+  request, collapse to a single derived number in `Состав упаковки`, and
+  everything else (unit, source fragment, fact type, risk, AI comment) is
+  lost the moment the request finishes.
+- Live-sheet check (fetched `1UYgYvrWASUenMT8inLOZEwj8gap0TcDODnW01VxpiiY`,
+  2026-07-24) confirms this is not theoretical: real row `10ШТ МЕШКИ ДЛЯ
+  МУСОРА 120Л METRO PROFESSIONAL 70МКМ` has `Состав упаковки = 10` and
+  `Кол-во в УС` correctly left unchanged at 6 (the 2026-07-24 multiplier
+  bugfix holds) — but `120Л`, the bag's own volume, is nowhere in the sheet.
+  Same for `250ШТ САЛФЕТКИ... 24Х24...`: `Состав упаковки = 250`, `24Х24` is
+  gone. These are exactly Lilia's own worked examples, reproduced live.
+- Also confirmed live: `Накладная` already carries both `ID документа` (col
+  43, first-row-of-block only) and `ID строки` (col 44, populated on every
+  item row, e.g. `561`..`578`) as real columns today. A new facts sheet can
+  join on these existing IDs directly — no new ID scheme needs inventing.
+- No `Факты фасовки AI` (or equivalent) tab exists yet in the live spreadsheet
+  (checked sheet list: `Загрузка тест, Накладная, Поставщики, Товары,
+  Сопоставление Товаров, Новые товары, Новые товары для УС, Правила фасовок,
+  Логика фасовок, Наша фирма, Лист2`).
+
+### Lilia's `Факты фасовки AI` sheet spec (not yet implemented — explicitly withheld pending the above answer)
+
+One row = one semantic fact (not one number). One item can produce 2-3 rows.
+Columns:
+
+1. `ID документа` — links to the `Накладная` block.
+2. `ID строки` — links to the specific item row.
+3. `Наименование товара из документа` — raw source name.
+4. `Тип факта` — one of: `артикул/код поставщика`, `количество вложений`,
+   `вес`, `объем`, `сухой вес`, `размер`, `характеристика товара`,
+   `тип упаковки`, `риск`. (Revised from her first pass: added
+   `артикул/код поставщика` and `размер` as distinct types after finding that
+   a leading supplier SKU like `12345 Салфетки...` must never be treated as a
+   quantity/weight/volume, and that `24х24`-style dimensions are a
+   characteristic, not a packaging count.)
+5. `Значение` — the extracted number (`10`, `120`, `0,7`, `250`, `1,3`).
+6. `Единица` — `шт`, `г`, `кг`, `мл`, `л`, `рул`, `пач`, `бут`, `бан`.
+7. `Исходный фрагмент текста` — the exact substring the fact came from
+   (`120 л`, `10 шт`, `сухой вес 260 г`).
+8. `Уверенность AI` — recognition confidence only (e.g. `0,95`), not a
+   guarantee the resulting calculation will be correct.
+9. `Признак риска` — Да/Нет. Да for: `в сиропе`/`в рассоле`/`в маринаде`/
+   `в масле`/`в заливке`, multiple ambiguous numbers, or unclear meaning.
+10. `Комментарий AI` — short free-text explanation.
+
+Worked example, `10ШТ МЕШКИ ДЛЯ МУСОРА 120Л`: two rows — (характеристика
+товара, 120, л, "120 л", "Объём одного мешка, не использовать как количество
+для прихода") and (количество вложений, 10, шт, "10 шт", "В рулоне/упаковке
+10 мешков").
+
+Ambiguous bare-number patterns (`12/0,5`, `6*1`, `24х0,33`, `1/20` — could
+mean count×unit-size, a supplier-internal format code, or nothing
+meaningful) must still be captured as a fact, never silently dropped and
+never auto-multiplied: type `неполная/неоднозначная фасовка`, risk `Да`,
+value/text holds the raw string, comment explains the ambiguity. No script
+may compute `12 × 0,5` from this until a human confirms a rule or the target
+unit is unambiguous from `Товары`.
+
+Governing principle (her final framing, to keep verbatim): **AI extracts the
+maximum number of facts; the code computes only what's safe; anything
+ambiguous goes to the user.** Concretely: AI extracts facts → script proposes
+only safe drafts → an ambiguous row gets status `Требует проверки` → the
+responsible user reviews/confirms the packaging rule. Sheet creation is
+explicitly deferred until this persistence-location answer was given (this
+section) — no `Факты фасовки AI` tab or code change has been made yet.
+
+## Critical finding: a second, independent packaging-rule engine already exists in Apps Script (2026-07-24)
+
+User pasted the full Apps Script bound to the live spreadsheet (menu "Проверка / Загрузка").
+Saved verbatim to `apps_script/invoice_review_menu.gs` in this repo (previously
+undocumented — no copy existed anywhere in this project before today). This
+substantially changes the picture around Phase 1-3 and the `Факты фасовки AI`
+discussion above.
+
+**What it contains that overlaps backend code:**
+- A full second packaging-rule matching/calculation engine (`findPackagingRule_`,
+  `calculatePackagingQuantity_`, `buildPackagingRules_`), independent from
+  `item_normalization_service.py`'s Phase 3 engine, reading the same
+  `Правила фасовок` sheet.
+- A full second product-matching engine (`applyProductMatching_`,
+  alias table `Сопоставление Товаров`), independent from
+  `reference_catalog_service.py`.
+- A **draft-then-confirm workflow for packaging rules that already implements
+  most of what Lilia asked for in the section above**: `suggestPackagingRulesForSelectedDocuments()`
+  extracts facts from `Наименование товара из документа` via a hardcoded regex
+  (`extractPackagingFactsFromName_`), writes draft rows into `Правила фасовок`
+  with `Активность правила = "Требует проверки"`, a human confirms via
+  `activateSelectedPackagingRuleDrafts()`, and only then does
+  `applyPackagingRulesToSelectedDocuments()`/`checkSelectedDocuments()` compute
+  `Кол-во в УС`. This is the same shape as her proposed "AI extracts → human
+  confirms → code computes only confirmed" principle — just already built,
+  using a blind regex instead of AI understanding.
+
+**Why the existing regex (`extractPackagingFactsFromName_`) validates Lilia's concern:**
+It classifies every number+unit pair purely by unit type (кг/г→weight, л/мл→volume,
+everything else→count) with no concept of "characteristic vs. quantity", no
+handling for a leading supplier SKU (`12345 Салфетки...`), and no risk flag for
+ambiguous bare numbers (`12/0,5`). The only semantic awareness it has at all is a
+small hardcoded keyword list in `requiresDryWeightReview_` (оливки/маслины/рассол/
+заливка/маринад) that blocks a draft outright rather than flagging it as risky data.
+
+**Real architecture risk found, unrelated to Lilia's ask but important:** the
+Apps Script engine and the backend Phase 3 engine (`item_normalization_service.py`)
+use **different, independently-tuned matching logic** on the same `Правила фасовок`
+data:
+- Backend: soft-scored specificity — `Код товара УС`=100, `Склад / назначение`=40,
+  `ИНН поставщика`=20, `Код товара поставщика`=30, `Поставщик`=10, product-name=5,
+  package-text=3.
+- Apps Script (`findPackagingRule_`): `Код товара УС` is a **hard filter**, not
+  scored; specificity is `ИНН поставщика`=8, `Код товара поставщика`=4 == `Название
+  из документа`=4 (tie), `Склад / назначение`=3, `Ед. изм. документа`=1. A rule
+  with `Название из документа` filled in is a **hard, exact-match filter** here
+  (no soft fallback), unlike the backend's soft weight-5 treatment. `Поставщик`
+  (name) is never checked at all — only `ИНН поставщика`.
+- `applyPackagingRulesForDocuments_` unconditionally recomputes `Кол-во в УС` and
+  `ID правила фасовки` from `Кол-во в документе` every time it runs, with the sole
+  exception of `Количество исправлено вручную` being checked. It does not look at
+  or preserve whatever the backend already wrote.
+- This function is invoked from `checkSelectedDocuments()` ("Проверить выбранные
+  документы") and `checkReadinessByStatus()` ("Обновить все статусы") — both
+  everyday, expected steps in the operator's normal review workflow per
+  `MVP Бух калькулятор.md`.
+- **Practical implication, not yet verified live**: in real usage the operator's
+  routine "Проверить"/"Обновить все статусы" click likely overwrites the
+  backend's Phase 3 `Кол-во в УС` computation with Apps Script's own
+  independently-matched result before the document is ever sent onward. If the
+  two engines pick different rules or compute different values for the same
+  row, Apps Script's value is what actually ships — the backend's Phase 3 work
+  this week may not be the source of truth in production it was assumed to be.
+  **This needs live verification** (upload a document with a known active rule,
+  compare `Кол-во в УС` right after backend write vs. after clicking "Проверить
+  выбранные документы") before drawing further conclusions or doing more
+  backend rule-engine work.
+
+**Verified against real live rule data (2026-07-24): the divergence is not hypothetical, it's already live.**
+Pulled all rows from the real `Правила фасовок` sheet (`1UYgYvrWASUenMT8inLOZEwj8gap0TcDODnW01VxpiiY`). All 39 currently-active rules have both `Код товара УС` and `Название из документа` filled in. 6 product codes already have 2-4 active rules sharing the same `Код товара УС`, differing only in the exact text of `Название из документа` (e.g. `PKG-MVP-008` = `"0,5Л ВОДА BONA AQUA ГАЗ ПЭТ -"` vs `PKG-DRAFT-026` = `"0,5Л ВОДА BONA AQUA ГАЗ ПЭТ"` — differ only by a trailing dash; `01-00087` has 4 active rules, two of which even map genuinely different products — "СОК RICH АНАНАСОВЫЙ" and "СОК RICH ТОМАТНЫЙ" — onto the same УС code, a separate product-matching bug). Read backend's tie-break logic directly (`item_normalization_service.py:760-770`): when top-scoring candidates tie on both score and `Приоритет правила` (all these duplicates share priority 1.0), the function returns `{"status": "ambiguous"}` — a safe block to manual review. Apps Script's `originalName` gate is a hard `return false`, so for any incoming raw_name that doesn't byte-match one of the stored names exactly (near-certain on the next real OCR/AI pass — this project has already documented OpenAI producing different wording for the same document across runs), **all** candidates get excluded, `findPackagingRule_` returns "no rule", and `applyPackagingRulesForDocuments_` then either routes to manual review (if `Ед.изм. в документе !== Ед.изм. в УС`) or **silently carries the document quantity through unconverted with no warning at all** (if the units happen to already match) — a real silent-miscalculation path the backend's tie-to-ambiguous design does not have. Confirmed via direct code read of both engines against the same real rule rows, not simulated or guessed.
+
+**Revised recommendation for the `Факты фасовки AI` question above:** don't
+build an isolated audit sheet disconnected from the existing workflow. The
+natural integration point is `suggestPackagingRulesForSelectedDocuments()`'s
+draft-generation step — feed AI's semantically-aware `packaging_facts` in as a
+better fact source than `extractPackagingFactsFromName_`'s blind regex, while
+keeping the rest of the already-proven draft→confirm→apply flow unchanged.
+This still requires facts to live in the Google Sheet (Apps Script cannot read
+the backend DB), so the "must be sheet-based" conclusion from the section above
+still holds — it just changes *where* those facts plug in.
+
 ## Open questions before production rollout
 
 - Required quantity and price precision in the target accounting system.

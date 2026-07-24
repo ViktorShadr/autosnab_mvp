@@ -58,6 +58,8 @@ class RecognizedInvoiceItem(BaseModel):
     conversion_source_id: str | None = None
     conversion_review_reason: str | None = None
     package_reference_id: str | None = None
+    packaging_facts: list[dict] = Field(default_factory=list)
+    packaging_risk_flags: list[str] = Field(default_factory=list)
 
 
 class InvoiceReviewCreateRequest(BaseModel):

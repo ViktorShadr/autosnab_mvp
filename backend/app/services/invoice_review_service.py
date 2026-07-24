@@ -1946,6 +1946,8 @@ def _item_payload(item, index: int | None = None) -> dict:
         "normalized_name_candidate": item.normalized_name_candidate,
         "brand_or_descriptor": item.brand_or_descriptor,
         "package": item.package,
+        "packaging_facts": getattr(item, "packaging_facts", None) or [],
+        "packaging_risk_flags": getattr(item, "packaging_risk_flags", None) or [],
         "document_unit": item.document_unit or item.unit,
         "quantity_document": item.quantity_document if item.quantity_document is not None else quantity,
         "units_per_package": item.units_per_package,
