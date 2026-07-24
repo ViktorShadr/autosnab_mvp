@@ -49,6 +49,36 @@ def test_napkins_stay_as_packs_without_a_rule():
     assert item["quantity_us"] == 3
 
 
+def test_napkins_stay_as_packs_without_a_rule_even_with_ai_units_per_package_fact():
+    # Real production bug, 2026-07-24 (Lilia's Metro накладная feedback):
+    # `units_per_package` is set from AI-extracted `packaging_facts` (as
+    # `normalize_item_candidate` does before reference mapping ever runs),
+    # not just from the legacy `package` dict. Without an active rule, this
+    # must NOT be multiplied in either -- 3 packs stayed 3 in production
+    # only because `units_per_package` happened to be unset in earlier
+    # tests; here it is set (250), reproducing the exact live bug where
+    # 3 x 250 = 750 was written to "Кол-во в УС".
+    payload = _payload(
+        {
+            "name": "250ШТ САЛФЕТКИ БУМАЖ METRO PROFESSIONAL 24Х24 2СЛ БОРДО",
+            "raw_name": "250ШТ САЛФЕТКИ БУМАЖ METRO PROFESSIONAL 24Х24 2СЛ БОРДО",
+            "package": {"value": 250, "unit": "шт", "raw": "250ШТ"},
+            "units_per_package": 250,
+            "document_unit": "ШТ",
+            "quantity": 3,
+            "quantity_document": 3,
+            "price": 245.08,
+        }
+    )
+
+    result = apply_reference_mapping_to_payload(payload, products=[], packages=[])
+    item = result["items"][0]
+
+    assert item["conversion_method"] == "identity_no_rule"
+    assert item["quantity_us"] == 3
+    assert item["units_per_package"] == 250  # still recorded for "Состав упаковки"
+
+
 def test_toilet_paper_needs_an_explicit_units_per_package_rule():
     # "12 рул в упаковке, упаковок 2" -> должно быть 2 * 12 = 24, а не 2.
     payload = _payload(

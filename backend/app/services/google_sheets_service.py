@@ -94,25 +94,22 @@ def load_invoice_reference_catalogs() -> dict[str, list[dict[str, Any]]]:
             "Для чтения справочников нужны GOOGLE_SHEETS_ENABLED=true и GOOGLE_TARGET_SPREADSHEET_ID."
         )
     sheets_service, _ = _build_google_services()
-    # Widened past the historical `M` boundary so the extended "Правила
-    # пересчета" columns (Способ пересчета, Поставщик, ИНН поставщика, Код
-    # товара поставщика, Наименование из документа, Код товара УС,
-    # Наименование товара УС, Склад/назначение, Комментарий) are read once
-    # they are added to the live "Справочник фасовок" sheet. `_table_rows_as_dicts`
-    # keys rows by whatever header text is actually present, so this is a
-    # no-op until those columns exist.
-    #
-    # `conversion_rules` reads the newer, richer "Правила фасовок" tab (2026-07-23)
-    # that a local workbook copy shows replacing "Справочник фасовок" -- kept as a
-    # SEPARATE, additive entry (not a rename) because the live sheet's actual
-    # current tab name is unverified from this environment; both are read and
-    # merged below so either name works until that's confirmed (see
-    # docs/wiki/unit-conversion-rules.md, "Header-drift risk flagged").
+    # `conversion_rules` reads "Правила фасовок" (2026-07-23), confirmed live
+    # 2026-07-24 to use the same two-row header convention as `Накладная`:
+    # row 1 is a human-readable description per column, row 2 is the real
+    # machine header (`ID правила`, `Код товара УС`, ...) that `_catalog_value`
+    # looks up. Starting the range at row 2 is required -- reading from A1
+    # made `_table_rows_as_dicts` key every rule by row 1's descriptions
+    # instead, so every `_catalog_value(rule, ...)` lookup silently returned
+    # None and no rule could ever match (real production bug: all 47 rows in
+    # `Правила фасовок`, including active `PKG-MVP-*` ones, were unusable).
+    # `packages` (legacy "Справочник фасовок" name) is read the same way on
+    # the assumption it would follow the same convention if recreated.
     wanted = {
         "products": ("Товары", "A1:H"),
         "suppliers": ("Поставщики", "A1:H"),
-        "packages": ("Справочник фасовок", "A1:Z"),
-        "conversion_rules": ("Правила фасовок", "A1:Z"),
+        "packages": ("Справочник фасовок", "A2:Z"),
+        "conversion_rules": ("Правила фасовок", "A2:Z"),
     }
     if settings.google_conversion_exceptions_sheet_name:
         wanted["conversion_exceptions"] = (settings.google_conversion_exceptions_sheet_name, "A1:Z")

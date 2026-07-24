@@ -311,7 +311,7 @@ def test_reference_catalog_loader_reads_fixed_google_sheet_tabs(monkeypatch):
     assert values.kwargs["ranges"] == [
         "'Товары'!A1:H",
         "'Поставщики'!A1:H",
-        "'Справочник фасовок'!A1:Z",
+        "'Справочник фасовок'!A2:Z",
     ]
     assert catalogs["products"][0]["Наименование"] == "Кефир"
     assert catalogs["suppliers"][0]["Поставщик"] == "ООО Молоко"
@@ -450,7 +450,7 @@ def test_loader_reads_pravila_fasovok_tab_and_merges_into_packages(monkeypatch):
         settings.google_sheets_enabled = old_enabled
         settings.google_target_spreadsheet_id = old_spreadsheet_id
 
-    assert "'Правила фасовок'!A1:Z" in values.kwargs["ranges"]
+    assert "'Правила фасовок'!A2:Z" in values.kwargs["ranges"]
     assert len(catalogs["packages"]) == 2
     assert catalogs["packages"][0]["Коэффициент пересчета"] == 0.8
     assert catalogs["packages"][1]["ID правила"] == "PKG-MVP-001"

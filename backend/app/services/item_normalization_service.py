@@ -253,10 +253,21 @@ def apply_reference_mapping_to_payload(
                 parser_notes,
             )
 
+        # `units_per_package` (AI-extracted count_in_package fact, e.g. "250 шт
+        # в упаковке") is recorded for display in "Состав упаковки" always,
+        # but only folded into `multiplier` when an active rule (`rule_id`)
+        # actually confirmed this item's conversion -- e.g. a case of N
+        # rule-confirmed bottles. Without a matching rule, `_resolve_conversion`
+        # already returned the safe identity default (1.0); re-applying
+        # `units_per_package` on top of that unconditionally, regardless of
+        # whether any rule confirmed anything, silently undid that safety net
+        # -- e.g. 3 packs of napkins x 250 = 750 with no rule involved at all
+        # (real production bug, Lilia's 2026-07-24 Metro feedback).
         units_per_package = _positive_number(item.get("units_per_package"))
         item["units_per_package"] = units_per_package
-        multiplier = _apply_units_per_package(multiplier, units_per_package)
-        conversion_method = _package_method(conversion_method, units_per_package)
+        if rule_id is not None:
+            multiplier = _apply_units_per_package(multiplier, units_per_package)
+            conversion_method = _package_method(conversion_method, units_per_package)
 
         quantity = _number(item.get("quantity_document"))
         if quantity is None:
@@ -666,7 +677,9 @@ def _match_conversion_rule(
         package_hit = bool(package_raw) and package_raw in package_variants
 
         rule_product_name = _normalize_name(
-            _catalog_value(rule, "Наименование товара УС", "Наименование товара", "Товар", "product_name")
+            _catalog_value(
+                rule, "Наименование товара в УС", "Наименование товара УС", "Наименование товара", "Товар", "product_name"
+            )
         )
         # `Код товара УС` (matched product's catalog code) and `Код товара
         # поставщика` (supplier-side code extracted from the raw text) are
@@ -788,6 +801,7 @@ def _package_method(method: str, units_per_package: float | None) -> str:
     if units_per_package is None or units_per_package == 1:
         return method
     return f"{method}_with_units_per_package"
+
 
 def _extract_package(raw_name: str) -> tuple[InvoiceItemPackage, float | None, str]:
     dimension = _DIMENSION_RE.search(raw_name)
