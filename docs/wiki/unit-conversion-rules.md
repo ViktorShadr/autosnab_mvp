@@ -756,6 +756,88 @@ This still requires facts to live in the Google Sheet (Apps Script cannot read
 the backend DB), so the "must be sheet-based" conclusion from the section above
 still holds — it just changes *where* those facts plug in.
 
+## Lilia's answers: source-of-truth, duplicate rules, packaging_facts delivery (2026-07-25)
+
+Lilia (BA/tester) answered the three open questions from the 2026-07-24 entries above.
+
+### 1. Source of truth for `Кол-во в УС` — decided, resolves the dual-engine question
+
+**Google Apps Script (`checkSelectedDocuments()`/`checkReadinessByStatus()`) is and
+remains the sole authority for the final `Кол-во в УС`, by explicit design, not
+by accident.** The backend must NOT compute a final quantity at all during
+upload. Its job at upload time is only to:
+1. write the invoice/document data,
+2. save the AI-extracted packaging facts (`packaging_facts`/`packaging_risk_flags`),
+3. temporarily write the raw source quantity (`Кол-во в документе` passthrough)
+   into `Кол-во в УС`.
+
+Lilia's stated reason: having both a backend calculation and a sheet-script
+calculation produces two different numbers in the MVP — one calculation only.
+
+**Implemented 2026-07-25**: user chose to simplify backend now rather than
+leave the (now out-of-mandate) rule-derived quantity computation in place.
+`_shared_invoice_item_row` (`invoice_review_service.py`, the row builder for
+the live `Накладная` write path) now always sets `Кол-во в УС`/`Цена в УС` to
+the raw `Кол-во в документе`/`Цена за ед-цу` values, regardless of what
+`item_normalization_service.py`'s Phase 1-3 rule engine computes. Deliberately
+minimal-footprint: only this one function (the shared-sheet row builder) was
+touched — `item_normalization_service.py`'s rule-matching/`_resolve_conversion`
+logic, product matching, `packaging_facts` extraction/persistence, and the
+legacy `_invoice_register_item_row` (inactive "Накладные" register sheet)
+were all left untouched, since Lilia's mandate was specifically about the
+final number written into the live sheet, not about deleting the rule engine
+(which stays available for reference/future use). Full suite: 182 passed
+outside `test_receiving.py`/`test_document_extraction_service.py`;
+`test_receiving.py` confirmed identical 10 pre-existing failures with and
+without the change via `git stash` — zero regressions. Not yet deployed to
+the VPS.
+
+### 2. Duplicate `Правила фасовок` rows — cleanup allowed, but gated
+
+- OK to act on, but: **back up first**, **send Lilia the proposed disable
+  list before touching anything**, and **set to `Неактивно`, never delete**.
+- Explicit exceptions confirmed NOT to touch:
+  - `01-00087` (Сок Rich, multiple flavors) — **intentional**, one shared
+    product code by design to avoid mis-sorting; only the dash-artifact
+    duplicate *copies* of a rule may be deactivated, the multi-flavor sharing
+    itself is correct and must stay.
+  - Chips (product code not yet re-identified against live data) — the two
+    variants (by-pack vs. by-weight) are a **deliberate A/B test**, not a
+    duplicate bug; do not touch until she says so.
+- The remaining ~4-5 groups flagged 2026-07-24 as `PKG-MVP-*`/`PKG-DRAFT-*`
+  trailing-dash duplicates are the actual cleanup candidates, but the list
+  needs a fresh live-sheet pull before sending to Lilia (the 2026-07-24 data
+  may be stale by now, and the exact product code for "chips" still needs
+  confirming so it isn't accidentally included).
+
+### 3. `packaging_facts` delivery to Apps Script — resolved, mechanism still open
+
+- Dedicated user-facing `Факты фасовки AI` sheet is **not required**.
+- AI extraction happens exactly once, at backend upload time, and is saved to
+  the DB (already implemented 2026-07-25, see the fix above). Apps Script
+  must NOT re-invoke AI — it should read the already-saved facts by
+  `ID документа` + `ID строки` and use them to build `Правила фасовок` drafts
+  the same way `suggestPackagingRulesForSelectedDocuments()` already does
+  (Apps Script itself will be edited by Lilia, not the backend engineer).
+- Lilia asked backend to propose the concrete delivery mechanism: API call,
+  technical (hidden) sheet, or technical field. **Recommendation for this
+  repo's shape**: a technical (not user-facing) sheet mirroring Lilia's
+  original 10-column spec, written automatically by the backend during the
+  same batch write that already produces `Накладная` rows, keyed by
+  `ID документа`/`ID строки` (both already exist as real `Накладная`
+  columns). Reasons: Apps Script already reads/iterates spreadsheet data
+  natively (no new auth/HTTP call needed, unlike an API option), one-row-per-fact
+  avoids JSON-parsing in Apps Script, and it doesn't add another column to
+  the already header-fragile `Накладная`/`Правила фасовок` contracts. Not
+  yet built — pending user confirmation this is the direction to take before
+  implementing.
+
+**Still open / next steps**: pull the live `Правила фасовок` sheet fresh to
+build an accurate duplicate-disable list (excluding Сок Rich and chips),
+decide backend's Phase 3 quantity-computation scope question above, and get
+a go-ahead to build the technical facts sheet + wire it into the existing
+Google Sheets write path.
+
 ## Open questions before production rollout
 
 - Required quantity and price precision in the target accounting system.
