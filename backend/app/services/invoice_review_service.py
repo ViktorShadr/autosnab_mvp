@@ -776,12 +776,16 @@ def _shared_invoice_item_row(
         vat_sum = row_meta.get("vat_sum") if row_meta.get("vat_sum") is not None else ""
         line_sum_with_vat = _line_sum_with_vat(line_sum, vat_sum)
         unit_in_us = row_meta.get("us_unit") or row_meta.get("accounting_unit_candidate") or ""
-        quantity_in_us = (
-            row_meta.get("quantity_us")
-            if row_meta.get("quantity_us") is not None
-            else row_meta.get("accounting_quantity_candidate", "")
-        )
-        price_in_us = row_meta.get("price_us") if row_meta.get("price_us") is not None else ""
+        # `Кол-во в УС`/`Цена в УС` are a temporary passthrough of the raw
+        # document quantity/price, not a backend-computed conversion --
+        # Lilia (BA) confirmed 2026-07-25 that final packaging-rule
+        # recalculation belongs solely to the Google Apps Script
+        # ("Проверить выбранные документы"), so backend and script don't
+        # produce two different numbers in the MVP. AI-extracted
+        # `packaging_facts` are still saved (see recognized_items_json) for
+        # Apps Script's own rule-draft flow to use.
+        quantity_in_us = quantity
+        price_in_us = price
         date_accept = ""
         accepted_by = ""
         government_systems = ""
