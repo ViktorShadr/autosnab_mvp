@@ -352,6 +352,11 @@ def build_review_sheet(receiving: Receiving) -> dict:
         parser_items=parser_items,
         total_sum=total_sum,
     )
+    packaging_facts_rows = build_packaging_facts_rows(
+        receiving,
+        item_meta=item_meta,
+        parser_items=parser_items,
+    )
 
     return {
         "review_id": receiving.id,
@@ -366,6 +371,7 @@ def build_review_sheet(receiving: Receiving) -> dict:
             "endpoint": f"/api/v1/invoice-review/{receiving.id}/confirm-send",
         },
         "shared_sheet_rows": shared_rows,
+        "packaging_facts_rows": packaging_facts_rows,
         "status": "ready" if not issues else "needs_review",
         "issues": issues,
     }
@@ -413,6 +419,120 @@ def build_shared_invoice_rows(
             rows.append(_shared_invoice_item_row(receiving, header_values, item, row_meta, index))
     else:
         rows.append(_shared_invoice_item_row(receiving, header_values, None, {}, 1))
+    return rows
+
+
+PACKAGING_FACT_TYPE_LABELS = {
+    "package_type": "тип упаковки",
+    "count_in_package": "количество вложений",
+    "unit_weight": "вес",
+    "unit_volume": "объем",
+    "declared_package_mass": "вес",
+    "dry_weight": "сухой вес",
+    "capacity": "объем",
+    "length": "размер",
+    "diameter": "размер",
+    "thickness": "размер",
+    "actual_weight": "вес",
+}
+
+PACKAGING_RISK_FLAG_LABELS = {
+    "in_brine": "продукт в рассоле — вес может включать жидкость",
+    "in_syrup": "продукт в сиропе — вес может включать жидкость",
+    "in_marinade": "продукт в маринаде — вес может включать жидкость",
+    "in_oil": "продукт в масле — вес может включать жидкость",
+    "dry_weight_unknown": "сухой вес не указан",
+    "multiple_ambiguous_values": "несколько неоднозначных числовых значений в названии",
+    "actual_weight_required": "требуется фактический вес при приёмке",
+}
+
+
+def build_packaging_facts_rows(
+    receiving: Receiving,
+    *,
+    item_meta: list[dict[str, Any]] | None = None,
+    parser_items: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Build one row per AI-extracted packaging fact (plus one row per
+    item-level packaging risk flag), for the hidden technical
+    `Факты фасовки AI` sheet -- see docs/wiki/unit-conversion-rules.md ->
+    "Lilia's answers ... packaging_facts delivery (2026-07-25)". Apps Script
+    reads this sheet by `ID документа`/`ID строки` to build packaging-rule
+    drafts; the AI only runs once, at upload time, never re-invoked by the
+    script."""
+    document = receiving.documents[-1] if receiving.documents else None
+    meta = _document_meta(document)
+    header_meta = meta.get("header", {})
+    if item_meta is None:
+        item_meta = meta.get("items", [])
+    if parser_items is None:
+        parser_metadata = header_meta.get("parser_metadata") if isinstance(header_meta.get("parser_metadata"), dict) else {}
+        parser_items = parser_metadata.get("items") if isinstance(parser_metadata.get("items"), list) else []
+
+    rows: list[dict[str, Any]] = []
+    for index, item in enumerate(receiving.items, start=1):
+        row_meta = _hydrate_review_sheet_item_meta(
+            item_meta[index - 1] if index - 1 < len(item_meta) else {},
+            parser_items,
+            index,
+        )
+        rows.extend(_packaging_facts_item_rows(receiving, item, row_meta))
+    return rows
+
+
+def _packaging_facts_item_rows(
+    receiving: Receiving,
+    item: ReceivingItem,
+    row_meta: dict[str, Any],
+) -> list[dict[str, Any]]:
+    facts = row_meta.get("packaging_facts") or []
+    risk_flags = row_meta.get("packaging_risk_flags") or []
+    if not facts and not risk_flags:
+        return []
+
+    item_name = (
+        item.item_name_from_invoice
+        or item.item_name_from_order
+        or row_meta.get("raw_name")
+        or ""
+    )
+    document_id = receiving.id
+    row_id = str(item.id)
+
+    rows: list[dict[str, Any]] = []
+    for fact in facts:
+        if not isinstance(fact, dict):
+            continue
+        fact_type = fact.get("type") or ""
+        rows.append(
+            {
+                "ID документа": document_id,
+                "ID строки": row_id,
+                "Наименование товара из документа": item_name,
+                "Тип факта": PACKAGING_FACT_TYPE_LABELS.get(fact_type, fact_type),
+                "Значение": fact.get("value") if fact.get("value") is not None else "",
+                "Единица": fact.get("unit") or "",
+                "Исходный фрагмент текста": fact.get("source") or "",
+                "Уверенность AI": fact.get("confidence") if fact.get("confidence") is not None else "",
+                "Признак риска": "Нет",
+                "Комментарий AI": "",
+            }
+        )
+    for flag in risk_flags:
+        rows.append(
+            {
+                "ID документа": document_id,
+                "ID строки": row_id,
+                "Наименование товара из документа": item_name,
+                "Тип факта": "риск",
+                "Значение": "",
+                "Единица": "",
+                "Исходный фрагмент текста": "",
+                "Уверенность AI": "",
+                "Признак риска": "Да",
+                "Комментарий AI": PACKAGING_RISK_FLAG_LABELS.get(flag, flag),
+            }
+        )
     return rows
 
 

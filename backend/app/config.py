@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     google_target_sheet_name: str = "Накладная"
     google_target_header_row_count: int = 2
     google_conversion_exceptions_sheet_name: str | None = None
+    google_packaging_facts_sheet_name: str = "Факты фасовки AI (техн.)"
     google_sheets_enabled: bool = False
     google_apps_script_enabled: bool = False
     google_drive_ocr_enabled: bool = True

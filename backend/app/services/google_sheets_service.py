@@ -23,6 +23,17 @@ SHARED_INVOICE_HEADERS = [
     "Предыдущая цена", "Отклонение от цены прайса", "Время загрузки документа",
     "ID документа", "ID строки", "Ссылка на исходный документ",
 ]
+
+# Hidden technical sheet delivering AI-extracted packaging_facts to Apps
+# Script -- one row per fact (or per risk flag), keyed by ID документа/ID
+# строки. Not user-facing; see docs/wiki/unit-conversion-rules.md ->
+# "Lilia's answers ... packaging_facts delivery (2026-07-25)".
+PACKAGING_FACTS_SHEET_HEADERS = [
+    "ID документа", "ID строки", "Наименование товара из документа",
+    "Тип факта", "Значение", "Единица", "Исходный фрагмент текста",
+    "Уверенность AI", "Признак риска", "Комментарий AI",
+]
+
 # Live sheet column order/names as of 2026-07-14 (see docs/wiki/log.md).
 # "Товар найден в справочнике" was renamed to "Статус сопоставления товара",
 # "Кол-во в упаковке" was renamed and moved to "Состав упаковки", and
@@ -357,6 +368,50 @@ def _ensure_header_row(sheets_service, spreadsheet_id: str, sheet_name: str, hea
         range=f"{sheet_name}!A1:AM1",
         valueInputOption="RAW",
         body={"values": header_row},
+    ).execute()
+
+
+def _write_packaging_facts_rows(
+    sheets_service,
+    spreadsheet_id: str,
+    spreadsheet: dict,
+    facts_rows: list[dict[str, Any]],
+) -> None:
+    """Append packaging_facts rows to the hidden technical sheet (created on
+    first use, header-only). Append-only and order-independent: Apps Script
+    joins on ID документа/ID строки, so no insert-at-top/positional logic is
+    needed here, unlike the `Накладная` write."""
+    if not facts_rows:
+        return
+
+    sheet_name = settings.google_packaging_facts_sheet_name
+    titles = {sheet["properties"]["title"] for sheet in spreadsheet.get("sheets", [])}
+    if sheet_name not in titles:
+        sheets_service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={
+                "requests": [
+                    {"addSheet": {"properties": {"title": sheet_name, "hidden": True}}},
+                ]
+            },
+        ).execute()
+        sheets_service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=f"{sheet_name}!A1",
+            valueInputOption="RAW",
+            body={"values": [PACKAGING_FACTS_SHEET_HEADERS]},
+        ).execute()
+
+    values = [
+        [row.get(header, "") for header in PACKAGING_FACTS_SHEET_HEADERS]
+        for row in facts_rows
+    ]
+    sheets_service.spreadsheets().values().append(
+        spreadsheetId=spreadsheet_id,
+        range=f"{sheet_name}!A1",
+        valueInputOption="RAW",
+        insertDataOption="INSERT_ROWS",
+        body={"values": values},
     ).execute()
 
 
@@ -835,6 +890,12 @@ def _insert_into_existing_spreadsheet(
         end_row=last_document_row_number,
         end_column_index=border_column_count,
         clear_to_column_index=target_column_count,
+    )
+    _write_packaging_facts_rows(
+        sheets_service,
+        spreadsheet_id,
+        spreadsheet,
+        sheet_data.get("packaging_facts_rows") or [],
     )
 
     return {

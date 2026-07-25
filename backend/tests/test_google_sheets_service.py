@@ -9,6 +9,7 @@ os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 
 from app.config import settings  # noqa: E402
 from app.services.google_sheets_service import (  # noqa: E402
+    PACKAGING_FACTS_SHEET_HEADERS,
     SHARED_INVOICE_HEADERS,
     _insert_into_existing_spreadsheet,
     _project_shared_rows_to_target_headers,
@@ -25,9 +26,14 @@ from app.services.invoice_review_service import (  # noqa: E402
 class _FakeValuesResource:
     def __init__(self):
         self.updated = []
+        self.appended = []
 
     def update(self, **kwargs):
         self.updated.append(kwargs)
+        return self
+
+    def append(self, **kwargs):
+        self.appended.append(kwargs)
         return self
 
     def execute(self):
@@ -688,3 +694,105 @@ def test_insert_into_existing_spreadsheet_prepends_block_and_separator():
         "endColumnIndex": len(SHARED_INVOICE_HEADERS),
     }
     assert border_requests[1]["updateBorders"]["bottom"]["style"] == "SOLID"
+
+
+def test_insert_into_existing_spreadsheet_creates_hidden_sheet_and_appends_packaging_facts():
+    fake_service = _FakeSheetsService()
+    old_sheet_name = settings.google_target_sheet_name
+    old_header_count = settings.google_target_header_row_count
+    settings.google_target_sheet_name = "Накладная"
+    settings.google_target_header_row_count = 2
+    try:
+        _insert_into_existing_spreadsheet(
+            receiving=_FakeReceiving("uploads/invoices/test.jpg"),
+            sheets_service=fake_service,
+            drive_service=None,
+            spreadsheet_id="test-id",
+            sheet_data={
+                "spreadsheet_name": "АвтоСнаб Накладные",
+                "primary_sheet_name": "Накладные",
+                "sheets": {"Накладные": [SHARED_INVOICE_HEADERS]},
+                "shared_sheet_rows": [
+                    dict(zip(SHARED_INVOICE_HEADERS, ["item-1"] * len(SHARED_INVOICE_HEADERS))),
+                ],
+                "packaging_facts_rows": [
+                    {
+                        "ID документа": 7,
+                        "ID строки": "1",
+                        "Наименование товара из документа": "10ШТ МЕШКИ ДЛЯ МУСОРА 120Л",
+                        "Тип факта": "количество вложений",
+                        "Значение": 10,
+                        "Единица": "шт",
+                        "Исходный фрагмент текста": "10 шт",
+                        "Уверенность AI": 0.95,
+                        "Признак риска": "Нет",
+                        "Комментарий AI": "",
+                    },
+                ],
+            },
+        )
+    finally:
+        settings.google_target_sheet_name = old_sheet_name
+        settings.google_target_header_row_count = old_header_count
+
+    facts_sheet_name = settings.google_packaging_facts_sheet_name
+    add_sheet_requests = [
+        request
+        for batch in fake_service.spreadsheets_resource.batch_updates
+        for request in batch["body"]["requests"]
+        if "addSheet" in request
+    ]
+    assert len(add_sheet_requests) == 1
+    assert add_sheet_requests[0]["addSheet"]["properties"] == {
+        "title": facts_sheet_name,
+        "hidden": True,
+    }
+
+    values_resource = fake_service.spreadsheets_resource.values_resource
+    header_update = next(
+        call for call in values_resource.updated if call.get("range") == f"{facts_sheet_name}!A1"
+    )
+    assert header_update["body"]["values"] == [PACKAGING_FACTS_SHEET_HEADERS]
+
+    assert len(values_resource.appended) == 1
+    append_call = values_resource.appended[0]
+    assert append_call["range"] == f"{facts_sheet_name}!A1"
+    assert append_call["body"]["values"] == [
+        [7, "1", "10ШТ МЕШКИ ДЛЯ МУСОРА 120Л", "количество вложений", 10, "шт", "10 шт", 0.95, "Нет", ""]
+    ]
+
+
+def test_insert_into_existing_spreadsheet_skips_packaging_facts_sheet_when_no_facts():
+    fake_service = _FakeSheetsService()
+    old_sheet_name = settings.google_target_sheet_name
+    old_header_count = settings.google_target_header_row_count
+    settings.google_target_sheet_name = "Накладная"
+    settings.google_target_header_row_count = 2
+    try:
+        _insert_into_existing_spreadsheet(
+            receiving=_FakeReceiving("uploads/invoices/test.jpg"),
+            sheets_service=fake_service,
+            drive_service=None,
+            spreadsheet_id="test-id",
+            sheet_data={
+                "spreadsheet_name": "АвтоСнаб Накладные",
+                "primary_sheet_name": "Накладные",
+                "sheets": {"Накладные": [SHARED_INVOICE_HEADERS]},
+                "shared_sheet_rows": [
+                    dict(zip(SHARED_INVOICE_HEADERS, ["item-1"] * len(SHARED_INVOICE_HEADERS))),
+                ],
+            },
+        )
+    finally:
+        settings.google_target_sheet_name = old_sheet_name
+        settings.google_target_header_row_count = old_header_count
+
+    values_resource = fake_service.spreadsheets_resource.values_resource
+    assert values_resource.appended == []
+    add_sheet_requests = [
+        request
+        for batch in fake_service.spreadsheets_resource.batch_updates
+        for request in batch["body"]["requests"]
+        if "addSheet" in request
+    ]
+    assert add_sheet_requests == []

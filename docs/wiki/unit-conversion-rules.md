@@ -828,15 +828,146 @@ the VPS.
   columns). Reasons: Apps Script already reads/iterates spreadsheet data
   natively (no new auth/HTTP call needed, unlike an API option), one-row-per-fact
   avoids JSON-parsing in Apps Script, and it doesn't add another column to
-  the already header-fragile `Накладная`/`Правила фасовок` contracts. Not
-  yet built — pending user confirmation this is the direction to take before
-  implementing.
+  the already header-fragile `Накладная`/`Правила фасовок` contracts.
 
-**Still open / next steps**: pull the live `Правила фасовок` sheet fresh to
-build an accurate duplicate-disable list (excluding Сок Rich and chips),
-decide backend's Phase 3 quantity-computation scope question above, and get
-a go-ahead to build the technical facts sheet + wire it into the existing
-Google Sheets write path.
+**Confirmed 2026-07-25 (Lilia's reply)**: go-ahead given for exactly this
+recommendation — hidden technical sheet in the same spreadsheet, no API, no
+extra `Накладная` field. Backend fills it automatically at upload time.
+Apps Script side (reading the sheet and wiring it into rule-draft
+generation) will be built by Lilia's team, not this repo. Backend must
+notify her when the sheet is live so she can inspect it and connect Apps
+Script. **Not yet built.**
+
+Lilia also confirmed the duplicate-rules process exactly as gated above:
+backup first, send the candidate list, and deactivate nothing until she
+confirms — no changes to that plan.
+
+**Implemented 2026-07-26**: the hidden technical facts sheet is now built in
+code. `build_packaging_facts_rows()`/`_packaging_facts_item_rows()`
+(`invoice_review_service.py`) turn each item's `packaging_facts`/
+`packaging_risk_flags` (already durably saved per the 2026-07-25 fix above)
+into one row per fact plus one row per risk flag: `ID документа` (=
+`receiving.id`), `ID строки` (= `item.id`), `Наименование товара из
+документа`, `Тип факта` (mapped from the AI's English `PackagingFactType`
+to a Russian label -- `count_in_package`->"количество вложений",
+`unit_weight`/`declared_package_mass`/`actual_weight`->"вес",
+`unit_volume`/`capacity`->"объем", `dry_weight`->"сухой вес",
+`length`/`diameter`/`thickness`->"размер", `package_type`->"тип упаковки";
+risk flags become their own rows with `Тип факта`="риск"), `Значение`,
+`Единица`, `Исходный фрагмент текста`, `Уверенность AI`, `Признак риска`
+(Да only for risk-flag rows), `Комментарий AI` (Russian-mapped risk
+description, e.g. `in_brine` -> "продукт в рассоле — вес может включать
+жидкость"). `build_review_sheet()` now returns `packaging_facts_rows`
+alongside `shared_sheet_rows`.
+
+`google_sheets_service._write_packaging_facts_rows()` writes them: creates
+the sheet `Факты фасовки AI (техн.)` (configurable via
+`GOOGLE_PACKAGING_FACTS_SHEET_NAME`) hidden (`addSheet.properties.hidden:
+true`) with a header row on first use, then always appends via
+`values().append(...insertDataOption=INSERT_ROWS)` -- order-independent by
+design, since Apps Script will join on the ID columns, not row position.
+Wired into the existing live-sheet write path
+(`_insert_into_existing_spreadsheet`, the same function that writes
+`Накладная`), so it runs automatically on every real upload with no new
+endpoint. 8 new tests (`tests/test_packaging_facts_sheet_rows.py`,
+2 new cases in `tests/test_google_sheets_service.py`); full suite 201 passed
+outside `test_receiving.py`/`test_telegram_bot.py` (both fail to even
+*collect* in this environment -- `ModuleNotFoundError: No module named
+'aiogram'`, a pre-existing missing dev dependency on this workstation,
+confirmed unrelated to this change by installing nothing and reproducing
+the same import error before touching any file); the 2 known pre-existing
+`test_document_extraction_service.py` failures confirmed byte-identical via
+`git stash`. **Known gap, not fixed here**: the AI schema (`PackagingFact`)
+has no per-fact `Комментарий AI`/risk flag of its own and no
+`артикул/код поставщика` fact type as Lilia's original spec asked for --
+those two columns are populated on a best-effort basis (blank comment for
+non-risk facts, `Признак риска` only true for whole-item risk flags, not
+per-fact). Revisit if Lilia's Apps Script draft-generation needs richer
+per-fact risk/comment data than this provides.
+
+**Deployed live 2026-07-26** to `78.17.160.248` (`autosnab_backend_mvp4`):
+backed up the three changed files on the VPS to
+`/opt/autosnab_mvp_backup_pre_packaging_facts_sheet/` first, `scp`'d
+`config.py`/`google_sheets_service.py`/`invoice_review_service.py` into
+`/opt/autosnab_mvp/backend/...`, `docker compose --profile public-ip build
+backend` + `up -d --no-deps backend`. Confirmed healthy
+(`https://78-17-160-248.nip.io:8443/health/runtime` -> `200`,
+`database.ready: true`) and confirmed via `docker exec` +
+`inspect.getsource` that the running container actually has
+`build_packaging_facts_rows`/`_write_packaging_facts_rows` and that
+`_insert_into_existing_spreadsheet` calls the latter; `settings.
+google_packaging_facts_sheet_name` reads the new default (`Факты фасовки AI
+(техн.)`) since no matching `.env` key exists on the VPS yet (none needed —
+the setting has a code-level default).
+
+**2026-07-26, first real upload after deploy found a real, older, still-live
+bug**: user uploaded a real invoice and shared the live sheet. The hidden
+`Факты фасовки AI (техн.)` sheet was **not created** — direct DB query on
+the VPS (`docker exec` + SQLAlchemy) showed the last 3 documents' items all
+had `packaging_facts: []` (or `None` for the oldest), even for obvious
+candidates like `10ШТ МЕШКИ ДЛЯ МУСОРА 120Л` and `...В РАССОЛЕ`. Root cause:
+the 2026-07-25 fix that made `packaging_facts`/`packaging_risk_flags`
+survive into `RecognizedInvoiceItem` (commit `9a72347`) had been implemented
+and tested locally but **was never actually deployed to the VPS** — the
+2026-07-25 session's own log entry said "Not deployed to VPS yet" and this
+session's deploy only copied the 3 files for the *new* hidden-sheet feature,
+not that earlier prerequisite fix. Confirmed via `docker exec grep` that the
+running container's `schemas/invoice_review.py` had no `packaging_facts`
+field at all before this fix. **Fixed same session**: `scp`'d
+`backend/app/schemas/invoice_review.py` to the VPS, rebuilt, recreated;
+confirmed the field is now present in the running container. The 3 already-
+uploaded documents (`receiving_id` 61/62/63) have permanently empty
+`packaging_facts` in their stored `recognized_items_json` and cannot recover
+retroactively — a fresh upload is needed to prove the full path end to end.
+
+**Still not verified end to end** — the schema gap is now closed and
+deployed, but no upload has gone through *since* this fix, so the hidden
+sheet's actual creation/rows still haven't been observed live. Next steps:
+1. Trigger one real bot upload of an invoice with packaging text (e.g. a
+   mushroom/napkin-style multi-fact item) and confirm in the live
+   spreadsheet that `Факты фасовки AI (техн.)` was created, is actually
+   hidden, and has the expected rows.
+2. Notify Lilia so she can inspect the sheet and wire Apps Script to it.
+
+### Fresh duplicate-rule candidate list (2026-07-26)
+
+Backed up first: duplicated the live `Правила фасовок` tab in-place as
+`Правила фасовок (backup 2026-07-26)` (sheetId `1881719082`) via the Sheets
+API `duplicateSheet` request, before reading anything else. **No rule has
+been deactivated or edited — read-only analysis below, awaiting Lilia's
+confirmation per her gated process.**
+
+Fetched all 47 live data rows (`A1:Z999`) and grouped by `Код товара УС`.
+5 codes have more than one active rule; all 5 pairs/groups differ **only**
+by a trailing " -" in `Название из документа` (identical recalculation
+mode, unit, weight/volume value, rounding, warehouse) — the same
+dash-artifact pattern flagged on 2026-07-24, now confirmed fresh:
+
+| Код товара УС | Товар | Keep (recommended) | Deactivate (candidate) | Note |
+|---|---|---|---|---|
+| `01-00023` | Сахар-песок | `PKG-DRAFT-025` (confirmed by Lilia) | `PKG-MVP-011` (confirmed by "Калькулятор", i.e. auto) | plain duplicate |
+| `01-00077` | Вода Bona Aqua 0,5 газ | `PKG-DRAFT-026` (Lilia) | `PKG-MVP-008` (auto) | plain duplicate |
+| `01-00081` | Чипсы Delicados 150 г, пачка | `PKG-DRAFT-027` (Lilia) | `PKG-MVP-014` (auto) | **flagged 2026-07-24 as a possible chips by-pack/by-weight A/B test — but both live rows use identical `Без пересчета` config, no by-weight variant exists in current data. Needs Lilia's explicit confirmation before touching, per her standing instruction on chips.** |
+| `01-00087` | Сок Rich, ананасовый | `PKG-DRAFT-028` | `PKG-DRAFT-020` | dash-duplicate of the *same* flavor only — the ананасовый/томатный flavor split itself is untouched, per Lilia's explicit exception for this code |
+| `01-00087` | Сок Rich, томатный | `PKG-DRAFT-029` | `PKG-DRAFT-021` | same as above |
+| `01-00088` | Сок J7 | `PKG-DRAFT-030` | `PKG-DRAFT-022` | plain duplicate |
+
+Rationale for the suggested "keep" side: in the 3 MVP-vs-DRAFT pairs, the
+`PKG-DRAFT-*` row is the one personally confirmed by Lilia
+(`liliyafidaevna@gmail.com`, `Дата подтверждения` 22.07.2026), while the
+`PKG-MVP-*` row was confirmed by an automated actor ("Калькулятор") — the
+human-confirmed row is the safer keeper. For the 2 pure DRAFT-vs-DRAFT
+pairs (Rich, J7), both sides are equally Lilia-confirmed on the same date;
+the no-dash name is suggested only as the cleaner match to current OCR
+output, not because of any functional difference — **her call, not a
+backend judgment**, if she prefers the other one kept.
+
+Everything else (single-rule product codes, the previously-confirmed
+non-duplicates) is untouched and out of scope for this list.
+
+**Not yet done**: sending this table to Lilia, and — only after she
+confirms — flipping the "Deactivate" column's rows to `Неактивно` (never
+delete, per her standing instruction).
 
 ## Open questions before production rollout
 
