@@ -44,6 +44,24 @@ version of this note did on 2026-07-26 (see "Correction" below).
   agreed (not a subdomain) — first live attempt 404'd because the gateway
   wasn't stripping the prefix before forwarding to port 8001; nginx/Traefik
   strip-prefix config was sent back. Resolution not yet confirmed.
+- **CI currently blocked (2026-07-26):** pipeline `#569` for `develop`
+  (commit `8874799`) cannot resolve the external include project
+  `antipov-devops/ci-templates`, producing "project not found or access
+  denied" before any job is created. The pipeline editor still reports YAML
+  syntax as correct; that check does not validate authorization to fetch a
+  remote include. DevOps must verify the template project's path/existence,
+  its `main` branch and template files, and access for the pipeline trigger
+  or consuming project.
+  A browser check under the current account confirms the private template
+  project, its `main` branch, and all four referenced files exist. Thus the
+  most likely cause is that this particular pipeline was triggered under a
+  different GitLab identity/token without access, or that the template
+  project's CI include authorization is not granted to the consumer project.
+  **Resolved by verification:** a fresh manual run `#578`, created by
+  `v.viktor.shadrin` for the identical `develop` commit `8874799`, created
+  all four jobs successfully. The include is accessible now; no CI YAML or
+  DevOps change is required for this incident. Monitor the jobs themselves
+  separately for ordinary build/deploy failures.
 - `env.prod` convention: a gitignored plaintext `.env` snapshot in both
   repos. Pull the real working one from the VPS
   (`ssh root@78.17.160.248 'cat /opt/autosnab_mvp/.env'`), don't trust
