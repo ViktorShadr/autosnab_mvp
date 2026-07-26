@@ -965,9 +965,25 @@ backend judgment**, if she prefers the other one kept.
 Everything else (single-rule product codes, the previously-confirmed
 non-duplicates) is untouched and out of scope for this list.
 
-**Not yet done**: sending this table to Lilia, and — only after she
-confirms — flipping the "Deactivate" column's rows to `Неактивно` (never
-delete, per her standing instruction).
+**Done 2026-07-26**: table sent to Lilia; she confirmed all 6 rows exactly as
+listed (including the previously-flagged `01-00081` chips pair — she
+clarified this is a genuine dash-duplicate, not the by-pack/by-weight A/B
+test she'd flagged before; that separate weight-based rule is `PKG-MVP-013`,
+code `01-00080`, and stays untouched/active). Deactivated live on the VPS
+(read/write both went through the running container's Google OAuth
+credentials, since local credentials on this workstation are stale): set
+column B (`Активность правила`) to `Неактивно` for `PKG-MVP-008` (row 18),
+`PKG-MVP-011` (row 21), `PKG-MVP-014` (row 24), `PKG-DRAFT-020` (row 30),
+`PKG-DRAFT-021` (row 31), `PKG-DRAFT-022` (row 32) — verified by reading
+each row back after the write. No rows deleted; the `Правила фасовок
+(backup 2026-07-26)` tab from before still holds the pre-change state.
+Confirmed untouched: `PKG-MVP-013` (`01-00080`, chips by weight) and all 6
+"keep" counterparts (`PKG-DRAFT-025/026/027/028/029/030`), all still
+`Активно`. **Next**: notify Lilia that both this cleanup and the hidden
+`Факты фасовки AI (техн.)` sheet (she independently confirmed it's working
+correctly, and confirmed the `30X40СМ`-style dimension text is a
+non-computable product-size fact the script won't use, so no AI schema
+changes needed there) are done, so her team can wire up Apps Script.
 
 ## Open questions before production rollout
 
