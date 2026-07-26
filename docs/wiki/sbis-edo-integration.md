@@ -516,3 +516,18 @@ directly for current SBIS status:
   same way), then one real document run through the adapter end-to-end to
   confirm the JSON-RPC/XML-parsing assumptions hold outside the one dump
   already validated.
+
+## Manual pick-and-import web tool, 2026-07-27 (branch `feature/sbis-manual-import`)
+
+Built a lower-risk, human-in-the-loop alternative to the (still never activated) background scheduler: a simple internal web page (`GET /sbis-manual/page`, no auth) where an operator logs into SBIS with their own login/password, sees documents for a date range, hand-picks which to import, and each selected document is downloaded/parsed/written one at a time. Deliberately additive — reuses `sbis_client.py`/`sbis_sync_service.py`'s parsing/matching helpers directly (`_pick_target_attachment`, `parse_fns_invoice_xml`, `_group_by_document_id`/`_merge_occurrences`, etc.) but skips all of the scheduler's batch/cursor/lease/retry DB bookkeeping (`SbisDocument`/`SbisDelivery`/`SbisSyncState`/`SbisLease` untouched).
+
+Key design points:
+- `SbisClient` now accepts optional per-instance `login`/`password`/`account_number` (falls back to `settings.*` when omitted) — zero behavior change for the scheduler, but lets an operator authenticate with their own credentials without touching the service-account's cached SID.
+- Writes to a **separate** Google Sheet, not the production one: `create_invoice_review_spreadsheet`/`create_real_google_sheet_for_review` gained an optional `target_spreadsheet_id` override, and the manual tool reads its own new setting `SBIS_MANUAL_IMPORT_TARGET_SPREADSHEET_ID` (a manual copy of the live sheet the operator creates themselves) — refuses to import if that's unset, rather than ever silently falling back to the real production spreadsheet.
+- Transient login session: in-memory dict keyed by an opaque cookie token, 1-hour idle TTL, holds credentials + the last document list (so import doesn't need to re-fetch/re-merge). Not durable across a restart/multi-worker — accepted tradeoff for this simple, single-operator tool.
+- `import_document` never raises — every failure path (missing config, document not in cache, no attachment, expired link, parse failure, sheet-write failure) returns a `stage`-labeled result, so one bad document in a batch never aborts the rest.
+- Known accepted limitation: sheet writes aren't idempotent (re-importing the same document inserts a second row) — mitigated client-side only (row disables after success), no server-side dedup in v1.
+
+Tests: extended `test_sbis_client_reliability.py` (credential isolation) and `test_google_sheets_service.py` (target override), new `test_sbis_manual_session_service.py`/`test_sbis_manual_import_service.py`/`test_sbis_manual_import_router.py`. Full suite: 267 passed, same 12 pre-existing failures as baseline (8 long-documented + 4 confirmed pre-existing via `git stash`, unrelated to this branch) — zero regressions. Fully testable without live SBIS credentials (still none available, per the status checkpoint above), same as the scheduler itself.
+
+Not yet done: no manual click-through against a real SBIS account (none available); not merged into `native-telegram-bot` yet — sitting on its own branch pending review.
