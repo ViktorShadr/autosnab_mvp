@@ -222,7 +222,35 @@ pip, since `python3-venv`/network `pip` weren't directly usable) — first
 time this repo has been test-run from this workstation.
 
 Committed on branch `feature/packaging-facts-phase1-schema` (off `develop`,
-commit `b1c0f71`), pushed by the user to GitLab. No MR opened yet.
+commit `b1c0f71`). **MR `!19` opened 2026-07-26** (via GitLab web UI under
+`v.viktor.shadrin`, not the API token — see the CI incident note in
+`auto-snab-document-parser-release-repo.md`), not yet merged/reviewed.
 
-**Not started**: Phases 2-3 (catalog read + facts adapter, rule engine +
-persistence + hidden sheet).
+**Phase 2 implemented and MR opened, 2026-07-26** on branch
+`feature/packaging-facts-phase2-catalog` (off Phase 1's branch, commit
+`3874621`), **MR `!20`** (depends on `!19`, diff includes Phase 1's commit
+until that merges):
+- `google_sheets_service.py`: `load_invoice_reference_catalogs()` now also
+  reads `Правила фасовок!A2:Z`, merged additively into `packages`; fixed
+  `Справочник фасовок`'s own range from `A1:Z` to `A2:Z` (bug #2 from the
+  plan above).
+- `item_normalization_service.py`: added `_package_from_facts()`/
+  `_units_per_package_from_facts()` fallback in `normalize_item_candidate`,
+  used only when regex extraction from `raw_name` finds nothing; fixed the
+  stale `InvoiceParsedItem` type hint to `NormalizedInvoiceItem`.
+- **Pre-check confirmed no live-sheet risk**: direct `.env`/`env.prod`
+  comparison showed `GOOGLE_TARGET_SPREADSHEET_ID` is byte-identical between
+  `autosnab_mvp` and `auto-snab-document-parser` (both local and deployed)
+  — same live spreadsheet, so the two-row-header convention transfers
+  directly, no separate verification needed. (Telegram bot tokens differ
+  between the two repos' production configs, so no bot-polling conflict —
+  only the spreadsheet is shared.)
+- 4 tests ported from `autosnab_mvp` (`test_loader_reads_pravila_fasovok_tab_and_merges_into_packages`,
+  `test_packaging_facts_adapter_maps_unit_weight_and_dry_weight`,
+  `test_packaging_facts_count_in_package_feeds_units_per_package_when_column_empty`,
+  plus the existing `A1:Z`→`A2:Z` range assertion fixed). Full suite: 216
+  passed, same 8 pre-existing `test_receiving.py` failures as baseline
+  (confirmed via `git stash`).
+
+**Not started**: Phase 3 (specificity-tiered rule engine + persistence +
+hidden facts sheet — the largest phase).

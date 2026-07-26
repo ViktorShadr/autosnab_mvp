@@ -1337,3 +1337,12 @@
 - Confirmed `#532` (bot UI redesign merge, `1d7002f`) and `#529` (production-bugfixes merge, `1a48422`) both **Passed** all four stages a day before this incident — both did deploy to real production successfully. The `Ubuntu_Huawei` access-denied failure was isolated to `#569` (this session's API-token merge of `!17`), not a systemic problem affecting every API-triggered merge.
 - Also noted for context: `#525` (an earlier attempt at the same `fix/invoice-pipeline-production-bugs` branch) failed on an ordinary `ruff` lint error, unrelated to access — fixed by follow-up commits that became the passing `1a48422`.
 - Closes the open follow-up from the previous log entry.
+
+## [2026-07-26] port | Phase 2 (packaging_facts catalog read + adapter) implemented in auto-snab-document-parser; MRs !19/!20 opened
+
+- Per user's "MR + Phase 2 порт" request: opened MR `!19` for the already-committed Phase 1 (`feature/packaging-facts-phase1-schema` → `develop`) via the GitLab web UI (logged in as `v.viktor.shadrin`, not the API token that caused the earlier CI incident) — GitLab pre-filled title/description from the commit message.
+- Implemented Phase 2 on a new branch `feature/packaging-facts-phase2-catalog` (off Phase 1's branch): `google_sheets_service.py` reads `Правила фасовок!A2:Z` and merges it into `packages`, fixes `Справочник фасовок`'s range from `A1:Z` to `A2:Z`; `item_normalization_service.py` gains `_package_from_facts()`/`_units_per_package_from_facts()` fallback and a corrected type hint.
+- Before implementing, verified the "check which live spreadsheet Repo B targets" risk flagged in the porting plan: `GOOGLE_TARGET_SPREADSHEET_ID` is byte-identical across `autosnab_mvp` and `auto-snab-document-parser`, both locally and in `env.prod` — confirmed same live sheet, no separate header-convention check needed. Bot tokens differ, so no Telegram-polling conflict between the two deployed backends.
+- Ported 4 tests from `autosnab_mvp`, fixed one pre-existing test's stale `A1:Z` range assertion. Full suite: 216 passed, same 8 pre-existing `test_receiving.py` failures as baseline (confirmed via `git stash` before/after).
+- Committed (`3874621`), pushed, MR `!20` opened via GitLab web UI (marked as depending on `!19` since it branches off Phase 1's unmerged branch).
+- `docs/wiki/auto-snab-document-parser-porting-plan.md` updated with full Phase 2 status. Phase 3 (rule engine + persistence + hidden facts sheet) remains the only unstarted piece.
