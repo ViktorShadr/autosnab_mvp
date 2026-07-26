@@ -475,3 +475,44 @@ pattern to copy for the PDF-fallback path (`extract_invoice_document(..., extrac
 and `_transfer_to_verification`/`create_invoice_review`/`update_invoice_review`/
 `create_real_google_sheet_for_review` as the pattern for feeding parsed documents into
 the shared document core instead of writing directly to `Receiving`/`ReceivingDocument`.
+
+## Status check, 2026-07-26: still fully implemented, still inert everywhere, no live test yet
+
+Re-confirmed current status while auditing `auto-snab-document-parser`'s
+production readiness (see
+[auto-snab-document-parser-release-repo.md](./auto-snab-document-parser-release-repo.md)).
+Nothing has changed on the SBIS side since the 2026-07-20 implementation
+entry above — recorded here as an explicit checkpoint since the user asked
+directly for current SBIS status:
+
+- **Code**: fully implemented in both `autosnab_mvp` (this repo,
+  `native-telegram-bot` branch) and ported into `auto-snab-document-parser`
+  (`backend/app/domains/edo_sbis/`) — confirmed present via direct file
+  listing in both repos. Structure and behavior unchanged since the
+  2026-07-20 implementation described above.
+- **Deployed but inert everywhere it runs**: live on `autosnab_mvp`'s own
+  VPS (`78.17.160.248`) and, as of today, in `auto-snab-document-parser`'s
+  DEV environment (`avtosnab.testant.online/docparser`, deployed
+  automatically via every merge to `develop`). In both places
+  `SBIS_INTEGRATION_ENABLED=false` and `SBIS_LOGIN`/`SBIS_PASSWORD` are
+  empty — confirmed directly (`auto-snab-document-parser`'s `ENV_DEV`
+  GitLab CI/CD variable was read today; `autosnab_mvp`'s local `.env` and
+  VPS `.env` have no `SBIS_*` credentials either). The scheduler's own
+  `_scheduler_configuration_ready()` gate means this is inert by design,
+  not broken — nothing to fix, just nothing turned on.
+- **Still never live-tested**: no real SBIS account has ever been used to
+  smoke-test this adapter, in either repo. `Счёт` (`СчетВх`) XML parsing
+  via the shared `fns_upd_xml_parser_service` remains unverified against a
+  real Счёт sample (only УПД/`ДокОтгрВх` was checked against the real
+  2026-07-20 dump). Whether `fix-online.sbis.ru` test-stand credentials are
+  separate from normal `online.sbis.ru` registration is still undocumented
+  publicly — requires asking Saby support directly.
+- **Business requirement unchanged**: SBIS is still required in production
+  alongside Diadoc (different counterparties use different EDO providers,
+  confirmed by the user on 2026-07-20) — not superseded by Diadoc, not a
+  redundant integration to drop.
+- **What "going live" actually requires**: a real SBIS account
+  login/password (or confirmation that a test-stand equivalent works the
+  same way), then one real document run through the adapter end-to-end to
+  confirm the JSON-RPC/XML-parsing assumptions hold outside the one dump
+  already validated.
