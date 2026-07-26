@@ -1266,3 +1266,9 @@
 - Lilia confirmed the full duplicate-rule disable list from 2026-07-26, including the previously-ambiguous chips pair: `01-00081`'s pack-count duplicate (`PKG-MVP-014`) is confirmed a real dash-duplicate, not the by-pack/by-weight A/B test — the separate weight-based rule `PKG-MVP-013` (code `01-00080`) stays active and untouched.
 - Deactivated live in the `Правила фасовок` sheet via the VPS container's working Google credentials (local workstation OAuth token is stale/revoked): `PKG-MVP-008`, `PKG-MVP-011`, `PKG-MVP-014`, `PKG-DRAFT-020`, `PKG-DRAFT-021`, `PKG-DRAFT-022` set to `Активность правила = Неактивно`, verified by reading each row back after the write. Nothing deleted; the 2026-07-26 backup tab is untouched; the 6 "keep" counterparts and `PKG-MVP-013` confirmed still `Активно`.
 - Next: notify Lilia that both items are done so her team can wire up Apps Script to the facts sheet.
+
+## [2026-07-26] housekeeping | stale GitHub branches deleted
+
+- Listed all remote branches, confirmed each was already merged into `native-telegram-bot` (via `git merge-base --is-ancestor`), and identified last-commit authors so Andrey's branches could be excluded.
+- User confirmed none of the 7 candidate branches belong to Andrey; deleted `codex/bot-sbis-plan`, `codex/invoice-recognition-hardening`, `diadoc-integration`, `over_version`, `packaging-conversion-rules`, `sbis-edo-integration`, `viktor_sh`. Kept `main` and `native-telegram-bot`.
+- `git push origin --delete` over HTTPS failed even after `git config credential.helper store` (credential never persisted). Found `gh` CLI already installed and authenticated on this workstation; used `gh api -X DELETE repos/ViktorShadr/autosnab_mvp/git/refs/heads/<branch>` instead, confirmed via `git fetch --all --prune`. SSH to `github.com` is also blocked from this workstation (port 22 times out), so HTTPS + `gh` is the working path for repo-admin operations here.
