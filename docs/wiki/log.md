@@ -1374,3 +1374,9 @@
 - SbisClient gained optional per-instance credentials (zero effect on the scheduler); google_sheets_service/invoice_review_service gained an optional target_spreadsheet_id override so this tool can never write into the real production sheet; new SBIS_MANUAL_IMPORT_TARGET_SPREADSHEET_ID setting gates that explicitly (refuses to import rather than falling back to the real sheet). New in-memory transient session store for the browser login (opaque cookie token, 1h idle TTL). import_document never raises -- every failure returns a stage-labeled result so one bad document never aborts a batch.
 - Full suite: 267 passed, same 12 pre-existing failures confirmed via git stash (8 long-documented + 4 newly-confirmed pre-existing, unrelated -- test_document_extraction_service.py's two MinerU-fallback tests and test_receiving.py's two mineru-wiring tests fail even on a clean baseline with no changes at all).
 - Committed (`f01ef1d`), not yet pushed/merged. Full detail in `docs/wiki/sbis-edo-integration.md` -> "Manual pick-and-import web tool, 2026-07-27".
+
+## [2026-07-27] config | SBIS manual-import target spreadsheet configured and confirmed
+
+- User created a manual copy of the live "Накладная" sheet and provided its URL/ID (`1uWt8U0iQ2eDaQM32NgP3cQtp5fgbNP8Fc5ykjf9F5Ww`). Set `SBIS_MANUAL_IMPORT_TARGET_SPREADSHEET_ID` in this workstation's local `.env` (gitignored, not committed).
+- Attempted to verify the copy's tab name/header structure directly via the Google Sheets API using this workstation's stored OAuth credentials -- failed with `invalid_grant` (token expired/revoked), same known local-vs-VPS OAuth split documented elsewhere in this wiki. Asked the user to check manually instead; they confirmed the tab is named exactly "Накладная" with matching header structure.
+- Only configured on this workstation so far -- not yet needed on any deployed server since the manual-import tool hasn't been run there.

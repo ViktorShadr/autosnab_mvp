@@ -531,3 +531,11 @@ Key design points:
 Tests: extended `test_sbis_client_reliability.py` (credential isolation) and `test_google_sheets_service.py` (target override), new `test_sbis_manual_session_service.py`/`test_sbis_manual_import_service.py`/`test_sbis_manual_import_router.py`. Full suite: 267 passed, same 12 pre-existing failures as baseline (8 long-documented + 4 confirmed pre-existing via `git stash`, unrelated to this branch) — zero regressions. Fully testable without live SBIS credentials (still none available, per the status checkpoint above), same as the scheduler itself.
 
 Not yet done: no manual click-through against a real SBIS account (none available); not merged into `native-telegram-bot` yet — sitting on its own branch pending review.
+
+### Target spreadsheet configured and verified, 2026-07-27
+
+`SBIS_MANUAL_IMPORT_TARGET_SPREADSHEET_ID` is now set in this workstation's local `.env` (gitignored, not committed) to the user's manual copy of the live "Накладная" sheet (`1uWt8U0iQ2eDaQM32NgP3cQtp5fgbNP8Fc5ykjf9F5Ww`). User confirmed manually: the copy has a tab named exactly "Накладная" with the same header row/structure as the production sheet, so the shared `google_target_sheet_name`/`google_target_header_row_count` settings apply correctly to it too.
+
+Could not verify this directly from the assistant side — this workstation's Google OAuth token is expired/revoked (`invalid_grant`, same known issue as the VPS-vs-local OAuth split documented elsewhere in this wiki: working Google credentials currently only exist on the VPS, not here).
+
+**Only set locally so far** — if the manual-import tool is ever run from a different machine/server (not this workstation), `SBIS_MANUAL_IMPORT_TARGET_SPREADSHEET_ID` needs to be set there too, in that environment's own `.env`.
