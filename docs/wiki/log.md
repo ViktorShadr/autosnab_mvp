@@ -1302,3 +1302,17 @@
 
 - Committed Phase 1 on a new branch `feature/packaging-facts-phase1-schema` (off `develop`, commit `b1c0f71`) rather than directly on `develop`, per user's instruction. User pushed it themselves; confirmed present on GitLab via `git fetch` + `git log origin/feature/packaging-facts-phase1-schema`.
 - No MR opened yet — user will decide when to open one, possibly after more phases land.
+
+## [2026-07-26] verification | UI redesign already merged in auto-snab-document-parser; earlier "pending" answer was stale
+
+- User asked to re-check the wiki after a "what's pending" answer, suspecting some listed items were already done.
+- Direct `git fetch`+`git log` against the local `auto-snab-document-parser` clone confirmed the bot UI redesign (inline buttons, progress-message edit-in-place) — listed as "not yet deployed to the VPS" — was actually already ported there and merged into `develop` on 2026-07-25 (`41fe6a1`/`1d7002f`). That repo is the real production target with its own GitLab CI deploy pipeline, so the redesign is most likely already live in production, just not on `autosnab_mvp`'s own personal-VPS test box (`78.17.160.248`), which is what this repo's wiki actually tracks.
+- Confirmed still genuinely open: `packaging_facts` Phase 1 port is a pushed branch (`feature/packaging-facts-phase1-schema`, `b1c0f71`) with no MR yet, not merged into `develop`; Phases 2-4 not started; Caddy removal and the Google auth migration plan are both unchanged/still open.
+- Root cause of the confusion: `auto-snab-document-parser`'s actual state lives only in a private memory file (`auto-snab-document-parser-release-repo.md`), not in this repo's own `docs/wiki/`, and that memory itself was already stale on one point (MR `!17` merge status). Recommendation for future sessions: treat the local clone's `git log origin/develop` as the source of truth for that repo's status, not the wiki/memory snapshot, before answering "what's pending" there.
+
+## [2026-07-26] wiki | new page auto-snab-document-parser-release-repo.md — promoted release-repo status out of private memory
+
+- Per user request ("сделай"), promoted the release-repo status that previously lived only in a private Claude memory file into a real, git-tracked wiki page: `docs/wiki/auto-snab-document-parser-release-repo.md`, linked from `index.md`.
+- Content: deploy infra (GitLab CI, Yandex Cloud Registry, Postgres, `/docparser` path-prefix routing, `env.prod` convention), what's confirmed ported/merged (three fixes + MR `!17`, all merged into `develop`), what's still open (Phase 1 packaging_facts pushed but not merged, no MR; Phases 2-4 not started), and the guiding constraint (no backend-computed authoritative `Кол-во в УС`/`Цена в УС`).
+- Motivation: this is the second session in a row where the private-memory-only version of this note was read incompletely/went stale (this repo's own wiki only tracks "not deployed to autosnab_mvp's VPS", which was misread as "not deployed anywhere" — the UI redesign was actually already merged into the real production repo's `develop` the day before). Multi-PC work also means private Claude memory (local to one machine) can't be relied on as the cross-machine source of truth — only `docs/wiki/` (git-tracked) can. Raw-file sync across PCs (screenshots/spreadsheets) is explicitly deferred by the user, not a priority right now.
+- `python3 scripts/wiki_check.py` passes clean (34 markdown files, frontmatter valid, index links intact).
