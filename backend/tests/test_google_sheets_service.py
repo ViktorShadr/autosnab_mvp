@@ -15,8 +15,10 @@ from app.services.google_sheets_service import (  # noqa: E402
     _project_shared_rows_to_target_headers,
     _remap_source_rows_to_shared_sheet,
     _table_rows_as_dicts,
+    create_invoice_review_spreadsheet,
     load_invoice_reference_catalogs,
 )
+from app.services import google_sheets_service as google_sheets_service_module  # noqa: E402
 from app.services.invoice_review_service import (  # noqa: E402
     INVOICE_REGISTER_HEADERS,
     _invoice_register_item_row,
@@ -796,3 +798,73 @@ def test_insert_into_existing_spreadsheet_skips_packaging_facts_sheet_when_no_fa
         if "addSheet" in request
     ]
     assert add_sheet_requests == []
+
+
+def test_create_invoice_review_spreadsheet_uses_target_override_when_given(monkeypatch):
+    fake_service = _FakeSheetsService()
+    old_enabled = settings.google_sheets_enabled
+    old_target = settings.google_target_spreadsheet_id
+    old_sheet_name = settings.google_target_sheet_name
+    old_header_count = settings.google_target_header_row_count
+    settings.google_sheets_enabled = True
+    settings.google_target_spreadsheet_id = "ORIGINAL-ID"
+    settings.google_target_sheet_name = "Накладная"
+    settings.google_target_header_row_count = 2
+    monkeypatch.setattr(
+        google_sheets_service_module, "_build_google_services", lambda: (fake_service, None)
+    )
+    sheet_data = {
+        "spreadsheet_name": "АвтоСнаб Накладные",
+        "primary_sheet_name": "Накладные",
+        "sheets": {"Накладные": [SHARED_INVOICE_HEADERS]},
+        "shared_sheet_rows": [
+            dict(zip(SHARED_INVOICE_HEADERS, ["item-1"] * len(SHARED_INVOICE_HEADERS), strict=True)),
+        ],
+    }
+    try:
+        create_invoice_review_spreadsheet(
+            _FakeReceiving("uploads/invoices/test.jpg"),
+            sheet_data,
+            target_spreadsheet_id="COPY-ID",
+        )
+    finally:
+        settings.google_sheets_enabled = old_enabled
+        settings.google_target_spreadsheet_id = old_target
+        settings.google_target_sheet_name = old_sheet_name
+        settings.google_target_header_row_count = old_header_count
+
+    get_calls = fake_service.spreadsheets_resource.get_calls
+    assert get_calls[0]["spreadsheetId"] == "COPY-ID"
+
+
+def test_create_invoice_review_spreadsheet_falls_back_to_settings_when_no_override(monkeypatch):
+    fake_service = _FakeSheetsService()
+    old_enabled = settings.google_sheets_enabled
+    old_target = settings.google_target_spreadsheet_id
+    old_sheet_name = settings.google_target_sheet_name
+    old_header_count = settings.google_target_header_row_count
+    settings.google_sheets_enabled = True
+    settings.google_target_spreadsheet_id = "ORIGINAL-ID"
+    settings.google_target_sheet_name = "Накладная"
+    settings.google_target_header_row_count = 2
+    monkeypatch.setattr(
+        google_sheets_service_module, "_build_google_services", lambda: (fake_service, None)
+    )
+    sheet_data = {
+        "spreadsheet_name": "АвтоСнаб Накладные",
+        "primary_sheet_name": "Накладные",
+        "sheets": {"Накладные": [SHARED_INVOICE_HEADERS]},
+        "shared_sheet_rows": [
+            dict(zip(SHARED_INVOICE_HEADERS, ["item-1"] * len(SHARED_INVOICE_HEADERS), strict=True)),
+        ],
+    }
+    try:
+        create_invoice_review_spreadsheet(_FakeReceiving("uploads/invoices/test.jpg"), sheet_data)
+    finally:
+        settings.google_sheets_enabled = old_enabled
+        settings.google_target_spreadsheet_id = old_target
+        settings.google_target_sheet_name = old_sheet_name
+        settings.google_target_header_row_count = old_header_count
+
+    get_calls = fake_service.spreadsheets_resource.get_calls
+    assert get_calls[0]["spreadsheetId"] == "ORIGINAL-ID"

@@ -130,6 +130,11 @@ class Settings(BaseSettings):
     sbis_admin_api_key: str | None = None
     sbis_parse_unstructured_attachments: bool = True
     sbis_unstructured_extraction_method: str = "openai"
+    # Manual pick-and-import web tool (/sbis-manual): a deliberately SEPARATE
+    # spreadsheet from GOOGLE_TARGET_SPREADSHEET_ID (a manual copy of the live
+    # "Накладная" sheet the bot/scheduler write to), so an operator hand-
+    # importing SBIS documents can never write into the real production sheet.
+    sbis_manual_import_target_spreadsheet_id: str | None = None
 
     # OpenAI structures extracted evidence. Business rules and sheet writes stay local.
     openai_api_key: str | None = None

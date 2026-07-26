@@ -235,6 +235,7 @@ personal-*.json
 backend/secrets/*.json
 backend/uploads/invoices/*
 !backend/uploads/invoices/.gitkeep
+backend/uploads/sbis/*
 /uploads/
 /exports/openai_debug/
 /exports/golden/

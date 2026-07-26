@@ -5,7 +5,16 @@ from fastapi import FastAPI
 from app.config import settings
 from app.db.session import Base, engine
 from app.models import *  # noqa: F401,F403
-from app.routers import accounting, diadoc, google_oauth, invoice_review, receiving, receiving_backoffice, sbis
+from app.routers import (
+    accounting,
+    diadoc,
+    google_oauth,
+    invoice_review,
+    receiving,
+    receiving_backoffice,
+    sbis,
+    sbis_manual_import,
+)
 from app.services.database_health_service import assert_database_writable, database_health
 from app.services.diadoc_scheduler_service import start_diadoc_scheduler, stop_diadoc_scheduler
 from app.services.provider_health_service import provider_health
@@ -61,3 +70,4 @@ app.include_router(google_oauth.router, prefix=settings.api_prefix)
 app.include_router(invoice_review.router, prefix=settings.api_prefix)
 app.include_router(diadoc.router, prefix=settings.api_prefix)
 app.include_router(sbis.router, prefix=settings.api_prefix)
+app.include_router(sbis_manual_import.router, prefix=settings.api_prefix)

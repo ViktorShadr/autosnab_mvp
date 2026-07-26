@@ -43,15 +43,25 @@ class SbisBinaryResponse:
     content_type: str | None = None
 
 
-def _sid_cache_key() -> str:
-    return f"{settings.sbis_login}:{settings.sbis_account_number or ''}"
-
-
 class SbisClient:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        login: str | None = None,
+        password: str | None = None,
+        account_number: str | None = None,
+    ) -> None:
         self.auth_url = settings.sbis_auth_url
         self.api_url = f"{settings.sbis_api_base_url.rstrip('/')}/service/?srv=1"
         self.timeout = settings.sbis_timeout_seconds
+        self.login = login if login is not None else settings.sbis_login
+        self.password = password if password is not None else settings.sbis_password
+        self.account_number = (
+            account_number if account_number is not None else settings.sbis_account_number
+        )
+
+    def _sid_cache_key(self) -> str:
+        return f"{self.login}:{self.account_number or ''}"
 
     def get_changes(self, *, date_from: str) -> dict[str, Any]:
         return self._call(
@@ -89,24 +99,24 @@ class SbisClient:
 
     def _ensure_sid(self) -> str:
         with _SID_LOCK:
-            cached = _SID_CACHE.get(_sid_cache_key())
+            cached = _SID_CACHE.get(self._sid_cache_key())
         if cached:
             return cached
         return self._authenticate()
 
     def _invalidate_sid(self) -> None:
         with _SID_LOCK:
-            _SID_CACHE.pop(_sid_cache_key(), None)
+            _SID_CACHE.pop(self._sid_cache_key(), None)
 
     def _authenticate(self) -> str:
         params: dict[str, Any] = {
             "Параметр": {
-                "Логин": settings.sbis_login,
-                "Пароль": settings.sbis_password,
+                "Логин": self.login,
+                "Пароль": self.password,
             }
         }
-        if settings.sbis_account_number:
-            params["Параметр"]["НомерАккаунта"] = settings.sbis_account_number
+        if self.account_number:
+            params["Параметр"]["НомерАккаунта"] = self.account_number
         payload = self._rpc_call(self.auth_url, "СБИС.Аутентифицировать", params)
         error = payload.get("error")
         if error:
@@ -115,7 +125,7 @@ class SbisClient:
         if not sid:
             raise SbisAuthError("СБИС не вернул SID при аутентификации")
         with _SID_LOCK:
-            _SID_CACHE[_sid_cache_key()] = sid
+            _SID_CACHE[self._sid_cache_key()] = sid
         return sid
 
     def _rpc_call(

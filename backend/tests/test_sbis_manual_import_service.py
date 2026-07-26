@@ -1,0 +1,250 @@
+from types import SimpleNamespace
+
+import pytest
+
+from app.config import settings
+from app.schemas.invoice_review import InvoiceReviewCreateRequest
+from app.services import sbis_manual_import_service as import_service
+from app.services.sbis_client import SbisAttachmentExpiredError, SbisBinaryResponse, SbisClient
+from app.services.sbis_manual_session_service import SbisManualSession
+
+
+def _event(*attachments):
+    return {"Вложение": list(attachments)}
+
+
+def _xml_document(document_id: str, *, document_type="ДокОтгрВх", date_="15.07.2026") -> dict:
+    return {
+        "Идентификатор": document_id,
+        "Тип": document_type,
+        "Номер": "173",
+        "Дата": date_,
+        "Название": "Накладная",
+        "Сумма": "1200.00",
+        "Контрагент": {"СвЮЛ": {"НазваниеПолное": "ООО Ромашка", "ИНН": "1234567890"}},
+        "Событие": [
+            _event(
+                {
+                    "Служебный": "Нет",
+                    "Название": "invoice.xml",
+                    "Файл": {"Имя": "invoice.xml", "Ссылка": "https://disk.sbis.ru/invoice.xml"},
+                }
+            )
+        ],
+    }
+
+
+def _session() -> SbisManualSession:
+    return SbisManualSession(login="op", password="pw", account_number=None, last_used_at=0.0)
+
+
+# --- list_documents ---------------------------------------------------------
+
+
+def test_list_documents_filters_by_configured_type_and_date_to(monkeypatch):
+    monkeypatch.setattr(settings, "sbis_document_types", "ДокОтгрВх,СчетВх")
+    documents = [
+        _xml_document("doc-in-range", document_type="ДокОтгрВх", date_="15.07.2026"),
+        _xml_document("doc-out-of-range", document_type="ДокОтгрВх", date_="20.07.2026"),
+        _xml_document("doc-wrong-type", document_type="ДоговорВх", date_="15.07.2026"),
+    ]
+
+    def fake_get_changes(self, *, date_from):
+        return {"result": {"Документ": documents, "Навигация": {"ЕстьЕще": "Нет"}}}
+
+    monkeypatch.setattr(SbisClient, "get_changes", fake_get_changes)
+
+    session = _session()
+    result = import_service.list_documents(session, date_from="2026-07-01", date_to="2026-07-16")
+
+    ids = {doc.sbis_document_id for doc in result.documents}
+    assert ids == {"doc-in-range"}
+    assert "doc-in-range" in session.documents_cache
+
+
+def test_list_documents_computes_attachment_flags(monkeypatch):
+    document = _xml_document("doc-1")
+    monkeypatch.setattr(
+        SbisClient,
+        "get_changes",
+        lambda self, *, date_from: {"result": {"Документ": [document], "Навигация": {"ЕстьЕще": "Нет"}}},
+    )
+
+    result = import_service.list_documents(_session(), date_from="2026-07-01", date_to="2026-07-31")
+
+    summary = result.documents[0]
+    assert summary.has_target_attachment is True
+    assert summary.attachment_count == 1
+    assert summary.counterparty_name == "ООО Ромашка"
+    assert summary.counterparty_inn == "1234567890"
+
+
+def test_list_documents_rejects_inverted_date_range():
+    with pytest.raises(ValueError):
+        import_service.list_documents(_session(), date_from="2026-07-31", date_to="2026-07-01")
+
+
+# --- import_document ---------------------------------------------------------
+
+
+def _canned_payload() -> InvoiceReviewCreateRequest:
+    return InvoiceReviewCreateRequest(
+        file_id="doc-1",
+        supplier="ООО Ромашка",
+        invoice_number="173",
+        parser_metadata={},
+    )
+
+
+def test_import_document_happy_path(monkeypatch):
+    monkeypatch.setattr(settings, "sbis_manual_import_target_spreadsheet_id", "COPY-ID")
+    session = _session()
+    session.documents_cache = {"doc-1": _xml_document("doc-1")}
+
+    monkeypatch.setattr(
+        SbisClient,
+        "download_attachment",
+        lambda self, url: SbisBinaryResponse(content=b"<xml/>", content_type="text/xml"),
+    )
+    monkeypatch.setattr(import_service, "parse_fns_invoice_xml", lambda *a, **kw: _canned_payload())
+    monkeypatch.setattr(
+        import_service, "create_invoice_review", lambda db, payload: SimpleNamespace(id=42)
+    )
+    captured = {}
+
+    def fake_create_sheet(db, receiving, public_api_base_url, target_spreadsheet_id=None):
+        captured["target_spreadsheet_id"] = target_spreadsheet_id
+        return {"spreadsheet_url": "https://sheets.example/copy"}
+
+    monkeypatch.setattr(import_service, "create_real_google_sheet_for_review", fake_create_sheet)
+
+    result = import_service.import_document(db=None, session=session, sbis_document_id="doc-1")
+
+    assert result.success is True
+    assert result.receiving_id == 42
+    assert result.spreadsheet_url == "https://sheets.example/copy"
+    assert captured["target_spreadsheet_id"] == "COPY-ID"
+
+
+def test_import_document_fails_when_target_spreadsheet_not_configured(monkeypatch):
+    monkeypatch.setattr(settings, "sbis_manual_import_target_spreadsheet_id", None)
+    session = _session()
+    session.documents_cache = {"doc-1": _xml_document("doc-1")}
+
+    result = import_service.import_document(db=None, session=session, sbis_document_id="doc-1")
+
+    assert result.success is False
+    assert result.stage == "config"
+
+
+def test_import_document_fails_when_document_not_in_cache(monkeypatch):
+    monkeypatch.setattr(settings, "sbis_manual_import_target_spreadsheet_id", "COPY-ID")
+    session = _session()
+
+    result = import_service.import_document(db=None, session=session, sbis_document_id="unknown")
+
+    assert result.success is False
+    assert result.stage == "not_found"
+
+
+def test_import_document_fails_when_no_attachment(monkeypatch):
+    monkeypatch.setattr(settings, "sbis_manual_import_target_spreadsheet_id", "COPY-ID")
+    session = _session()
+    document = _xml_document("doc-1")
+    document["Событие"] = [_event({"Служебный": "Да", "Название": "notice", "Файл": {"Имя": "n.xml", "Ссылка": "https://x"}})]
+    session.documents_cache = {"doc-1": document}
+
+    result = import_service.import_document(db=None, session=session, sbis_document_id="doc-1")
+
+    assert result.success is False
+    assert result.stage == "attachment_missing"
+
+
+def test_import_document_fails_when_attachment_expired(monkeypatch):
+    monkeypatch.setattr(settings, "sbis_manual_import_target_spreadsheet_id", "COPY-ID")
+    session = _session()
+    session.documents_cache = {"doc-1": _xml_document("doc-1")}
+
+    def fake_download(self, url):
+        raise SbisAttachmentExpiredError("expired")
+
+    monkeypatch.setattr(SbisClient, "download_attachment", fake_download)
+
+    result = import_service.import_document(db=None, session=session, sbis_document_id="doc-1")
+
+    assert result.success is False
+    assert result.stage == "download"
+
+
+def test_import_document_fails_when_parse_raises(monkeypatch):
+    monkeypatch.setattr(settings, "sbis_manual_import_target_spreadsheet_id", "COPY-ID")
+    session = _session()
+    session.documents_cache = {"doc-1": _xml_document("doc-1")}
+
+    monkeypatch.setattr(
+        SbisClient, "download_attachment", lambda self, url: SbisBinaryResponse(content=b"<bad/>")
+    )
+
+    def fake_parse(*args, **kwargs):
+        raise ValueError("bad xml")
+
+    monkeypatch.setattr(import_service, "parse_fns_invoice_xml", fake_parse)
+
+    result = import_service.import_document(db=None, session=session, sbis_document_id="doc-1")
+
+    assert result.success is False
+    assert result.stage == "parse"
+
+
+def test_import_document_fails_when_sheet_write_raises(monkeypatch):
+    monkeypatch.setattr(settings, "sbis_manual_import_target_spreadsheet_id", "COPY-ID")
+    session = _session()
+    session.documents_cache = {"doc-1": _xml_document("doc-1")}
+
+    monkeypatch.setattr(
+        SbisClient, "download_attachment", lambda self, url: SbisBinaryResponse(content=b"<xml/>")
+    )
+    monkeypatch.setattr(import_service, "parse_fns_invoice_xml", lambda *a, **kw: _canned_payload())
+    monkeypatch.setattr(import_service, "create_invoice_review", lambda db, payload: SimpleNamespace(id=42))
+
+    def fake_create_sheet(*args, **kwargs):
+        raise RuntimeError("sheets down")
+
+    monkeypatch.setattr(import_service, "create_real_google_sheet_for_review", fake_create_sheet)
+
+    result = import_service.import_document(db=None, session=session, sbis_document_id="doc-1")
+
+    assert result.success is False
+    assert result.stage == "sheet_write"
+
+
+def test_import_document_never_raises_and_a_later_call_is_unaffected_by_earlier_failure(monkeypatch):
+    monkeypatch.setattr(settings, "sbis_manual_import_target_spreadsheet_id", "COPY-ID")
+    session = _session()
+    session.documents_cache = {
+        "doc-fail": _xml_document("doc-fail"),
+        "doc-ok": _xml_document("doc-ok"),
+    }
+
+    calls = {"n": 0}
+
+    def fake_download(self, url):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise SbisAttachmentExpiredError("expired")
+        return SbisBinaryResponse(content=b"<xml/>")
+
+    monkeypatch.setattr(SbisClient, "download_attachment", fake_download)
+    monkeypatch.setattr(import_service, "parse_fns_invoice_xml", lambda *a, **kw: _canned_payload())
+    monkeypatch.setattr(import_service, "create_invoice_review", lambda db, payload: SimpleNamespace(id=1))
+    monkeypatch.setattr(
+        import_service,
+        "create_real_google_sheet_for_review",
+        lambda *a, **kw: {"spreadsheet_url": "https://sheets.example"},
+    )
+
+    first = import_service.import_document(db=None, session=session, sbis_document_id="doc-fail")
+    second = import_service.import_document(db=None, session=session, sbis_document_id="doc-ok")
+
+    assert first.success is False
+    assert second.success is True

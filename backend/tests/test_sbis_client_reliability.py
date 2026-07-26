@@ -95,6 +95,33 @@ def test_client_retries_transient_http_status(monkeypatch):
     assert calls["count"] == 2
 
 
+def test_explicit_credentials_cache_separately_from_settings(monkeypatch):
+    _clear_sid_cache()
+    monkeypatch.setattr(settings, "sbis_login", "service-account")
+    monkeypatch.setattr(settings, "sbis_password", "service-pass")
+    calls = {"auth": 0}
+
+    def fake_post(_self, url, *, headers, content):
+        if url == settings.sbis_auth_url:
+            calls["auth"] += 1
+            return _response(200, json.dumps({"jsonrpc": "2.0", "result": f"SID-{calls['auth']}", "id": 1}).encode())
+        return _response(200, json.dumps({"jsonrpc": "2.0", "result": {"Документ": []}, "id": 1}).encode())
+
+    monkeypatch.setattr(SbisClient, "_post", fake_post)
+
+    settings_client = SbisClient()
+    operator_client = SbisClient(login="operator", password="operator-pass")
+
+    settings_client.get_changes(date_from="01.01.2026 00:00:00")
+    operator_client.get_changes(date_from="01.01.2026 00:00:00")
+
+    assert calls["auth"] == 2
+    assert set(client_module._SID_CACHE.keys()) == {
+        "service-account:",
+        "operator:",
+    }
+
+
 def test_download_attachment_403_raises_expired_error(monkeypatch):
     _clear_sid_cache()
     monkeypatch.setattr(settings, "sbis_login", "user")

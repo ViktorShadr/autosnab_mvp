@@ -1304,7 +1304,12 @@ function sendInvoiceToIiko() {{
 }}
 """
 
-def create_real_google_sheet_for_review(db: Session, receiving: Receiving, public_api_base_url: str | None = None) -> dict:
+def create_real_google_sheet_for_review(
+    db: Session,
+    receiving: Receiving,
+    public_api_base_url: str | None = None,
+    target_spreadsheet_id: str | None = None,
+) -> dict:
     sheet = build_review_sheet(receiving)
     result = create_invoice_review_spreadsheet(
         receiving,
@@ -1312,6 +1317,7 @@ def create_real_google_sheet_for_review(db: Session, receiving: Receiving, publi
         None,
         public_api_base_url=public_api_base_url or "https://YOUR_API_HOST",
         existing_spreadsheet_id=_get_reusable_invoice_register_spreadsheet_id(db),
+        target_spreadsheet_id=target_spreadsheet_id,
     )
     export = AccountingExport(
         receiving_id=receiving.id,

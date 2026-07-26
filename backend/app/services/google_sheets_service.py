@@ -191,12 +191,18 @@ def create_invoice_review_spreadsheet(
     apps_script_text: str | None = None,
     public_api_base_url: str | None = None,
     existing_spreadsheet_id: str | None = None,
+    target_spreadsheet_id: str | None = None,
 ) -> dict[str, Any]:
     """Create or update the Google Spreadsheet used for invoice review.
 
     If an invoice-register spreadsheet id is configured/passed, the new invoice
     rows are appended to that single spreadsheet. Otherwise a spreadsheet is
     created once and its id can be reused on the following uploads.
+
+    `target_spreadsheet_id` overrides `settings.google_target_spreadsheet_id`
+    for callers that must write to a different spreadsheet (e.g. the manual
+    SBIS-import tool's own copy sheet) -- falls back to the settings value
+    when not given, so every existing caller is unaffected.
     """
     if not settings.google_sheets_enabled:
         raise GoogleSheetsConfigurationError(
@@ -204,7 +210,7 @@ def create_invoice_review_spreadsheet(
         )
     sheets_service, drive_service = _build_google_services()
 
-    target_spreadsheet_id = settings.google_target_spreadsheet_id
+    target_spreadsheet_id = target_spreadsheet_id or settings.google_target_spreadsheet_id
     if target_spreadsheet_id:
         return _insert_into_existing_spreadsheet(
             receiving=receiving,
