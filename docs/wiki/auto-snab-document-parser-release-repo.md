@@ -62,6 +62,14 @@ version of this note did on 2026-07-26 (see "Correction" below).
   all four jobs successfully. The include is accessible now; no CI YAML or
   DevOps change is required for this incident. Monitor the jobs themselves
   separately for ordinary build/deploy failures.
+  **Confirmed isolated, not systemic** (checked the full `develop` pipeline
+  history in the GitLab UI): `#532` (bot UI redesign merge, `1d7002f`) and
+  `#529` (production-bugfixes merge, `1a48422`) both **Passed** all four
+  stages a day earlier — so those two ports did deploy successfully. `#569`
+  (this incident) is the only pipeline on `develop` that failed on the
+  include-access error; an earlier `#525` failure on the same branch was an
+  ordinary `ruff` lint failure, unrelated, fixed by the follow-up commits
+  that became `1a48422`.
 - `env.prod` convention: a gitignored plaintext `.env` snapshot in both
   repos. Pull the real working one from the VPS
   (`ssh root@78.17.160.248 'cat /opt/autosnab_mvp/.env'`), don't trust
@@ -87,10 +95,11 @@ version of this note did on 2026-07-26 (see "Correction" below).
   per stage instead of sending a new message each time; permanent
   `ReplyKeyboardMarkup` replaced with contextual inline buttons
   (`DRAFT_ACTIONS_KEYBOARD`, `sheet_link_keyboard`) plus `/done`/`/status`/
-  `/reset` via `bot.set_my_commands`. **This is already live in `develop`
-  with a real CI deploy stage behind it — most likely already in real
-  production**, even though `autosnab_mvp`'s own personal-VPS test deploy
-  (`78.17.160.248`) never got this update (different, lower-priority target).
+  `/reset` via `bot.set_my_commands`. **Confirmed deployed**: pipeline `#532`
+  for this merge commit passed all four CI stages (build/lint/scan/deploy) —
+  this is live in real production, even though `autosnab_mvp`'s own
+  personal-VPS test deploy (`78.17.160.248`) never got this update
+  (different, lower-priority target).
 - **`fix/quantity-us-passthrough` (`5824f7d`) → MR `!17` → merged `develop`
   (`8874799`)**: `Кол-во в УС`/`Цена в УС` in the shared-sheet row always
   written as the raw document quantity/price, not a `quantity_multiplier`-
