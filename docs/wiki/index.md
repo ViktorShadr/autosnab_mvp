@@ -30,4 +30,5 @@
 - [lilia-feedback-2026-07-17-parsing-instability.md](./lilia-feedback-2026-07-17-parsing-instability.md)
 - [google-oauth-production-readiness.md](./google-oauth-production-readiness.md)
 - [google-auth-vision-migration-plan.md](./google-auth-vision-migration-plan.md)
+- [auto-snab-document-parser-porting-plan.md](./auto-snab-document-parser-porting-plan.md)
 - [log.md](./log.md)
