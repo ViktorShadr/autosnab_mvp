@@ -252,5 +252,54 @@ until that merges):
   passed, same 8 pre-existing `test_receiving.py` failures as baseline
   (confirmed via `git stash`).
 
-**Not started**: Phase 3 (specificity-tiered rule engine + persistence +
-hidden facts sheet — the largest phase).
+**Phase 3 implemented and MR opened, 2026-07-26** on branch
+`feature/packaging-facts-phase3-rule-engine` (off Phase 2's branch, commit
+`9386bc9`), **MR `!21`** (depends on `!19`/`!20`, diff includes both earlier
+commits until they merge):
+- **3a (highest-risk piece)**: `_match_conversion_rule` rewritten from a
+  flat first-match scan to the specificity-scored engine — separate
+  `rule_us_code`/`rule_supplier_code` lookups (fixes bug #3, the Код товара
+  УС / Код товара поставщика conflation), disqualify-on-failed-specified-
+  constraint, weighted scoring (`Код товара УС`=100, `Склад/назначение`=40,
+  `ИНН поставщика`=20, `Код товара поставщика`=30, `Поставщик`=10,
+  product-name=5, package-text=3) with a `Приоритет правила` tiebreak,
+  3-state `_rule_activity_state` (unknown → safe review). Added
+  `coefficient_rule`/`average_weight_rule` recalculation modes. Threaded
+  `warehouse`/`supplier_inn`/`supplier_name` through `apply_reference_mapping_to_payload`
+  → `_resolve_conversion` → `_match_conversion_rule`, and through both real
+  call sites (`invoice_review_service.py`'s backfill, the router's live
+  upload path via `venue`). Fixed bug #1 (`units_per_package` now gated on
+  `rule_id is not None`).
+- **3b**: `_item_payload()` now carries `packaging_facts`/`packaging_risk_flags`.
+- **3c**: hidden `Факты фасовки AI (техн.)` sheet delivery ported verbatim
+  (`build_packaging_facts_rows`/`_packaging_facts_item_rows`/label dicts,
+  `PACKAGING_FACTS_SHEET_HEADERS`/`_write_packaging_facts_rows`,
+  `google_packaging_facts_sheet_name`), wired into `_insert_into_existing_spreadsheet`
+  (the real production write path).
+- **A real editing mistake was caught and fixed during this phase**: an
+  early test-file edit accidentally spliced two new tests into the middle
+  of the pre-existing `test_insert_into_existing_spreadsheet_prepends_block_and_separator`
+  test body, truncating its own border-assertion tail and reattaching that
+  tail to the end of a different new test. Caught because the reattached
+  assertions failed against the wrong fixture's expected values; fixed by
+  moving the border assertions back to their original test and removing the
+  duplicate from the new one. Full suite re-verified clean after the fix.
+- A separate **pre-existing, unrelated gap was found and deliberately left
+  alone**: one hand-written fixture row in
+  `test_insert_into_existing_spreadsheet_prepends_block_and_separator` is 2
+  values short of the 43-column `SHARED_INVOICE_HEADERS` (silently truncated
+  by non-strict `zip()` until now). Adding `strict=True` there would turn a
+  latent gap into a hard crash unrelated to this port, so a `# noqa: B905`
+  was added with an explanatory comment instead of touching the fixture data.
+- Tests: ported the missing `test_napkins_stay_as_packs_without_a_rule_even_with_ai_units_per_package_fact`,
+  6 new rule-engine tests (specificity/priority/inactive/coefficient/
+  average-weight/supplier-code), a new `test_packaging_facts_sheet_rows.py`
+  (5 tests, verbatim port), and 2 `google_sheets_service` hidden-sheet tests
+  (create-on-first-use, skip-when-no-facts). Full suite: 230 passed, same 8
+  pre-existing `test_receiving.py` failures as baseline (confirmed via
+  `git stash` before/after) — zero regressions on the highest-risk phase of
+  the whole port.
+
+**All three phases of the packaging_facts port are now implemented and have
+open MRs** (`!19`, `!20`, `!21`, stacked in that order). None merged yet —
+awaiting review/go-ahead.
