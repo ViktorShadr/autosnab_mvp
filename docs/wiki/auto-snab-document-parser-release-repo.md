@@ -278,3 +278,31 @@ access-denied failure an API-token-triggered pipeline hit before. Pipeline
 the DEV environment that real users actually hit at
 `avtosnab.testant.online/docparser`, so this was left open for explicit
 go-ahead rather than auto-merged.
+
+## Update, 2026-07-27 (same day): MR `!22` merged into `develop`
+
+User confirmed to merge. Pipeline `#598` on the branch first failed at the
+`lint` stage (`ruff format --check`) — this repo runs `ruff format` in CI,
+`autosnab_mvp` does not, so the ported code needed two small reformats
+(a long boolean condition, one long `PackagingFact(...)` call). Fixed
+locally with a temporary `pip install --target ... ruff==0.16.0` (no ruff
+installed in this environment otherwise), pushed as `71265eb2`. Re-run
+pipelines `#600`/`#601` both passed (build, lint, `postgresql_validation`
+test, and the built-in GitLab SAST/code-quality/secret-detection scans —
+all slow on this runner's single concurrency slot, ~15 minutes total wall
+time, but never actually stuck).
+
+Clicking **Merge** first appeared to hang indefinitely ("Merging! Lift-off
+in 5... 4... 3...") with no new commit landing on `develop` and the GitLab
+instance itself returning a transient `500` on the MR/commits pages a few
+minutes in — a real server-side hiccup on this self-hosted instance, not
+something wrong with the MR itself. Reloading showed the MR back in a
+"Ready to merge!" state (the stuck attempt had silently reset rather than
+completed); clicking **Merge** again succeeded immediately. Merged as
+`5a538f4b` into `develop`, source branch deleted. Confirmed via
+`git fetch`/`git log origin/develop` from the local clone.
+
+Since `deploy-dev` on `ci-templates` triggers automatically for any push to
+`develop`, this merge is expected to auto-deploy to
+`avtosnab.testant.online/docparser` (the real DEV environment real users
+hit) — not separately verified live after the merge in this session.
