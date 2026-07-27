@@ -240,7 +240,11 @@ backend/uploads/sbis/*
 /exports/openai_debug/
 /exports/golden/
 /exports/invoice_review_*.csv
+/backend/exports/*.csv
 .env.local
+
+# Local Codex CLI tool config — workstation-specific, not project data
+.codex/
 /.idea/.gitignore
 /.idea/autosnab_mvp.iml
 /.idea/misc.xml
