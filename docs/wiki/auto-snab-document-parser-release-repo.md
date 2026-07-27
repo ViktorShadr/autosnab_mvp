@@ -195,6 +195,26 @@ that this was simply the first real deploy to exercise. Reported to
 Aliaksandr Nikifarau (owns `ci-templates`) with the fix (`PGSSLCERT` →
 `PGSSLROOTCERT`) same day; not yet confirmed fixed.
 
+**Recurrence confirmed, 2026-07-27**: after merging MR `!22` (the
+`count_in_package` fix) into `develop`, `deploy-dev` pipeline `#602` showed
+all 5 stages **Passed**, but `https://avtosnab.testant.online/docparser/health/runtime`
+still returned a live `502 Bad Gateway` (the rest of `avtosnab.testant.online`,
+e.g. `/catalog`, loads fine — isolated to the `docparser` service, not a
+shared-domain outage). Re-ran the same temporary `debug-logs` technique
+(see below) on a throwaway branch off `develop`: identical traceback,
+identical root cause — `psycopg2.OperationalError: ... certificate present,
+but not private key file "/app/.postgresql/postgresql.key"` from `alembic
+upgrade head` at container startup. **Confirms the `PGSSLCERT`/`PGSSLROOTCERT`
+fix reported to Aliaksandr on 2026-07-26 was never actually applied to
+`ENV_DEV`** — this is not a regression from `!22`'s own code (which never
+touches DB/SSL config), just the next deploy to hit the still-broken
+variable. The `deploy-dev` CI job itself only verifies `docker run`
+succeeded, not that the container stayed up past its entrypoint migration
+— a green pipeline does not mean the service is actually reachable. Debug
+branch deleted immediately after reading the logs, per the established
+cleanup step. **Action needed**: ping Aliaksandr again — the fix was
+reported but `ENV_DEV` still has the wrong variable name a day later.
+
 ## Technique: temporary manual CI job for container logs without SSH (2026-07-26)
 
 No SSH access to the dev host exists in this session (unlike `autosnab_mvp`'s
