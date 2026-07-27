@@ -228,6 +228,67 @@ container as he suggested. No repo files changed by this exchange. Still
 waiting on Aliaksandr for both the separate migration container and the
 `ENV_DEV` fix.
 
+## Dead `iiko` integration removed, MR `!23` (2026-07-27)
+
+Following the same-day `autosnab_mvp` iiko removal (see that repo's
+`docs/wiki/log.md`), user asked to port the change here too. **Important
+difference discovered mid-port**: in `autosnab_mvp` iiko was already
+unused/parallel code with a confirmed non-overlapping replacement (Marina's
+separate iiko project). In this repo — which never went through
+`autosnab_mvp`'s later redesign — iiko was still **live and wired into the
+core pipeline**: `auto_fill_iiko_fields()` (from
+`domains/iiko/services/iiko_reference_mapping_service.py`) ran on every
+`create_invoice_review`/`update_invoice_review` call, pulling real supplier/
+product/store/unit/tax catalogs from the iiko Server API (when
+`IIKO_INTEGRATION_ENABLED=true`) to auto-map header/item fields, and the
+confirm/send/preview flow (`build_iiko_preview`, `confirm_and_send_to_iiko`)
+built a real iiko incoming-invoice XML payload. This was not dead code by
+the same reasoning as `autosnab_mvp` — it was simply never exercised because
+the integration flag defaults to `false`. Stopped mid-edit to confirm with
+the user before continuing; **user confirmed iiko is definitely unused by
+anyone here too**, so the same end-state was applied, function by function
+rather than blanket-deleted:
+
+- Deleted `domains/iiko/` (both services) and its dedicated test file
+  (`test_incremental_reference_mapping.py`).
+- `create_invoice_review`/`update_invoice_review` no longer call
+  `auto_fill_iiko_fields`; header/item payloads used as-is (matches
+  `autosnab_mvp`'s current shape exactly). `_merge_stored_iiko_metadata` →
+  `_merge_stored_item_metadata` (same technical-field preservation across
+  updates, iiko-only keys dropped — confirmed those keys were never actually
+  set anywhere, i.e. already dead within the dead code).
+- `get_iiko_reference_status`/`remap_review_with_iiko_references` and their
+  two router endpoints (`/iiko/references/status`,
+  `/{review_id}/iiko-auto-map`) removed outright — no other caller existed.
+- `build_iiko_preview` → `build_review_preview`, `confirm_and_send_to_iiko` →
+  `confirm_and_send`, `send_google_sheet_and_confirm_to_iiko` →
+  `send_from_google_sheet`, `sync_sheet_and_confirm_to_iiko` →
+  `sync_sheet_and_confirm` — renamed and de-iiko-ified (no more
+  `iikoXml`/`iikoProductId`/`iikoSupplierId` in payloads,
+  `AccountingExport.target_system` default `"iiko"` → `"review"`), matching
+  `autosnab_mvp`'s already-renamed function names exactly.
+- Schema: `ConfirmSendToIikoRequest` → `ConfirmSendRequest`; `iiko_*` fields
+  dropped from all 4 `invoice_review` schemas. Kept `product_article`,
+  `supplier_product`, `amount_unit`, `vat_percent`, `vat_sum`, `store_id`,
+  `mapping_status`, `mapping_error` — verified via grep these are actually
+  read by live sheet-building code (`_invoice_register_item_row` etc.), not
+  iiko-specific despite the old Field descriptions referencing iiko XML tag
+  names.
+- `validate_review`'s iiko-header/mapping-status hard-block checks removed,
+  matching `autosnab_mvp`'s already-live (less strict) validation behavior.
+- Send-page HTML, the embedded Apps Script sample, and two Google-Sheets
+  status messages de-iiko-ified to the exact wording `autosnab_mvp` uses.
+
+Full suite: 238 passed, same 8 pre-existing `test_receiving.py` failures
+(confirmed identical via `git stash` on this repo directly — safe here since
+only this session's edits existed in the working tree) plus 2 pre-existing
+skips, zero regressions. `pyflakes` clean on every touched file. Committed
+(`3a945cc` on branch `fix/remove-dead-iiko-integration`), pushed, and MR
+`!23` opened via the GitLab web UI logged in as `v.viktor.shadrin` (per the
+2026-07-26 CI-actor-identity lesson). **Not merged** — merging to `develop`
+auto-deploys to the real DEV environment, which is already down from the
+unrelated `PGSSLCERT` bug above; left open for explicit go-ahead.
+
 ## Technique: temporary manual CI job for container logs without SSH (2026-07-26)
 
 No SSH access to the dev host exists in this session (unlike `autosnab_mvp`'s
