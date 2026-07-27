@@ -39,6 +39,15 @@ The latest code review points to these modules as the main change surface:
 
 ### P0. Fix semantic field mapping for document header fields
 
+**Verified 2026-07-27** (live DB + container test):
+- `Грузоотправитель`/`Получатель` independence: ✅ FIXED
+- `Основание` document-form leak: ⏸ DEFERRED (low priority)
+  — `_normalize_basis()` (invoice_normalization_service.py:257) only catches
+  "универсальный передаточный документ" / "товарная накладная" patterns;
+  "Счет-фактура и документ об отгрузке товаров..." slips through.
+  Confirmed via live test in container. Occurred 1/69 docs, non-critical field,
+  Lilia hasn't reported it. Fix: add "счет-фактура" to the detection pattern.
+
 Problem proven by workbook:
 
 - `Грузоотправитель` and `Получатель` are filled with buyer-side values in
@@ -54,10 +63,10 @@ Code targets:
 
 Changes:
 
-1. Remove semantic fallback that maps `Грузоотправитель` from
-   `Грузополучатель`.
-2. Make `Получатель` and `Грузоотправитель` independent write fields.
-3. Prevent `Основание` from inheriting document-form text.
+1. ~~Remove semantic fallback that maps `Грузоотправитель` from
+   `Грузополучатель`.~~ ✅ Done
+2. ~~Make `Получатель` and `Грузоотправитель` independent write fields.~~ ✅ Done
+3. Prevent `Основание` from inheriting document-form text. ⏸ Deferred
 4. If shipper/recipient/basis are not confidently extracted, leave them empty
    and attach a review flag instead of fabricating values.
 

@@ -215,6 +215,19 @@ branch deleted immediately after reading the logs, per the established
 cleanup step. **Action needed**: ping Aliaksandr again — the fix was
 reported but `ENV_DEV` still has the wrong variable name a day later.
 
+**Aliaksandr replied, 2026-07-27**: asked (via Telegram) why a job was added
+to the pipeline and why compose/docker files were changed, wanting
+migrations to run in a separate container instead. Answered through the
+native Telegram bot (a separate Claude session pointed at `autosnab_mvp`):
+the job/compose changes came from the `feature/postgresql-migration` port
+itself (`alembic upgrade head` in `docker-entrypoint.sh`,
+`postgresql_validation` CI job) — the same change that introduced the
+still-open `PGSSLCERT`/`PGSSLROOTCERT` bug above. User confirmed to him that
+Alembic migrations are needed and asked him to split them into a separate
+container as he suggested. No repo files changed by this exchange. Still
+waiting on Aliaksandr for both the separate migration container and the
+`ENV_DEV` fix.
+
 ## Technique: temporary manual CI job for container logs without SSH (2026-07-26)
 
 No SSH access to the dev host exists in this session (unlike `autosnab_mvp`'s

@@ -152,7 +152,7 @@ class CorrectionParseResponse(BaseModel):
 
 
 class SendAccountingRequest(BaseModel):
-    target_system: str = "iiko"
+    target_system: str = "review"
     dry_run: bool = True
     comment: str | None = None
 

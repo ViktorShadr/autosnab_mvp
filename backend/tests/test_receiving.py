@@ -277,24 +277,6 @@ def test_invoice_history_and_html_view():
     assert "Добрая столовая" in page.text
 
 
-def test_iiko_payload_and_send():
-    receiving_id = _prepare_confirmed_receiving()
-    payload = client.get(f"/api/v1/iiko/receivings/{receiving_id}/payload")
-    assert payload.status_code == 200
-    assert payload.json()["externalNumber"] == "01TCPC4P-000001"
-    assert payload.json()["source"] == "autosnab_iiko_adapter"
-
-    send = client.post(
-        f"/api/v1/iiko/receivings/{receiving_id}/send",
-        json={"target_system": "iiko", "dry_run": True},
-    )
-    assert send.status_code == 200
-    assert send.json()["status"] == "iiko_prepared"
-
-    exports = client.get("/api/v1/iiko/exports")
-    assert exports.status_code == 200
-    assert len(exports.json()["exports"]) == 1
-
 
 def test_discrepancy_analytics_and_supplier_control():
     receiving_id = _start_receiving()
@@ -337,8 +319,6 @@ def test_mvp4_invoice_review_sheet_preview_and_send():
             "invoice_number": "777",
             "venue": "Добрая столовая",
             "delivery_address": "ул. Тверская",
-            "iiko_default_store_id": "STORE-001",
-            "iiko_supplier_id": "SUP-001",
             "document_number": "777",
             "incoming_date": "2026-06-19",
             "items": [
@@ -354,7 +334,7 @@ def test_mvp4_invoice_review_sheet_preview_and_send():
 
     sheet = client.get(f"/api/v1/invoice-review/{review_id}/sheet")
     assert sheet.status_code == 200
-    assert sheet.json()["action"]["button_label"] == "Подтвердить и отправить в iiko"
+    assert sheet.json()["action"]["button_label"] == "Подтвердить и отправить"
     assert "Накладные" in sheet.json()["sheets"]
 
     csv_response = client.get(f"/api/v1/invoice-review/{review_id}/sheet.csv")
@@ -363,7 +343,6 @@ def test_mvp4_invoice_review_sheet_preview_and_send():
 
     preview = client.get(f"/api/v1/invoice-review/{review_id}/preview?target_organization=Добрая%20столовая&target_warehouse=Основной%20склад")
     assert preview.status_code == 200
-    assert preview.json()["target_system"] == "iiko"
     assert preview.json()["invoice"]["totalSum"] == 1741.6
 
     send = client.post(
@@ -379,9 +358,8 @@ def test_mvp4_invoice_review_sheet_preview_and_send():
         },
     )
     assert send.status_code == 200
-    assert send.json()["status"] == "iiko_sent_mock"
-    assert send.json()["payload"]["preview"]["target"]["organization"] == "Добрая столовая"
-    assert "<document>" in send.json()["payload"]["iikoXml"]
+    assert send.json()["status"] == "confirmed"
+    assert send.json()["payload"]["target"]["organization"] == "Добрая столовая"
 
 
 def test_upload_page_shows_extraction_method_selector():
@@ -1187,7 +1165,7 @@ def test_mvp4_real_ocr_endpoint_falls_back_to_manual_review_without_ocr_credenti
     assert result["payload"]["parser_provider"] == "manual_review_empty_sheet"
 
 
-def test_mvp4_sync_sheet_corrections_before_iiko_send():
+def test_mvp4_sync_sheet_corrections_before_confirm_send():
     response = client.post(
         "/api/v1/invoice-review/upload",
         json={
@@ -1214,8 +1192,6 @@ def test_mvp4_sync_sheet_corrections_before_iiko_send():
             "invoice_date": "2026-06-19",
             "invoice_number": "779",
             "venue": "Добрая столовая",
-            "iiko_default_store_id": "STORE-001",
-            "iiko_supplier_id": "SUP-001",
             "items": [
                 {"name": "Сахар ванильный", "quantity": 2, "unit": "шт", "price": 110, "sum": 220, "vat": "20%", "product_article": "SUGAR-001", "amount_unit": "шт", "line_number": 1}
             ],
@@ -1223,9 +1199,9 @@ def test_mvp4_sync_sheet_corrections_before_iiko_send():
     )
     assert send.status_code == 200
     data = send.json()
-    assert data["status"] == "iiko_sent_mock"
-    assert data["payload"]["preview"]["items"][0]["name"] == "Сахар ванильный"
-    assert data["payload"]["preview"]["items"][0]["quantity"] == 2
+    assert data["status"] == "confirmed"
+    assert data["payload"]["items"][0]["name"] == "Сахар ванильный"
+    assert data["payload"]["items"][0]["quantity"] == 2
 
 
 def test_mvp4_deterministic_parser_parses_ocr_text():
@@ -1356,23 +1332,7 @@ def test_invoice_review_sheet_does_not_guess_supplier_inn_from_raw_text():
     assert values["Ставка НДС %"] == "7%"
     assert values["Сумма накладной"] == 16351.45
 
-def test_mvp4_auto_fills_iiko_fields_from_references(monkeypatch):
-    from app.services import iiko_reference_mapping_service
-
-    def fake_context(force_refresh=False):
-        return {
-            "status": "ready",
-            "context": {
-                "suppliers": [{"id": "SUP-001", "name": "ООО Питер Кельн", "code": "PK"}],
-                "stores": [{"id": "STORE-001", "name": "Добрая столовая"}],
-                "products": [{"id": "PROD-001", "name": "Сахар ванильный", "num": "SUGAR-001", "taxCategory": "TAX-20"}],
-                "units": [{"id": "шт", "name": "шт", "code": "шт"}],
-                "taxes": [{"id": "TAX-20", "name": "НДС 20%", "vatPercent": 20}],
-            },
-        }
-
-    monkeypatch.setattr(iiko_reference_mapping_service, "get_iiko_reference_context", fake_context)
-
+def test_mvp4_auto_fills_us_fields_from_references():
     response = client.post(
         "/api/v1/invoice-review/upload",
         json={
@@ -1392,7 +1352,6 @@ def test_mvp4_auto_fills_iiko_fields_from_references(monkeypatch):
     sheet = client.get(f"/api/v1/invoice-review/{review_id}/sheet")
     assert sheet.status_code == 200
     rows = sheet.json()["sheets"]["Накладные"]
-    assert "Служебные поля iiko" not in sheet.json()["sheets"]
     assert rows[0][0] == "Статус загрузки"
     assert "Время загрузки документа" in rows[0]
     assert "ID документа" in rows[0]
@@ -1452,9 +1411,6 @@ def test_mvp4_auto_fills_iiko_fields_from_references(monkeypatch):
     preview = client.get(f"/api/v1/invoice-review/{review_id}/preview")
     assert preview.status_code == 200
     data = preview.json()
-    assert data["supplier"]["iikoSupplierId"] == "SUP-001"
-    assert data["items"][0]["iikoProductId"] == "PROD-001"
-    assert data["items"][0]["productArticle"] == "SUGAR-001"
     assert data["items"][0]["mappingStatus"] == "ready"
 
 
@@ -1524,7 +1480,6 @@ def test_invoice_review_sheet_clears_non_visible_values_on_torg12_continuation_p
                 "egais": "41",
                 "mercury": "41",
                 "honest_sign": "41",
-                "iiko_product_id": "41",
                 "product_article": "41",
                 "amount_unit": "41",
                 "acceptance_date": "41",

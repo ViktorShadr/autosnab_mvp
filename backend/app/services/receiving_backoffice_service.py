@@ -1,13 +1,10 @@
 import html
-import json
 from collections import Counter, defaultdict
 from datetime import datetime
 
 from sqlalchemy.orm import Session
 
-from app.models.accounting import AccountingExport
 from app.models.receiving import Receiving, ReceivingDocument, ReceivingItemStatus, ReceivingStatus
-from app.services.receiving_service import build_accounting_payload
 
 PROBLEM_STATUSES = {
     ReceivingItemStatus.missing,
@@ -19,55 +16,6 @@ PROBLEM_STATUSES = {
     ReceivingItemStatus.rejected,
     ReceivingItemStatus.manual_review,
 }
-
-
-def build_iiko_payload(receiving: Receiving) -> dict:
-    base_payload = build_accounting_payload(receiving)
-    return {
-        "externalNumber": base_payload["orderNumber"],
-        "requestId": base_payload["requestId"],
-        "organization": {"name": base_payload["venue"]},
-        "supplier": base_payload["supplier"],
-        "invoice": base_payload["invoice"],
-        "items": [
-            {
-                "name": item["name"],
-                "amount": item["receivedQuantity"],
-                "unit": item["unit"],
-                "price": item["invoicePrice"],
-                "sum": round(item["receivedQuantity"] * item["invoicePrice"], 2),
-                "status": item["status"],
-                "comment": item["comment"],
-            }
-            for item in base_payload["items"]
-        ],
-        "comment": base_payload.get("comment"),
-        "source": "autosnab_iiko_adapter",
-    }
-
-
-def create_iiko_export(db: Session, receiving: Receiving, dry_run: bool, comment: str | None = None) -> AccountingExport:
-    if receiving.status not in {ReceivingStatus.confirmed_full, ReceivingStatus.confirmed_partial}:
-        raise ValueError("Передача в iiko возможна только после подтверждения приемки")
-
-    payload = build_iiko_payload(receiving)
-    status = "iiko_prepared" if dry_run else "iiko_sent_mock"
-    export = AccountingExport(
-        receiving_id=receiving.id,
-        request_id=receiving.request_id,
-        order_number=receiving.order_number,
-        target_system="iiko",
-        status=status,
-        payload_json=json.dumps(payload, ensure_ascii=False),
-    )
-    if not dry_run:
-        receiving.status = ReceivingStatus.sent_to_accounting
-    if comment:
-        receiving.comment = comment
-    db.add(export)
-    db.commit()
-    db.refresh(export)
-    return export
 
 
 def document_to_dict(document: ReceivingDocument) -> dict:

@@ -28,7 +28,7 @@ class AccountingExport(Base):
     receiving_id: Mapped[int] = mapped_column(Integer, index=True)
     request_id: Mapped[str] = mapped_column(String(64), index=True)
     order_number: Mapped[str] = mapped_column(String(64), index=True)
-    target_system: Mapped[str] = mapped_column(String(64), default="iiko")
+    target_system: Mapped[str] = mapped_column(String(64), default="review")
     status: Mapped[str] = mapped_column(String(64), default="prepared")
     payload_json: Mapped[str] = mapped_column(Text)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)

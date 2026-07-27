@@ -49,17 +49,6 @@ class Settings(BaseSettings):
     )
     mineru_timeout_seconds: float = 900.0
 
-    # iiko Server API integration for incoming invoice XML.
-    iiko_integration_enabled: bool = False
-    iiko_base_url: str | None = None
-    iiko_login: str | None = None
-    iiko_password_sha1: str | None = None
-    iiko_token: str | None = None
-    iiko_timeout_seconds: float = 30.0
-    iiko_auto_mapping_enabled: bool = True
-    iiko_mapping_min_confidence: float = 0.72
-    iiko_mapping_review_confidence: float = 0.55
-
     # Diadoc HTTP API integration. OIDC Authorization Code Flow is the
     # primary authentication method; a pre-issued access token remains
     # supported for backward compatibility.

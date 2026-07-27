@@ -16,11 +16,8 @@ from app.models.receiving import Receiving, ReceivingDocument, ReceivingItem, Re
 from app.services.google_sheets_service import (
     create_invoice_review_spreadsheet,
     load_invoice_reference_catalogs,
-    sync_incremental_reference_catalogs,
     serialize_sheet_result,
 )
-from app.services.iiko_incoming_invoice_service import build_iiko_export_payload, build_incoming_invoice_xml
-from app.services.iiko_reference_mapping_service import auto_fill_iiko_fields, get_iiko_reference_context, invalidate_iiko_reference_cache
 from app.services.invoice_normalization_service import normalize_supplier_inn_value
 from app.services.reference_catalog_service import upsert_reference_entry
 from app.services.item_normalization_service import apply_reference_mapping_to_payload
@@ -85,7 +82,6 @@ def create_invoice_review(db: Session, payload) -> Receiving:
     venue = (
         _clean(getattr(payload, "venue", None))
         or _clean(getattr(payload, "trade_point", None))
-        or _clean(getattr(payload, "iiko_organization", None))
         or ""
     )
     invoice_number = _clean(payload.invoice_number)
@@ -101,7 +97,7 @@ def create_invoice_review(db: Session, payload) -> Receiving:
         chat_id=payload.chat_id,
         user_id=payload.user_id,
         status=ReceivingStatus.ocr_processed,
-        comment="MVP-4: накладная загружена для ручной проверки перед отправкой в iiko",
+        comment="MVP-4: накладная загружена для ручной проверки",
     )
     db.add(receiving)
     db.flush()
@@ -109,14 +105,6 @@ def create_invoice_review(db: Session, payload) -> Receiving:
     recognized_items = [_item_payload(item, index) for index, item in enumerate(payload.items, start=1)]
     header_meta = _header_payload(payload)
     _seed_local_reference_catalogs(db, venue)
-    mapping_result = auto_fill_iiko_fields(
-        header_meta, recognized_items, supplier_name=supplier, venue=venue, db=db
-    )
-    header_meta = mapping_result["header"]
-    recognized_items = mapping_result["items"]
-    if mapping_result.get("notes"):
-        header_meta["mapping_notes"] = mapping_result["notes"]
-    _sync_discovered_references(mapping_result, header_meta)
     document = ReceivingDocument(
         receiving_id=receiving.id,
         file_id=payload.file_id,
@@ -159,7 +147,6 @@ def update_invoice_review(db: Session, receiving_id: int, payload) -> Receiving:
     receiving.venue = (
         payload.venue
         or getattr(payload, "trade_point", None)
-        or getattr(payload, "iiko_organization", None)
         or receiving.venue
     )
     receiving.supplier = payload.supplier or receiving.supplier
@@ -170,22 +157,8 @@ def update_invoice_review(db: Session, receiving_id: int, payload) -> Receiving:
     recognized_items = [_item_payload(item, index) for index, item in enumerate(payload.items, start=1)]
     old_meta = _document_meta(document) if document is not None else {"header": {}, "items": []}
     merged_header = {**old_meta.get("header", {}), **{k: v for k, v in header_meta.items() if v not in (None, "")}}
-    # Вариант 3: Google Таблица присылает только бизнес-поля.
-    # Старые технические iiko-поля берем из backend metadata и сохраняем до повторного автосопоставления.
-    recognized_items = _merge_stored_iiko_metadata(recognized_items, old_meta.get("items") or [])
+    recognized_items = _merge_stored_item_metadata(recognized_items, old_meta.get("items") or [])
     _seed_local_reference_catalogs(db, payload.venue or receiving.venue)
-    mapping_result = auto_fill_iiko_fields(
-        merged_header,
-        recognized_items,
-        supplier_name=payload.supplier or receiving.supplier,
-        venue=payload.venue or receiving.venue,
-        db=db,
-    )
-    merged_header = mapping_result["header"]
-    recognized_items = mapping_result["items"]
-    if mapping_result.get("notes"):
-        merged_header["mapping_notes"] = mapping_result["notes"]
-    _sync_discovered_references(mapping_result, merged_header)
     if document is not None:
         document.invoice_number = payload.invoice_number or document.invoice_number
         document.invoice_date = payload.invoice_date or document.invoice_date
@@ -265,60 +238,6 @@ def _seed_local_reference_catalogs(db: Session, venue: str | None) -> None:
         )
 
 
-def _sync_discovered_references(mapping_result: dict[str, Any], header: dict[str, Any]) -> None:
-    discovered = mapping_result.get("discovered_references") or []
-    if not discovered:
-        return
-    try:
-        header["reference_catalog_sync"] = sync_incremental_reference_catalogs(discovered)
-    except Exception as exc:  # noqa: BLE001 - invoice upload must survive an operator-sheet sync error
-        notes = list(header.get("mapping_notes") or [])
-        notes.append(f"Не удалось обновить локальные справочники Google Sheets: {exc}")
-        header["mapping_notes"] = notes
-
-
-def get_iiko_reference_status() -> dict:
-    context = get_iiko_reference_context(force_refresh=False)
-    if context.get("context"):
-        refs = context["context"]
-        return {
-            "status": context.get("status"),
-            "cached": context.get("cached", False),
-            "counts": {
-                "suppliers": len(refs.get("suppliers", [])),
-                "products": len(refs.get("products", [])),
-                "stores": len(refs.get("stores", [])),
-                "units": len(refs.get("units", [])),
-                "taxes": len(refs.get("taxes", [])),
-            },
-        }
-    return {"status": context.get("status"), "message": context.get("message")}
-
-
-def remap_review_with_iiko_references(db: Session, receiving_id: int, force_refresh: bool = False) -> Receiving:
-    receiving = _get_receiving(db, receiving_id)
-    document = receiving.documents[-1] if receiving.documents else None
-    if document is None:
-        raise ValueError("Накладная не найдена для автосопоставления")
-    if force_refresh:
-        invalidate_iiko_reference_cache()
-    meta = _document_meta(document)
-    header = meta.get("header", {})
-    items = meta.get("items", [])
-    _seed_local_reference_catalogs(db, receiving.venue)
-    mapping_result = auto_fill_iiko_fields(
-        header, items, supplier_name=receiving.supplier, venue=receiving.venue, db=db
-    )
-    header = mapping_result["header"]
-    if mapping_result.get("notes"):
-        header["mapping_notes"] = mapping_result["notes"]
-    _sync_discovered_references(mapping_result, header)
-    document.recognized_items_json = json.dumps({"header": header, "items": mapping_result["items"]}, ensure_ascii=False)
-    db.commit()
-    db.refresh(receiving)
-    return receiving
-
-
 def build_review_sheet(receiving: Receiving) -> dict:
     """Build the human-facing Google Sheet in the АвтоСнаб invoice-register format."""
     document = receiving.documents[-1] if receiving.documents else None
@@ -366,7 +285,7 @@ def build_review_sheet(receiving: Receiving) -> dict:
             INVOICE_REGISTER_SHEET_NAME: register_rows,
         },
         "action": {
-            "button_label": "Подтвердить и отправить в iiko",
+            "button_label": "Подтвердить и отправить",
             "method": "POST",
             "endpoint": f"/api/v1/invoice-review/{receiving.id}/confirm-send",
         },
@@ -711,8 +630,6 @@ def _invoice_register_header_values(
         warehouse = _sheet_display_value(
             header_meta.get("warehouse")
             or header_meta.get("display_store")
-            or header_meta.get("iiko_default_store_name")
-            or header_meta.get("iiko_default_store_id")
             or ""
         )
         # Заполняем ИНН поставщика только из явно распознанного поля шапки
@@ -1012,12 +929,13 @@ def save_review_csv(receiving: Receiving, base_dir: str = "exports") -> str:
     return str(path)
 
 
-def build_iiko_preview(receiving: Receiving, target_organization: str | None = None, target_warehouse: str | None = None, target_organization_id: str | None = None, target_warehouse_id: str | None = None) -> dict:
+def build_review_preview(receiving: Receiving, target_organization: str | None = None, target_warehouse: str | None = None, target_organization_id: str | None = None, target_warehouse_id: str | None = None) -> dict:
+    """Build a JSON preview of the invoice for review/export purposes."""
     document = receiving.documents[-1] if receiving.documents else None
     meta = _document_meta(document)
     header_meta = meta.get("header", {})
     item_meta = meta.get("items", [])
-    warehouse = target_warehouse_id or target_warehouse or header_meta.get("iiko_default_store_id") or "Основной склад"
+    warehouse = target_warehouse_id or target_warehouse or "Основной склад"
     items = []
     for index, item in enumerate(receiving.items, start=1):
         row_meta = item_meta[index - 1] if index - 1 < len(item_meta) else {}
@@ -1029,7 +947,6 @@ def build_iiko_preview(receiving: Receiving, target_organization: str | None = N
                 {
                     "num": row_meta.get("line_number") or index,
                     "name": item.item_name_from_invoice or item.item_name_from_order or "",
-                    "iikoProductId": row_meta.get("iiko_product_id"),
                     "productArticle": row_meta.get("product_article"),
                     "supplierProduct": row_meta.get("supplier_product"),
                     "supplierProductArticle": row_meta.get("supplier_product_article"),
@@ -1049,12 +966,11 @@ def build_iiko_preview(receiving: Receiving, target_organization: str | None = N
                 }
             )
     total_sum = round(sum(float(item.get("sum") or 0) for item in items), 2)
-    preview = {
+    return {
         "review_id": receiving.id,
-        "target_system": "iiko",
         "target": {
-            "organization": target_organization or header_meta.get("iiko_organization") or receiving.venue,
-            "organizationId": target_organization_id or header_meta.get("iiko_organization_id"),
+            "organization": target_organization or receiving.venue,
+            "organizationId": target_organization_id,
             "warehouse": warehouse,
             "defaultStoreId": warehouse,
             "venue": receiving.venue,
@@ -1062,7 +978,6 @@ def build_iiko_preview(receiving: Receiving, target_organization: str | None = N
         "supplier": {
             "displayName": receiving.supplier,
             "legalName": document.supplier_legal_name if document else None,
-            "iikoSupplierId": header_meta.get("iiko_supplier_id"),
         },
         "invoice": {
             "number": document.invoice_number if document else receiving.order_number,
@@ -1076,13 +991,12 @@ def build_iiko_preview(receiving: Receiving, target_organization: str | None = N
         "items": items,
         "statusBeforeSend": receiving.status.value,
         "issues": validate_review(receiving),
-        "source": "autosnab_iiko_incoming_invoice_adapter",
     }
-    preview["iikoXml"] = build_incoming_invoice_xml(preview)
-    return preview
 
 
-def confirm_and_send_to_iiko(db: Session, receiving_id: int, payload) -> AccountingExport:
+
+
+def confirm_and_send(db: Session, receiving_id: int, payload) -> AccountingExport:
     receiving = _get_receiving(db, receiving_id)
     if not payload.approved:
         raise ValueError("Перед отправкой пользователь должен подтвердить проверку накладной")
@@ -1091,7 +1005,7 @@ def confirm_and_send_to_iiko(db: Session, receiving_id: int, payload) -> Account
     if issues and not payload.allow_with_warnings:
         raise ValueError("Накладная требует проверки: " + "; ".join(issues))
 
-    preview = build_iiko_preview(
+    preview = build_review_preview(
         receiving,
         payload.target_organization,
         payload.target_warehouse,
@@ -1106,38 +1020,17 @@ def confirm_and_send_to_iiko(db: Session, receiving_id: int, payload) -> Account
     }
     preview["comment"] = payload.comment or preview.get("comment")
 
-    try:
-        export_payload = build_iiko_export_payload(preview, dry_run=payload.dry_run)
-        iiko_result = export_payload.get("iikoResult", {})
-        if payload.dry_run:
-            status = "iiko_xml_prepared"
-        elif iiko_result.get("status") == "sent_to_iiko":
-            status = "sent_to_iiko"
-        else:
-            status = "iiko_sent_mock"
-        error_message = None
-    except Exception as exc:  # noqa: BLE001 - external iiko errors must be persisted
-        export_payload = {
-            "preview": preview,
-            "iikoXml": build_incoming_invoice_xml(preview),
-            "iikoResult": {"status": "iiko_error", "error": str(exc)},
-            "source": "autosnab_iiko_incoming_invoice_adapter",
-        }
-        status = "iiko_error"
-        error_message = str(exc)
-
+    status = "prepared_for_review" if payload.dry_run else "confirmed"
     export = AccountingExport(
         receiving_id=receiving.id,
         request_id=receiving.request_id,
         order_number=receiving.order_number,
-        target_system="iiko",
+        target_system="review",
         status=status,
-        payload_json=json.dumps(export_payload, ensure_ascii=False),
-        error_message=error_message,
+        payload_json=json.dumps(preview, ensure_ascii=False),
+        error_message=None,
     )
-    if status == "iiko_error":
-        receiving.status = ReceivingStatus.accounting_error
-    elif payload.dry_run:
+    if payload.dry_run:
         receiving.status = ReceivingStatus.confirmed_full
     else:
         receiving.status = ReceivingStatus.sent_to_accounting
@@ -1146,6 +1039,8 @@ def confirm_and_send_to_iiko(db: Session, receiving_id: int, payload) -> Account
     db.commit()
     db.refresh(export)
     return export
+
+
 
 
 def ensure_upload_status_allows_send(upload_status: str | None) -> None:
@@ -1160,8 +1055,8 @@ def build_apps_script_sample(receiving: Receiving, public_api_base_url: str = "h
     return f"""function onOpen() {{
   SpreadsheetApp.getUi()
     .createMenu('АвтоСнаб')
-    .addItem('👁 Предпросмотр отправки', 'previewInvoiceForIiko')
-    .addItem('✅ Отправить в iiko', 'sendInvoiceToIiko')
+    .addItem('👁 Предпросмотр', 'previewInvoice')
+    .addItem('✅ Подтвердить накладную', 'confirmInvoice')
     .addToUi();
 }}
 
@@ -1245,7 +1140,6 @@ function buildPayload_() {{
     comment: 'Подтверждено из Google Таблицы',
     supplier: supplier,
     supplier_legal_name: supplier,
-    iiko_supplier_id: null,
     invoice_number: invoiceNumber,
     document_number: invoiceNumber,
     invoice_date: invoiceDate,
@@ -1253,7 +1147,6 @@ function buildPayload_() {{
     venue: venue,
     delivery_address: String(value_(summary, 'Получатель') || value_(summary, 'Грузополучатель') || venue),
     display_store: warehouse,
-    iiko_default_store_id: warehouse,
     document_form: String(value_(summary, 'Форма документа') || ''),
     supplier_inn: String(value_(summary, 'ИНН Поставщика') || ''),
     consignee: String(value_(summary, 'Получатель') || value_(summary, 'Грузополучатель') || ''),
@@ -1266,11 +1159,11 @@ function buildPayload_() {{
   }};
 }}
 
-function previewInvoiceForIiko() {{
+function previewInvoice() {{
   const payload = buildPayload_();
   const total = payload.items.reduce((sum, item) => sum + (Number(item.sum) || Number(item.quantity) * Number(item.price)), 0);
   SpreadsheetApp.getUi().alert(
-    'Предпросмотр отправки в iiko',
+    'Предпросмотр накладной',
     'Поставщик: ' + payload.supplier + '\n' +
     'Точка: ' + payload.venue + '\n' +
     'Склад: ' + payload.target_warehouse + '\n' +
@@ -1281,13 +1174,13 @@ function previewInvoiceForIiko() {{
   );
 }}
 
-function sendInvoiceToIiko() {{
+function confirmInvoice() {{
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const url = '{endpoint}';
   const payload = buildPayload_();
   const confirm = SpreadsheetApp.getUi().alert(
-    'Отправить в iiko?',
-    'Backend прочитает лист «Накладные» и отправит накладную ' + payload.invoice_number + '. Отправить?',
+    'Подтвердить накладную?',
+    'Backend прочитает лист «Накладные» и подтвердит накладную ' + payload.invoice_number + '. Продолжить?',
     SpreadsheetApp.getUi().ButtonSet.YES_NO
   );
   if (confirm !== SpreadsheetApp.getUi().Button.YES) {{
@@ -1300,7 +1193,7 @@ function sendInvoiceToIiko() {{
     muteHttpExceptions: true
   }});
   const statusText = response.getResponseCode() + ': ' + response.getContentText();
-  ss.toast(statusText, 'Статус отправки в iiko');
+  ss.toast(statusText, 'Статус подтверждения накладной');
 }}
 """
 
@@ -1378,7 +1271,7 @@ def get_latest_google_spreadsheet_info(db: Session, receiving_id: int) -> dict[s
     }
 
 
-def send_google_sheet_and_confirm_to_iiko(
+def send_from_google_sheet(
     db: Session,
     receiving_id: int,
     allow_with_warnings: bool = True,
@@ -1393,7 +1286,7 @@ def send_google_sheet_and_confirm_to_iiko(
         block_end_row=spreadsheet.get("block_end_row"),
     )
     payload = _build_sync_payload_from_sheet(sheet_values, allow_with_warnings=allow_with_warnings, dry_run=dry_run)
-    return sync_sheet_and_confirm_to_iiko(db, receiving_id, payload)
+    return sync_sheet_and_confirm(db, receiving_id, payload)
 
 
 def _read_google_sheet_values(
@@ -1495,7 +1388,6 @@ def _build_sync_payload_from_sheet(sheet_values: dict[str, list[list[Any]]], all
             upload_status=summary.get("Статус загрузки") or None,
             supplier=supplier,
             supplier_legal_name=supplier,
-            iiko_supplier_id=None,
             invoice_number=invoice_number,
             document_number=invoice_number,
             invoice_date=invoice_date,
@@ -1503,7 +1395,6 @@ def _build_sync_payload_from_sheet(sheet_values: dict[str, list[list[Any]]], all
             venue=venue,
             delivery_address=summary.get("Получатель") or summary.get("Грузополучатель") or venue,
             display_store=warehouse,
-            iiko_default_store_id=warehouse or None,
             document_form=summary.get("Форма документа") or None,
             supplier_inn=summary.get("ИНН Поставщика") or None,
             consignee=summary.get("Получатель") or summary.get("Грузополучатель") or None,
@@ -1529,13 +1420,11 @@ def _build_sync_payload_from_sheet(sheet_values: dict[str, list[list[Any]]], all
         comment=summary.get("Комментарий пользователя") or "Подтверждено через кнопку Google Таблицы",
         supplier=summary.get("Поставщик") or "",
         supplier_legal_name=summary.get("Поставщик") or "",
-        iiko_supplier_id=None,
         invoice_number=summary.get("Номер накладной") or "",
         document_number=summary.get("Номер накладной") or "",
         invoice_date=summary.get("Дата накладной") or "",
         incoming_date=summary.get("Дата накладной") or "",
         venue=summary.get("Заведение / точка доставки") or "",
-        iiko_default_store_id=summary.get("Склад / подразделение") or None,
         items=items,
     )
 
@@ -1648,7 +1537,7 @@ def _summary_dict_from_rows(rows: list[list[Any]]) -> dict[str, Any]:
     for row in rows:
         if len(row) >= 2 and str(row[0]).strip():
             field_name = str(row[0]).strip()
-            if field_name in {"Поле", "Отправить в iiko"}:
+            if field_name in {"Поле"}:
                 continue
             result[field_name] = row[1]
     return result
@@ -1738,7 +1627,7 @@ def _write_google_sheet_send_status(spreadsheet_id: str, status: str, error_mess
     # чтобы в пользовательской Google Таблице не появлялись служебные строки.
     return
 
-def sync_sheet_and_confirm_to_iiko(db: Session, receiving_id: int, payload) -> AccountingExport:
+def sync_sheet_and_confirm(db: Session, receiving_id: int, payload) -> AccountingExport:
     from app.schemas.invoice_review import InvoiceReviewUpdateRequest, RecognizedInvoiceItem
 
     receiving = _get_receiving(db, receiving_id)
@@ -1747,7 +1636,6 @@ def sync_sheet_and_confirm_to_iiko(db: Session, receiving_id: int, payload) -> A
             raw_text=None,
             supplier=payload.supplier,
             supplier_legal_name=payload.supplier_legal_name,
-            iiko_supplier_id=payload.iiko_supplier_id,
             invoice_date=payload.invoice_date,
             invoice_number=payload.invoice_number,
             document_number=payload.document_number,
@@ -1756,9 +1644,6 @@ def sync_sheet_and_confirm_to_iiko(db: Session, receiving_id: int, payload) -> A
             venue=payload.venue or payload.trade_point or payload.target_organization,
             delivery_address=payload.delivery_address,
             display_store=payload.display_store or payload.warehouse or payload.target_warehouse,
-            iiko_default_store_id=payload.iiko_default_store_id or payload.target_warehouse_id or payload.target_warehouse,
-            iiko_organization=payload.iiko_organization or payload.target_organization,
-            iiko_organization_id=payload.iiko_organization_id or payload.target_organization_id,
             document_form=payload.document_form,
             supplier_inn=payload.supplier_inn,
             consignee=payload.consignee,
@@ -1770,13 +1655,14 @@ def sync_sheet_and_confirm_to_iiko(db: Session, receiving_id: int, payload) -> A
             items=[RecognizedInvoiceItem(**item.model_dump()) for item in payload.items],
         )
         receiving = update_invoice_review(db, receiving_id, update_payload)
-    return confirm_and_send_to_iiko(db, receiving.id, payload)
+    return confirm_and_send(db, receiving.id, payload)
+
+
 
 
 def validate_review(receiving: Receiving) -> list[str]:
     document = receiving.documents[-1] if receiving.documents else None
     meta = _document_meta(document)
-    header = meta.get("header", {})
     item_meta = meta.get("items", [])
     issues = []
     if not receiving.supplier or receiving.supplier == "Поставщик не распознан":
@@ -1790,12 +1676,6 @@ def validate_review(receiving: Receiving) -> list[str]:
             issues.append("не распознан номер накладной")
         if not document.invoice_date:
             issues.append("не распознана дата накладной")
-    if header.get("iiko_mapping_status") == "needs_review":
-        issues.append("требуется проверка сопоставления шапки накладной: " + (header.get("iiko_mapping_error") or "нет уверенного совпадения"))
-    if not header.get("iiko_supplier_id"):
-        issues.append("не указан поставщик iiko/supplier id")
-    if not (header.get("iiko_default_store_id") or header.get("target_warehouse")):
-        issues.append("не указан склад iiko/defaultStore")
     if not receiving.items:
         issues.append("нет товарных позиций")
     for index, item in enumerate(receiving.items, start=1):
@@ -1803,10 +1683,6 @@ def validate_review(receiving: Receiving) -> list[str]:
         item_name = item.item_name_from_invoice or item.item_name_from_order or f"строка {index}"
         if not item_name:
             issues.append("есть позиция без наименования")
-        if row_meta.get("mapping_status") == "needs_review":
-            issues.append(f"требуется проверка сопоставления по позиции: {item_name} ({row_meta.get('mapping_error') or 'нет уверенного совпадения'})")
-        if not (row_meta.get("iiko_product_id") or row_meta.get("product_article")):
-            issues.append(f"нет iiko product/productArticle по позиции: {item_name}")
         if not (row_meta.get("line_number") or index):
             issues.append(f"нет num по позиции: {item_name}")
         if (item.received_quantity or 0) <= 0:
@@ -2037,11 +1913,9 @@ def _clean(value: str | None) -> str | None:
 def _header_payload(payload) -> dict[str, Any]:
     display_store = getattr(payload, "display_store", None)
     warehouse = getattr(payload, "warehouse", None)
-    iiko_default_store_id = getattr(payload, "iiko_default_store_id", None)
     venue = getattr(payload, "venue", None)
     trade_point = getattr(payload, "trade_point", None) or venue
     return {
-        "iiko_supplier_id": getattr(payload, "iiko_supplier_id", None),
         "document_number": getattr(payload, "document_number", None),
         "incoming_date": getattr(payload, "incoming_date", None),
         "due_date": getattr(payload, "due_date", None),
@@ -2051,13 +1925,10 @@ def _header_payload(payload) -> dict[str, Any]:
         "consignee": getattr(payload, "consignee", None),
         "recipient": getattr(payload, "recipient", None),
         "trade_point": trade_point,
-        "warehouse": warehouse or display_store or iiko_default_store_id,
+        "warehouse": warehouse or display_store,
         "basis": getattr(payload, "basis", None),
-        "display_store": display_store or warehouse or iiko_default_store_id,
+        "display_store": display_store or warehouse,
         "total_sum": getattr(payload, "total_sum", None),
-        "iiko_default_store_id": iiko_default_store_id,
-        "iiko_organization": getattr(payload, "iiko_organization", None),
-        "iiko_organization_id": getattr(payload, "iiko_organization_id", None),
         "parser_metadata": getattr(payload, "parser_metadata", None) or {},
         "upload_status": (getattr(payload, "parser_metadata", None) or {}).get("upload_status", ""),
         "row_status": (getattr(payload, "parser_metadata", None) or {}).get("row_status", ""),
@@ -2098,7 +1969,6 @@ def _item_payload(item, index: int | None = None) -> dict:
         "conversion_source_id": item.conversion_source_id,
         "conversion_review_reason": item.conversion_review_reason,
         "package_reference_id": item.package_reference_id,
-        "iiko_product_id": item.iiko_product_id,
         "product_article": item.product_article,
         "supplier_product": item.supplier_product,
         "supplier_product_article": item.supplier_product_article,
@@ -2121,9 +1991,8 @@ def _item_payload(item, index: int | None = None) -> dict:
 
 
 
-def _merge_stored_iiko_metadata(new_items: list[dict[str, Any]], old_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _merge_stored_item_metadata(new_items: list[dict[str, Any]], old_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     technical_keys = {
-        "iiko_product_id",
         "product_article",
         "supplier_product",
         "supplier_product_article",
@@ -2131,10 +2000,6 @@ def _merge_stored_iiko_metadata(new_items: list[dict[str, Any]], old_items: list
         "store_id",
         "mapping_status",
         "mapping_error",
-        "iiko_product_name",
-        "iiko_product_match_confidence",
-        "iiko_unit_name",
-        "iiko_unit_match_confidence",
     }
     old_by_line = {str(item.get("line_number") or index): item for index, item in enumerate(old_items, start=1)}
     merged = []
@@ -2178,8 +2043,6 @@ def _build_item_comment(item, index: int | None = None) -> str | None:
         parts.append(f"vatPercent: {item.vat_percent}")
     if item.vat_sum is not None:
         parts.append(f"vatSum: {item.vat_sum}")
-    if item.iiko_product_id:
-        parts.append(f"iiko_product_id: {item.iiko_product_id}")
     if item.product_article:
         parts.append(f"productArticle: {item.product_article}")
     if item.confidence is not None:
@@ -2202,7 +2065,7 @@ def _user_comment_from_item_comment(comment: str | None) -> str:
     """Return only the human comment, hiding technical markers saved in comments."""
     if not comment:
         return ""
-    hidden_prefixes = ("НДС:", "vatPercent:", "vatSum:", "iiko_product_id:", "productArticle:", "confidence:")
+    hidden_prefixes = ("НДС:", "vatPercent:", "vatSum:", "productArticle:", "confidence:")
     parts = []
     for part in comment.split(";"):
         text = part.strip()

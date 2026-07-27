@@ -241,7 +241,6 @@ def parse_invoice_text_to_payload(raw_text: str, fallback_filename: str | None =
         "delivery_address": venue,
         "store": store,
         "display_store": store,
-        "iiko_default_store_id": store,
         "total_sum": total_sum,
         "raw_text": raw_text,
         "items": items,
@@ -1820,8 +1819,8 @@ def _parse_cash_receipt_product_name(line: str) -> str | None:
 def _remove_cash_receipt_product_code(value: str) -> str:
     cleaned = _normalize_line(value)
     # Google Drive OCR часто портит внутренний код товара: [M+]7362, [М+13649,
-    # [N+13968, [+]8231. Код не нужен для iiko, поэтому убираем его даже если
-    # закрывающая скобка потеряна.
+    # [N+13968, [+]8231. Код не нужен в названии товара, поэтому убираем его
+    # даже если закрывающая скобка потеряна.
     cleaned = re.sub(r"^\[[^\s\]]+\]?\s*", "", cleaned).strip()
     cleaned = re.sub(r"^\[[^\s\]]+\]?\s*", "", cleaned).strip()
     cleaned = re.sub(r"^\d{3,}\s*", "", cleaned).strip()

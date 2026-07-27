@@ -19,7 +19,7 @@ from app.schemas.invoice_review import (
     BotDraftStatusResponse,
     BotUploadAcceptedResponse,
     BotUploadStatusResponse,
-    ConfirmSendToIikoRequest,
+    ConfirmSendRequest,
     InvoiceReviewCreateRequest,
     InvoiceReviewResponse,
     InvoiceReviewUpdateRequest,
@@ -42,19 +42,17 @@ from app.services.bot_ingestion_service import (
 )
 from app.services.invoice_review_service import (
     build_apps_script_sample,
-    build_iiko_preview,
+    build_review_preview,
     build_review_csv,
     build_review_sheet,
     create_real_google_sheet_for_review,
-    confirm_and_send_to_iiko,
+    confirm_and_send,
     create_invoice_review,
     save_review_csv,
-    sync_sheet_and_confirm_to_iiko,
+    sync_sheet_and_confirm,
     update_invoice_review,
-    remap_review_with_iiko_references,
-    get_iiko_reference_status,
     get_latest_google_spreadsheet_info,
-    send_google_sheet_and_confirm_to_iiko,
+    send_from_google_sheet,
 )
 from app.services.database_health_service import describe_database_write_error
 from app.services.document_extraction_service import extract_invoice_document, extract_invoice_document_set
@@ -1471,7 +1469,6 @@ def _process_invoice_upload(
         warehouse=parsed.get("warehouse") or parsed.get("display_store") or parsed.get("store"),
         basis=parsed.get("basis"),
         total_sum=parsed.get("total_sum"),
-        iiko_default_store_id=parsed.get("iiko_default_store_id") or parsed.get("store"),
         chat_id=chat_id,
         user_id=user_id,
         user_timezone=user_timezone,
@@ -1601,22 +1598,6 @@ def update_review(review_id: int, payload: InvoiceReviewUpdateRequest, db: Sessi
 
 
 
-@router.get("/iiko/references/status")
-def get_iiko_references_status():
-    return get_iiko_reference_status()
-
-
-@router.post("/{review_id}/iiko-auto-map", response_model=InvoiceReviewResponse)
-def auto_map_review_iiko_fields(review_id: int, force_refresh: bool = Query(default=False), db: Session = Depends(get_db)):
-    try:
-        receiving = remap_review_with_iiko_references(db, review_id, force_refresh=force_refresh)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    sheet = build_review_sheet(receiving)
-    csv_path = save_review_csv(receiving)
-    return _review_response(receiving, sheet, csv_path)
-
-
 @router.get("/{review_id}/sheet")
 def get_google_sheet_preview(review_id: int, db: Session = Depends(get_db)):
     receiving = _get_review(db, review_id)
@@ -1630,14 +1611,14 @@ def get_google_sheet_csv(review_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{review_id}/preview")
-def get_iiko_send_preview(
+def get_review_preview(
     review_id: int,
     target_organization: str | None = None,
     target_warehouse: str | None = None,
     db: Session = Depends(get_db),
 ):
     receiving = _get_review(db, review_id)
-    return build_iiko_preview(receiving, target_organization, target_warehouse)
+    return build_review_preview(receiving, target_organization, target_warehouse)
 
 
 @router.get("/{review_id}/apps-script", response_class=PlainTextResponse)
@@ -1665,7 +1646,7 @@ def create_google_sheet_for_review(
 
 
 @router.get("/{review_id}/send-page", response_class=HTMLResponse)
-def open_iiko_send_page(review_id: int, db: Session = Depends(get_db)):
+def open_send_page(review_id: int, db: Session = Depends(get_db)):
     receiving = _get_review(db, review_id)
     try:
         spreadsheet = get_latest_google_spreadsheet_info(db, review_id)
@@ -1685,7 +1666,7 @@ def open_iiko_send_page(review_id: int, db: Session = Depends(get_db)):
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>АвтоСнаб — отправка в iiko</title>
+  <title>АвтоСнаб — подтверждение накладной</title>
   <style>
     body {{ font-family: Arial, sans-serif; background: #f5f7fb; color: #111827; margin: 0; }}
     .page {{ max-width: 760px; margin: 0 auto; padding: 40px 16px; }}
@@ -1703,15 +1684,15 @@ def open_iiko_send_page(review_id: int, db: Session = Depends(get_db)):
 <body>
   <main class="page">
     <section class="card">
-      <h1>Отправка накладной в iiko</h1>
+      <h1>Подтверждение накладной</h1>
       <p class="muted">Накладная: <b>{invoice_number}</b></p>
-      <p class="muted">Перед отправкой проверьте лист <b>«Накладные»</b>. После нажатия кнопки backend прочитает данные из Google Таблицы и отправит их в iiko.</p>
+      <p class="muted">Перед подтверждением проверьте лист <b>«Накладные»</b>. После нажатия кнопки backend прочитает данные из Google Таблицы и подтвердит накладную.</p>
       <div>{spreadsheet_link}</div>
       <div class="options">
-        <label><input id="allowWarnings" type="checkbox" checked /> Разрешить отправку с предупреждениями проверки</label><br />
-        <label><input id="dryRun" type="checkbox" /> Тестовый режим без реальной отправки</label>
+        <label><input id="allowWarnings" type="checkbox" checked /> Разрешить подтверждение с предупреждениями проверки</label><br />
+        <label><input id="dryRun" type="checkbox" /> Тестовый режим без реальной записи</label>
       </div>
-      <button id="sendBtn" class="btn" type="button">Отправить в iiko</button>
+      <button id="sendBtn" class="btn" type="button">Подтвердить накладную</button>
       <div id="result"></div>
     </section>
   </main>
@@ -1746,9 +1727,9 @@ def open_iiko_send_page(review_id: int, db: Session = Depends(get_db)):
     }});
 
     btn.addEventListener('click', async () => {{
-      if (!confirm('Отправить накладную в iiko?')) return;
+      if (!confirm('Подтвердить накладную?')) return;
       btn.disabled = true;
-      result.innerHTML = '<div class="result">Отправка выполняется...</div>';
+      result.innerHTML = '<div class="result">Подтверждение выполняется...</div>';
       const allow = document.getElementById('allowWarnings').checked;
       const dry = document.getElementById('dryRun').checked;
       try {{
@@ -1759,7 +1740,7 @@ def open_iiko_send_page(review_id: int, db: Session = Depends(get_db)):
         if (!response.ok) throw new Error(data.detail || JSON.stringify(data, null, 2));
         result.innerHTML = '<div class="result">Готово. Статус: ' + data.status + '\nExport ID: ' + data.export_id + '</div>';
       }} catch (err) {{
-        result.innerHTML = '<div class="error">Ошибка отправки: ' + String(err.message || err) + '</div>';
+        result.innerHTML = '<div class="error">Ошибка: ' + String(err.message || err) + '</div>';
       }} finally {{
         btn.disabled = false;
       }}
@@ -1778,7 +1759,7 @@ def send_from_google_sheet_button(
     db: Session = Depends(get_db),
 ):
     try:
-        export = send_google_sheet_and_confirm_to_iiko(
+        export = send_from_google_sheet(
             db,
             review_id,
             allow_with_warnings=allow_with_warnings,
@@ -1786,7 +1767,7 @@ def send_from_google_sheet_button(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:  # noqa: BLE001 - external send errors must be visible to user
+    except Exception as exc:  # noqa: BLE001 - send errors must be visible to user
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {
         "export_id": export.id,
@@ -1800,7 +1781,7 @@ def send_from_google_sheet_button(
 @router.post("/{review_id}/sync-sheet-and-confirm-send")
 def sync_sheet_and_confirm_send(review_id: int, payload: SyncSheetAndConfirmRequest, db: Session = Depends(get_db)):
     try:
-        export = sync_sheet_and_confirm_to_iiko(db, review_id, payload)
+        export = sync_sheet_and_confirm(db, review_id, payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
@@ -1813,9 +1794,9 @@ def sync_sheet_and_confirm_send(review_id: int, payload: SyncSheetAndConfirmRequ
 
 
 @router.post("/{review_id}/confirm-send")
-def confirm_send(review_id: int, payload: ConfirmSendToIikoRequest, db: Session = Depends(get_db)):
+def confirm_send_endpoint(review_id: int, payload: ConfirmSendRequest, db: Session = Depends(get_db)):
     try:
-        export = confirm_and_send_to_iiko(db, review_id, payload)
+        export = confirm_and_send(db, review_id, payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
@@ -1827,11 +1808,11 @@ def confirm_send(review_id: int, payload: ConfirmSendToIikoRequest, db: Session 
     }
 
 
-@router.get("/exports/iiko")
+@router.get("/exports/review")
 def list_invoice_review_exports(db: Session = Depends(get_db)):
     exports = (
         db.query(AccountingExport)
-        .filter(AccountingExport.target_system == "iiko")
+        .filter(AccountingExport.target_system == "review")
         .order_by(AccountingExport.id.desc())
         .all()
     )

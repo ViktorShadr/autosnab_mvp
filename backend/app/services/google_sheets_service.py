@@ -574,7 +574,7 @@ def _spreadsheet_result(
         "installed": False,
         "status": "button_removed",
         "send_page_url": None,
-        "message": "Кнопка-ссылка 'Отправить в iiko' на листе 'Накладные' не создаётся.",
+        "message": "Кнопка-ссылка отправки данных на листе 'Накладные' не создаётся.",
     }
     return {
         "spreadsheet_id": spreadsheet_id,
@@ -918,7 +918,7 @@ def _insert_into_existing_spreadsheet(
             "installed": False,
             "status": "button_removed",
             "send_page_url": None,
-            "message": "Кнопка-ссылка 'Отправить в iiko' на листе общего реестра не создаётся.",
+            "message": "Кнопка-ссылка отправки данных на листе общего реестра не создаётся.",
         },
     }
 

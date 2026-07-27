@@ -34,7 +34,7 @@ def extract_invoice_payload_with_fallback(raw_text: str, fallback_filename: str 
         parsed["parser_provider"] = "deterministic_parser"
         parsed["parser_notes"] = parsed.get("parser_notes", []) + [
             "Данные разобраны встроенным regex parser без внешних AI/API-ключей.",
-            "Проверьте результат в Google Таблице перед отправкой в iiko.",
+            "Проверьте результат в Google Таблице.",
         ]
         return parsed
 
@@ -67,7 +67,6 @@ def _empty_manual_review_payload(raw_text: str | None = None) -> dict:
         "trade_point": None,
         "warehouse": None,
         "basis": None,
-        "iiko_default_store_id": None,
         "total_sum": None,
         "raw_text": raw_text,
         "items": [],
