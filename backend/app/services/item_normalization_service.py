@@ -96,7 +96,7 @@ def normalize_item_candidate(item: NormalizedInvoiceItem) -> list[dict[str, str]
         multiplier, accounting_unit = _fallback_multiplier(item.package, document_unit)
     units_per_package = _positive_number(item.units_per_package)
     if units_per_package is None:
-        units_per_package = _positive_number(_units_per_package_from_facts(item.packaging_facts))
+        units_per_package = _positive_number(_units_per_package_from_facts(item.packaging_facts, quantity))
     item.units_per_package = units_per_package
     multiplier = _apply_units_per_package(multiplier, units_per_package)
     item.quantity_multiplier = multiplier
@@ -863,9 +863,24 @@ def _package_from_facts(facts: list[PackagingFact]) -> InvoiceItemPackage:
     )
 
 
-def _units_per_package_from_facts(facts: list[PackagingFact]) -> float | None:
+def _units_per_package_from_facts(
+    facts: list[PackagingFact], quantity_document: float | None
+) -> float | None:
     count_fact = next((fact for fact in facts if fact.type == "count_in_package"), None)
-    return _number(count_fact.value) if count_fact else None
+    if count_fact is None:
+        return None
+    count_value = _number(count_fact.value)
+    if count_value is not None and quantity_document is not None and count_value == quantity_document:
+        # The model occasionally misreads the document's own purchased quantity
+        # (e.g. a table row "... ШТ 72 83.32 ...") as a count_in_package packaging
+        # fact, even though the product name has no real per-case/per-pack
+        # descriptor (real example: "0,33Л ГАЗ НАП COCA-COLA ORIGINAL Ж/Б", 72 шт
+        # purchased, no case size anywhere in the name -- Lilia's 2026-07-26
+        # Метро2.pdf report). A genuine per-package count is independent of how
+        # many units were actually purchased, so an exact match with the document
+        # quantity is treated as a false positive rather than real packaging data.
+        return None
+    return count_value
 
 
 def _fallback_multiplier(package: InvoiceItemPackage, document_unit: str) -> tuple[float | None, str]:

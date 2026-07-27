@@ -350,6 +350,49 @@ def test_packaging_facts_count_in_package_feeds_units_per_package_when_column_em
     assert item.units_per_package == 12.0
 
 
+def test_packaging_facts_count_in_package_dropped_when_it_matches_document_quantity():
+    """Real production bug, 2026-07-26 (Lilia's Метро2.pdf report): OpenAI can
+    misread a document's own quantity/unit table column as if it were a
+    per-package count fact. Real example: "0,33Л ГАЗ НАП COCA-COLA ORIGINAL
+    Ж/Б", 72 шт purchased, no case-size information anywhere in the name --
+    yet the model extracted a spurious {"type": "count_in_package",
+    "value": 72.0, "source": "72"} fact, which flowed into
+    units_per_package=72 and got written into the "Состав упаковки" Google
+    Sheet column. When a count_in_package fact's value exactly equals
+    quantity_document, it must be dropped instead of treated as real
+    packaging data."""
+    item = NormalizedInvoiceItem(
+        raw_name="0,33Л ГАЗ НАП COCA-COLA ORIGINAL Ж/Б",
+        document_unit="ШТ",
+        quantity_document=72,
+        confidence=0.95,
+        packaging_facts=[
+            PackagingFact(type="unit_volume", value=0.33, unit="л", source="0,33Л"),
+            PackagingFact(type="count_in_package", value=72.0, source="72"),
+        ],
+    )
+
+    normalize_item_candidate(item)
+
+    assert item.units_per_package is None
+
+    # Guard against over-suppression: a genuine count_in_package fact whose
+    # value differs from quantity_document must still be picked up.
+    kept_item = NormalizedInvoiceItem(
+        raw_name="Сок в коробке",
+        document_unit="КОРОБ",
+        quantity_document=2,
+        confidence=0.95,
+        packaging_facts=[
+            PackagingFact(type="count_in_package", value=12.0, source="12 шт в коробке"),
+        ],
+    )
+
+    normalize_item_candidate(kept_item)
+
+    assert kept_item.units_per_package == 12.0
+
+
 def test_normalized_item_adds_backend_fields_after_normalization():
     """package/quantity_multiplier/accounting_* only ever appear on the
     backend-enriched NormalizedInvoiceItem, never on the AI-facing schema."""
