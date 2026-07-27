@@ -247,3 +247,34 @@ already merged into `auto-snab-document-parser`'s `develop` (the real
 production repo) the day before. This page exists specifically so that
 status is git-tracked and available from any workstation after `git pull`,
 instead of trapped in one machine's local Claude memory.
+
+## Update, 2026-07-27: `count_in_package == quantity_document` fix ported, MR `!22` opened
+
+User asked to bring this repo up to date after the same-day `autosnab_mvp`
+fix for Lilia's Метро2.pdf report (Coca-Cola line, "Состав упаковки"
+wrongly showing 72 шт — OpenAI misread the invoice table's quantity/unit
+column as a `count_in_package` packaging fact). Confirmed via `git fetch` +
+`git log` that `develop` here was otherwise fully current (all 3
+`packaging_facts` phases already merged, no drift since the last audit) —
+this was the only real gap.
+
+Ported the identical fix onto branch `fix/count-in-package-quantity-document-conflation`
+(off `develop`, commit `d09c745`): `item_normalization_service.py`'s
+`_units_per_package_from_facts()` now takes `quantity_document` and drops a
+`count_in_package` fact whose value exactly equals it; `openai_invoice_parser_service.py`'s
+`SYSTEM_PROMPT` gained the same tightened instruction + Coca-Cola negative
+example; same regression test ported into `test_openai_invoice_pipeline.py`.
+Full suite: 246 passed / 2 skipped, same 8 pre-existing `test_receiving.py`
+failures confirmed identical via `git stash` (zero regressions) — this
+repo's domain-driven file layout differs from `autosnab_mvp`'s flat one but
+the function bodies matched closely enough that the port was mechanical.
+
+Pushed and opened MR `!22` **via the GitLab web UI, logged in as
+`v.viktor.shadrin`** (not the API token) — deliberately following the
+2026-07-26 CI-actor-identity lesson (`[[gitlab-ci-actor-identity-access]]`)
+so the merge-request pipeline doesn't hit the same `ci-templates`
+access-denied failure an API-token-triggered pipeline hit before. Pipeline
+`#599` triggered. **Not merged** — merging `develop` here auto-deploys to
+the DEV environment that real users actually hit at
+`avtosnab.testant.online/docparser`, so this was left open for explicit
+go-ahead rather than auto-merged.
