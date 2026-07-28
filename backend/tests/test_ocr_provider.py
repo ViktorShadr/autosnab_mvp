@@ -3,7 +3,7 @@ import ssl
 import pytest
 
 from app.services import ocr_service
-from app.services.ocr_service import OcrProviderError
+from app.services.ocr_service import OcrConfigurationError, OcrProviderError
 
 
 def test_google_operation_retries_transient_ssl_error(monkeypatch):
@@ -90,3 +90,44 @@ def test_export_ocr_text_gives_up_after_exhausting_retries(monkeypatch):
     result = ocr_service._export_ocr_text_with_retry(service, "doc-1")
 
     assert result == ""
+
+
+def test_recognize_invoice_image_dispatches_to_google_cloud_vision(monkeypatch):
+    monkeypatch.setattr(ocr_service.settings, "google_ocr_provider", "google_cloud_vision")
+    calls = []
+
+    import app.services.google_vision_ocr_service as vision_service
+
+    monkeypatch.setattr(
+        vision_service,
+        "recognize_invoice_with_google_vision_ocr",
+        lambda file_path: calls.append(file_path) or {"provider": "google_cloud_vision"},
+    )
+
+    result = ocr_service.recognize_invoice_image("invoice.jpg")
+
+    assert result == {"provider": "google_cloud_vision"}
+    assert calls == ["invoice.jpg"]
+
+
+def test_recognize_invoice_image_dispatches_to_google_drive_ocr_by_default(monkeypatch):
+    monkeypatch.setattr(ocr_service.settings, "google_ocr_provider", "google_drive_ocr")
+    monkeypatch.setattr(ocr_service.settings, "google_drive_ocr_enabled", True)
+    calls = []
+    monkeypatch.setattr(
+        ocr_service,
+        "recognize_invoice_with_google_drive_ocr",
+        lambda file_path: calls.append(file_path) or {"provider": "google_drive_ocr"},
+    )
+
+    result = ocr_service.recognize_invoice_image("invoice.jpg")
+
+    assert result == {"provider": "google_drive_ocr"}
+    assert calls == ["invoice.jpg"]
+
+
+def test_recognize_invoice_image_rejects_unknown_provider(monkeypatch):
+    monkeypatch.setattr(ocr_service.settings, "google_ocr_provider", "bogus")
+
+    with pytest.raises(OcrConfigurationError):
+        ocr_service.recognize_invoice_image("invoice.jpg")

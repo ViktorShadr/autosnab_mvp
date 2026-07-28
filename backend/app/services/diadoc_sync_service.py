@@ -34,7 +34,7 @@ from app.services.diadoc_client import (
 from app.services.diadoc_oauth_service import get_diadoc_oauth_status
 from app.services.diadoc_xml_parser_service import parse_diadoc_invoice_xml
 from app.services.document_extraction_service import extract_invoice_document
-from app.services.google_oauth_service import get_oauth_status as get_google_oauth_status
+from app.services.google_credentials_service import get_sheets_auth_status as get_google_sheets_auth_status
 from app.services.invoice_review_service import (
     create_invoice_review,
     create_real_google_sheet_for_review,
@@ -210,15 +210,15 @@ def run_diadoc_preflight() -> dict[str, Any]:
                 "GOOGLE_TARGET_SHEET_NAME"
             ),
         )
-        google_oauth = get_google_oauth_status()
+        google_sheets_auth = get_google_sheets_auth_status()
         add(
-            "google_oauth",
-            bool(google_oauth.get("authorized")),
-            "Google OAuth готов"
-            if google_oauth.get("authorized")
+            "google_sheets_auth",
+            bool(google_sheets_auth.get("authorized")),
+            f"Google Sheets авторизация готова (режим: {google_sheets_auth.get('auth_mode')})"
+            if google_sheets_auth.get("authorized")
             else (
-                "Google OAuth недоступен: "
-                f"{google_oauth.get('error') or 'пройдите авторизацию'}"
+                f"Google Sheets авторизация недоступна (режим: {google_sheets_auth.get('auth_mode')}): "
+                f"{google_sheets_auth.get('error') or 'пройдите авторизацию / проверьте сервисный аккаунт'}"
             ),
         )
     else:

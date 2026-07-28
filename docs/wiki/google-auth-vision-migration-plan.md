@@ -172,3 +172,54 @@ Drive-OCR upload.
 
 Plan approved by user on 2026-07-22. **Not yet implemented** — explicitly
 saved as a plan first, per user request, before any code changes begin.
+
+## Update, 2026-07-28: implemented in full, both Sheets and OCR, on branch `feature/google-service-account-dual-mode`
+
+User found the actual service-account key Pavel had given previously
+(`personal-453020-285299f6b7b6.json`, sitting in the repo root, never
+registered in `manifests/raw_sources.csv` until this session), and asked to
+go further than this plan's original cautious Sheets-only-first phasing:
+migrate **both** Sheets and OCR fully onto the service account, since Pavel
+confirmed he can enable Cloud Billing for the Vision API (this plan's
+stated hard blocker). Implemented with two deliberate deviations from the
+design above:
+
+- **Field names differ from this doc's sketch**: `google_sheets_auth_mode`/
+  `google_ocr_provider`/`google_service_account_json_b64` (as designed here)
+  — implemented exactly as named. The vestigial `google_auth_mode` field is
+  left in place, commented as superseded, not removed.
+- **No cleanup phase, ever** (deviates from this doc's rollout step 6): the
+  user explicitly wants the OAuth+Drive-OCR path to stay permanently
+  switchable, not deleted after a stabilization period. Both auth paths are
+  designed to coexist in the codebase indefinitely.
+- **`google_credentials_service.py`'s `get_sheets_auth_status()`** additionally
+  replaced `diadoc_sync_service.py`'s preflight check (previously hardcoded
+  to OAuth-user status regardless of which mode Sheets actually used) — a
+  gap this design doc didn't originally cover, found via this session's code
+  trace.
+
+New/modified files: `google_service_account_service.py`,
+`google_api_retry_service.py` (extracted from `ocr_service.py`),
+`google_credentials_service.py`, `google_vision_ocr_service.py`;
+`ocr_service.py` (provider dispatcher, `OcrProviderError.provider` now a
+constructor param), `google_sheets_service.py` (credentials dispatch +
+dead-code guard on the Drive-touching new-spreadsheet branch),
+`invoice_review_service.py` (`_read_google_sheet_values` credentials swap),
+`routers/google_oauth.py` (`/status` now mode-aware), `provider_health_service.py`,
+`diadoc_sync_service.py`, `main.py` (fail-fast `validate_google_auth_configuration()`
+at startup), `requirements.txt` (+`pypdfium2`). 27 new/updated tests added.
+Full suite: 257 passed outside `test_receiving.py`, same 5 pre-existing
+failures (`test_document_extraction_service.py` ×3, `test_document_image_preparation.py`
+×2) confirmed unrelated. Both new toggles default to today's behavior
+(`oauth`/`google_drive_ocr`) — zero behavior change until explicitly flipped
+in `.env`.
+
+**Not yet done** (manual steps, deliberately left to the user — never
+handled by the assistant, since they involve the actual secret key
+material): base64-encoding the key, setting `GOOGLE_SERVICE_ACCOUNT_JSON_B64`
+in `.env` (local and VPS), sharing the target/reference Google Sheets with
+`id-698@personal-453020.iam.gserviceaccount.com`, Pavel enabling Cloud
+Billing + the Vision API on `personal-453020`, the side-by-side OCR
+accuracy validation against the `Метро.pdf` series before any production
+cutover, and the actual `.env` toggle flips in dev then prod. Branch pushed
+locally, not merged, not deployed anywhere yet.

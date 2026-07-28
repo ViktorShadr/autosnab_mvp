@@ -3,14 +3,18 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 
 from app.config import settings  # noqa: E402
 from app.services.google_sheets_service import (  # noqa: E402
+    GoogleSheetsConfigurationError,
     PACKAGING_FACTS_SHEET_HEADERS,
     SHARED_INVOICE_HEADERS,
+    _create_invoice_review_spreadsheet,
     _insert_into_existing_spreadsheet,
     _project_shared_rows_to_target_headers,
     _remap_source_rows_to_shared_sheet,
@@ -868,3 +872,29 @@ def test_create_invoice_review_spreadsheet_falls_back_to_settings_when_no_overri
 
     get_calls = fake_service.spreadsheets_resource.get_calls
     assert get_calls[0]["spreadsheetId"] == "ORIGINAL-ID"
+
+
+def test_build_google_services_uses_sheets_credentials_dispatcher(monkeypatch):
+    sentinel_credentials = SimpleNamespace(name="dispatched-credentials")
+    captured_credentials = []
+
+    monkeypatch.setattr(
+        google_sheets_service_module, "get_sheets_credentials", lambda: sentinel_credentials
+    )
+    monkeypatch.setattr(
+        "googleapiclient.discovery.build",
+        lambda *args, credentials=None, **kwargs: captured_credentials.append(credentials),
+    )
+
+    google_sheets_service_module._build_google_services()
+
+    assert captured_credentials == [sentinel_credentials, sentinel_credentials]
+
+
+def test_create_invoice_review_spreadsheet_rejects_service_account_mode(monkeypatch):
+    monkeypatch.setattr(settings, "google_sheets_auth_mode", "service_account")
+
+    with pytest.raises(GoogleSheetsConfigurationError):
+        _create_invoice_review_spreadsheet(
+            sheets_service=None, drive_service=None, sheet_data={}
+        )

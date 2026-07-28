@@ -48,6 +48,8 @@ For local SQLite + OCR + Google Sheets:
 DATABASE_URL=sqlite:///./autosnab_mvp.db
 
 GOOGLE_AUTH_MODE=oauth
+# GOOGLE_SHEETS_AUTH_MODE=oauth|service_account and GOOGLE_OCR_PROVIDER=google_drive_ocr|google_cloud_vision
+# are separate, independently switchable toggles -- see docs/wiki/google-auth-vision-migration-plan.md.
 GOOGLE_OAUTH_CLIENT_ID=
 GOOGLE_OAUTH_CLIENT_SECRET=
 GOOGLE_OAUTH_ACCESS_TOKEN=

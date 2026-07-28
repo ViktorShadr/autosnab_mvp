@@ -392,6 +392,51 @@ the DEV environment that real users actually hit at
 `avtosnab.testant.online/docparser`, so this was left open for explicit
 go-ahead rather than auto-merged.
 
+## Update, 2026-07-28: re-verified GitLab CI/CD variables completeness
+
+User asked directly whether all variables needed for the project to fully
+function exist on GitLab. Re-checked live via the GitLab UI (not from
+memory) rather than trusting the 2026-07-26 snapshot above:
+
+- **Project-level `Settings → CI/CD → Variables`**: still only `ENV_DEV`
+  (File, Protected). `ENV_PROD` still does not exist. Group-level
+  (inherited) variables: still 0 — confirmed the page itself reports
+  `Group variables (inherited): 0`.
+- **`antipov-backend` group settings are not accessible** to this account
+  (`/antipov-backend/-/settings/ci_cd` → 404) — consistent with `YC_SA_KEY`/
+  `YC_REGISTRY_BACK_ID` living at GitLab **instance** admin level, invisible
+  from here, same conclusion as 2026-07-26 (still unverifiable directly, but
+  functionally proven working since `deploy-dev`/`build-image` keep
+  succeeding).
+- Read the actual template source to get the authoritative variable list
+  instead of re-deriving it from memory: `ci-templates/deploy.yml` needs
+  `IMAGE_NAME`/`CONTAINER_NAME` (repo `variables:`, present),
+  `DEPLOY_PORT`/`CONTAINER_PORT`/`NETWORK_NAME` (optional, present),
+  `NPM_CONTAINER_DEV`/`NPM_CONTAINER_PROD` (optional, unset — falls back to
+  `nginx-proxy-manager-dev`/`-prod` defaults), `YC_SA_KEY` (instance-level,
+  working), and `ENV_DEV`/`ENV_PROD` (file-type CI/CD vars). `docker-build.yml`
+  needs only `IMAGE_NAME` + the same `YC_SA_KEY`. `security-scan.yml`
+  (Code Quality/SAST/Secret Detection, MR-only) and `build-fastapi.yml`
+  (test/lint) need **no extra GitLab-side variables** — both self-contained
+  with in-file defaults.
+- **`main` still has no `.gitlab-ci.yml`** — `blob/main/.gitlab-ci.yml`
+  redirects to `tree/main`, which only has the bare `README.md`. This means
+  `deploy-prod` (manual, `rules: if $CI_COMMIT_BRANCH == "main"`) is not
+  just missing its `ENV_PROD` input, it's **structurally unreachable** —
+  GitLab has no CI config on `main` to even show the manual job. Same
+  finding as 2026-07-26, still true today.
+- Re-confirmed the DEV endpoint real users hit is healthy right now:
+  `curl https://avtosnab.testant.online/docparser/health/runtime` → `200`.
+
+**Bottom line for "are all variables present": yes for the environment that
+actually matters today** (`develop` → dev, the de facto production target) —
+`ENV_DEV` + instance-level `YC_SA_KEY`/`YC_REGISTRY_BACK_ID` are all in place
+and proven working. **No for a real prod path**: `ENV_PROD` is absent and
+`main` has no CI config at all, so prod deploy is two structural steps away
+(add `.gitlab-ci.yml` to `main`, add `ENV_PROD`), not a one-variable fix.
+This has been a known, accepted gap since 2026-07-26 (`main` deploy was never
+pursued) — not a new regression.
+
 ## Update, 2026-07-27 (same day): MR `!22` merged into `develop`
 
 User confirmed to merge. Pipeline `#598` on the branch first failed at the

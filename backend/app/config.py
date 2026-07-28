@@ -8,7 +8,16 @@ class Settings(BaseSettings):
 
     # Google Drive OCR + Google Sheets integration.
     # Основной режим: OAuth обычного Google-пользователя.
-    google_auth_mode: str = "oauth"
+    google_auth_mode: str = "oauth"  # vestigial: superseded by the two toggles below
+
+    # Sheets writes and OCR can each run on OAuth-user credentials or a
+    # Google service account, switched independently and reversibly via
+    # .env. See docs/wiki/google-auth-vision-migration-plan.md.
+    google_sheets_auth_mode: str = "oauth"  # "oauth" | "service_account"
+    google_ocr_provider: str = "google_drive_ocr"  # "google_drive_ocr" | "google_cloud_vision"
+    google_service_account_json_b64: str | None = None
+    google_vision_pdf_render_scale: float = 2.0
+
     google_oauth_client_id: str | None = None
     google_oauth_client_secret: str | None = None
     google_oauth_access_token: str | None = None
