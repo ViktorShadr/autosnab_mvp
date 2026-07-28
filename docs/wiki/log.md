@@ -1483,3 +1483,10 @@
 - User decision: leave the `avtosnab.testant.online` path-prefix/subdomain assignment alone for now, not pursuing further with Alexander.
 - User decision: Caddy stays in `autosnab_mvp` — it exists for draft/test deploys on the user's personal VPS (`78.17.160.248`), not a step toward production. `auto-snab-document-parser` will not need Caddy at all, since it deploys to Pavel's official server (Alexander-routed). Supersedes the 2026-07-25 reverted-Caddy-removal note; nothing removed, no code changed.
 - Full detail in `docs/wiki/current-status.md` and `docs/wiki/auto-snab-document-parser-release-repo.md`.
+
+## [2026-07-28] plan | Telegram Mini App (WebApp) button, follow-on to Pavel's Sportmaster reference
+
+- Read the full "ИТ (J) АвтоСнаб" group-chat thread live in Telegram Web: Pavel Antipov (11:39) posted @SportmasterChat_Bot as a reference for "бот с кнопками"; live-tested that bot and confirmed its "За покупками" button opens a genuine Telegram Mini App (`web_app`/`WebAppInfo`, Telegram's own "connect to its website" confirm dialog), not plain inline buttons. Roman Ershov's same-thread follow-up (12:16-12:17) confirmed the ask is specifically about button placement + invoking a web interface, and reacted positively.
+- User concluded Pavel wants something similar for our bot and asked how to apply it to the already-built native bot.
+- Recorded a phased plan in `docs/wiki/n8n-to-native-bot-migration-plan.md`: Phase A (one narrow `web_app` inline button pointed at the existing `/upload-page`, additive, no change to current `/done`/`/status`/`/reset` flow), Phase B (`initData` HMAC auth on the backend), Phase C (Telegram theming). Explicitly not a chat-flow rewrite. Plan only, per user request — no code written.
+- Full detail in `docs/wiki/n8n-to-native-bot-migration-plan.md` and `docs/wiki/current-status.md`.

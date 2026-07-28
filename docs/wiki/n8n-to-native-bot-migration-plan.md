@@ -180,3 +180,30 @@ n8n and the native bot must never run against the same bot token simultaneously 
 **New**: `backend/app/telegram_bot/{__init__,bot,handlers,keyboard,messages,poller}.py`, `backend/app/services/bot_gateway_service.py`, `backend/tests/test_bot_gateway_service.py`.
 **Changed**: `backend/app/main.py` (lifespan), `backend/app/config.py` (new settings), `backend/requirements.txt` (add `aiogram`), `backend/app/routers/invoice_review.py` (six endpoints become thin wrappers).
 **Decommissioned, not deleted**: `n8n/telegram-bot-mvp.workflow.json` (deactivate the cloud workflow; keep file as historical reference through the rollback window).
+
+## 2026-07-28, follow-on plan: Telegram Mini App (WebApp) button — not started
+
+**Trigger**: Pavel Antipov (owner) posted in the "ИТ (J) АвтоСнаб" group chat, 2026-07-28 11:39: "Кто делает бота с кнопками. Посмотрите этот пример @SportmasterChat_Bot" with a screenshot of Sportmaster's shop bot (catalog screen: Мужчинам/Женщинам, Детям, Виды спорта, Бренды A-Z, Распродажа). Roman Ershov (colleague, first appearance in this wiki) followed up same thread, confirming the reference is specifically about "расположение кнопки и вызов веб интерфейса" (button placement + invoking a web interface) and reacted positively ("Мне нравится"). Investigated live: `@SportmasterChat_Bot`'s "🛍 За покупками" button is a genuine Telegram Mini App (`WebAppInfo`/`web_app` button) — Telegram's own confirm dialog reads "To launch this web app, you will connect to its website" — not a plain inline-button chat flow. Conclusion: Pavel is pointing at Mini-App-style UI as a direction he wants considered for our bot, not asking who owns the current bot.
+
+**Why this is unusually low-effort for us**: `backend/app/routers/invoice_review.py:81` (`/upload-page`) already serves a live HTML+JS page — document preview, OpenAI/pipeline progress polling, Google-Sheets-write status — over HTTPS from the production VPS. This is functionally the same shape of content Sportmaster puts inside their Mini App button. We are not starting from zero on the frontend.
+
+### What a Mini App adds over the current `web_app`-less bot
+
+- Telegram's own `WebAppInfo` inline/menu button opens an arbitrary HTTPS page inside Telegram, themed via `telegram-web-app.js` (colors, `MainButton`, native close), instead of a chat message.
+- `initData` sent by Telegram to that page is HMAC-signed with the bot token — the backend can verify it server-side and get an authenticated Telegram user identity for free, without any extra login step in chat.
+- Richer live UI (real progress bar, item-level review table, buttons) than what text messages + inline ✅/🗑/📊 buttons can express.
+
+### Recommended shape: one narrow `web_app` button, not a chat-flow rewrite
+
+Rewriting the whole `/done`/`/status`/`/reset` flow into a Mini App at once was explicitly rejected as too large a first step. Proposed phasing:
+
+1. **Phase A — proof of concept**: add one inline `web_app` button (e.g. "📤 Загрузить накладную" or "📊 Мои документы") in `handlers.py`/`keyboard.py`, pointed at the existing `/upload-page` (or a lightly adapted copy of it). No change to `/done`/`/status`/`/reset` text handlers — they keep working exactly as today, this is purely additive.
+2. **Phase B — Telegram-native auth**: add `initData` HMAC verification on the backend endpoint(s) the Mini App page calls, so the page identifies the Telegram user directly instead of relying on `chat_id` passed through the existing draft-append flow.
+3. **Phase C — theming/polish**: wire `telegram-web-app.js` for Telegram color scheme + `MainButton`, only once A/B are validated with real usage.
+4. **Not planned yet**: replacing the poller's text stage-updates with in-Mini-App live progress — a bigger scope change, deliberately deferred until the narrow button proves useful.
+
+### Main tradeoff
+
+A full Mini App (own maintained frontend, Telegram theming, `initData` auth path) is real ongoing surface to maintain alongside the existing chat flow — two UIs for the same backend instead of one. The phased approach keeps the existing inline-button chat flow as the source of truth and adds the Mini App button as a strictly additive, low-risk experiment, rather than replacing what already works.
+
+**Status**: plan only, per explicit user request — no code written, nothing implemented. Not yet run past Pavel/Roman to confirm this phased shape matches what they had in mind before Phase A is built.
