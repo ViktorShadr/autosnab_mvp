@@ -1490,3 +1490,10 @@
 - User concluded Pavel wants something similar for our bot and asked how to apply it to the already-built native bot.
 - Recorded a phased plan in `docs/wiki/n8n-to-native-bot-migration-plan.md`: Phase A (one narrow `web_app` inline button pointed at the existing `/upload-page`, additive, no change to current `/done`/`/status`/`/reset` flow), Phase B (`initData` HMAC auth on the backend), Phase C (Telegram theming). Explicitly not a chat-flow rewrite. Plan only, per user request — no code written.
 - Full detail in `docs/wiki/n8n-to-native-bot-migration-plan.md` and `docs/wiki/current-status.md`.
+
+## [2026-07-28] correction | `auto-snab-document-parser` MR `!23` and packaging_facts Phases 1-3 were already merged, not still open
+
+- User asked to re-verify two items reported earlier as "open" (MR `!23` iiko removal not merged; packaging-facts Phase 1 pushed but not merged, Phases 2-4 not started).
+- `git fetch --all --prune` + `git log origin/develop` on the local `auto-snab-document-parser` clone confirmed both are wrong: `36ee545` (`fix/remove-dead-iiko-integration` merge, i.e. MR `!23`) and the Phase 1-3 merges (`b1c0f71`→`1f66c7e`, `3874621`→`04d30fe`) are all ancestors of `origin/develop`. MR `!22` (`count_in_package` fix) is also merged (`5a538f4`), matching what `log.md`'s own 2026-07-27 entry already said but that `auto-snab-document-parser-release-repo.md` still showed as "Not merged" in its per-MR sections.
+- Root cause of the stale summary: `docs/wiki/auto-snab-document-parser-release-repo.md` already had a correct "Update, 2026-07-26: all 3 phases merged into `develop`" section, but the earlier per-branch bullet above it and the MR `!22`/`!23` "Not merged" lines further down were never edited to match — a page-internal contradiction that `current-status.md` then inherited by citing the stale bullet. Fixed all three stale spots in that page with strikethrough + correction notes.
+- Phase 4 (`packaging_facts` deferred recalculation) is confirmed genuinely still not started — no branch, no commits, no log entry anywhere.

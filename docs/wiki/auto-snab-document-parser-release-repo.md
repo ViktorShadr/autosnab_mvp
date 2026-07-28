@@ -120,7 +120,9 @@ version of this note did on 2026-07-26 (see "Correction" below).
 - **`feature/packaging-facts-phase1-schema` (`b1c0f71`)**: Phase 1 of the
   `packaging_facts`/rule-engine port (see
   [auto-snab-document-parser-porting-plan.md](./auto-snab-document-parser-porting-plan.md)).
-  **Pushed to GitLab, not merged into `develop`, no MR opened yet.**
+  ~~Pushed to GitLab, not merged into `develop`, no MR opened yet.~~ **Merged
+  same day (2026-07-26) along with Phases 2-3** — see the "all 3 phases
+  merged" update below.
 
 ## Guiding constraint — do not violate
 
@@ -304,9 +306,13 @@ only this session's edits existed in the working tree) plus 2 pre-existing
 skips, zero regressions. `pyflakes` clean on every touched file. Committed
 (`3a945cc` on branch `fix/remove-dead-iiko-integration`), pushed, and MR
 `!23` opened via the GitLab web UI logged in as `v.viktor.shadrin` (per the
-2026-07-26 CI-actor-identity lesson). **Not merged** — merging to `develop`
+2026-07-26 CI-actor-identity lesson). ~~**Not merged** — merging to `develop`
 auto-deploys to the real DEV environment, which is already down from the
-unrelated `PGSSLCERT` bug above; left open for explicit go-ahead.
+unrelated `PGSSLCERT` bug above; left open for explicit go-ahead.~~
+**Correction, 2026-07-28**: confirmed merged via `git log origin/develop`
+(`36ee545 Merge branch 'fix/remove-dead-iiko-integration' into 'develop'`,
+`3a945cc` is an ancestor of `develop`) — someone merged it outside a
+tracked session; not caught until this date's audit.
 
 ## Technique: temporary manual CI job for container logs without SSH (2026-07-26)
 
@@ -387,10 +393,12 @@ Pushed and opened MR `!22` **via the GitLab web UI, logged in as
 2026-07-26 CI-actor-identity lesson (`[[gitlab-ci-actor-identity-access]]`)
 so the merge-request pipeline doesn't hit the same `ci-templates`
 access-denied failure an API-token-triggered pipeline hit before. Pipeline
-`#599` triggered. **Not merged** — merging `develop` here auto-deploys to
+`#599` triggered. ~~**Not merged** — merging `develop` here auto-deploys to
 the DEV environment that real users actually hit at
 `avtosnab.testant.online/docparser`, so this was left open for explicit
-go-ahead rather than auto-merged.
+go-ahead rather than auto-merged.~~ **Merged** — see the 2026-07-27 "MR `!22`
+merged" log entry; `develop` has `5a538f4 Merge branch
+'fix/count-in-package-quantity-document-conflation' into 'develop'`.
 
 ## Update, 2026-07-27 (same day): MR `!22` merged into `develop`
 
