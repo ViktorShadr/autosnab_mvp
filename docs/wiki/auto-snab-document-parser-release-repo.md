@@ -43,7 +43,18 @@ version of this note did on 2026-07-26 (see "Correction" below).
   gateway/pipeline, not this codebase). A path prefix `/docparser` was
   agreed (not a subdomain) — first live attempt 404'd because the gateway
   wasn't stripping the prefix before forwarding to port 8001; nginx/Traefik
-  strip-prefix config was sent back. Resolution not yet confirmed.
+  strip-prefix config was sent back. Resolution not yet confirmed. **User
+  decision, 2026-07-28**: leave the path-prefix/subdomain question alone for
+  now — not pursuing it further with Alexander at this time.
+- **Caddy scope decision, 2026-07-28**: this repo's production deploy target
+  is Pavel's official server, routed by Alexander as above — Caddy is not
+  and will not be needed here. `autosnab_mvp`'s own `caddy`
+  service/`public-ip` Compose profile exists only for draft/test deploys on
+  the user's personal VPS (`78.17.160.248`) and stays there for that
+  purpose; it is not a step toward this repo's production path. See
+  `docs/wiki/current-status.md` (2026-07-25 entry, "dropping this repo's own
+  Caddy") in `autosnab_mvp` for the earlier reverted-removal attempt this
+  decision supersedes for the `autosnab_mvp` side.
 - **CI currently blocked (2026-07-26):** pipeline `#569` for `develop`
   (commit `8874799`) cannot resolve the external include project
   `antipov-devops/ci-templates`, producing "project not found or access
@@ -227,6 +238,14 @@ Alembic migrations are needed and asked him to split them into a separate
 container as he suggested. No repo files changed by this exchange. Still
 waiting on Aliaksandr for both the separate migration container and the
 `ENV_DEV` fix.
+
+**Fixed, 2026-07-28**: user reports Alexander (Aliaksandr Nikifarau) fixed
+the 502. Verified independently, not just taken on report:
+`curl -o /dev/null -w '%{http_code}' https://avtosnab.testant.online/docparser/health/runtime`
+returns `200`. `ENV_DEV`'s `PGSSLCERT`→`PGSSLROOTCERT` fix is confirmed live.
+The separate-migration-container ask (Aliaksandr's own proposal) is a
+distinct, still-open item — not confirmed done, not blocking anything right
+now since the health check passes.
 
 ## Dead `iiko` integration removed, MR `!23` (2026-07-27)
 

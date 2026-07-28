@@ -1476,3 +1476,10 @@
   1. **Sheets writes** (what broke today): switch onto the already-tested service account (`id-698@personal-453020.iam.gserviceaccount.com`) per `docs/wiki/google-auth-vision-migration-plan.md` (`status: planned`, explicitly low-risk/proven-safe, not blocked on anything) — service accounts have no refresh-token expiry, so this removes re-auth for Sheets permanently. `google_sheets_auth_mode=service_account` is coded but not enabled.
   2. **Drive OCR**: still needs the personal-Gmail OAuth credential (service account hits a Drive storage-quota wall, a GCP-project-type limitation, not fixable by sharing folders). Only real fix: flip the consent screen to "In production" in Cloud Console.
 - User chose to just record this for now rather than act on either fix this session.
+
+## [2026-07-28] resolve | docparser 502 fixed, subdomain deferred, Caddy scope decided
+
+- Alexander fixed the `ENV_DEV` `PGSSLCERT`→`PGSSLROOTCERT` bug that was 502ing `avtosnab.testant.online/docparser`. Verified independently, not just taken on report: `curl -o /dev/null -w '%{http_code}' https://avtosnab.testant.online/docparser/health/runtime` returned `200`. Still open, separately: Aliaksandr's own proposal to split Alembic migrations into their own container.
+- User decision: leave the `avtosnab.testant.online` path-prefix/subdomain assignment alone for now, not pursuing further with Alexander.
+- User decision: Caddy stays in `autosnab_mvp` — it exists for draft/test deploys on the user's personal VPS (`78.17.160.248`), not a step toward production. `auto-snab-document-parser` will not need Caddy at all, since it deploys to Pavel's official server (Alexander-routed). Supersedes the 2026-07-25 reverted-Caddy-removal note; nothing removed, no code changed.
+- Full detail in `docs/wiki/current-status.md` and `docs/wiki/auto-snab-document-parser-release-repo.md`.
