@@ -84,7 +84,8 @@ def list_documents(session: SbisManualSession, *, date_from: str, date_to: str) 
         document_type = doc_payload.get("Тип")
         if allowed_types and document_type not in allowed_types:
             continue
-        if _document_date(doc_payload) and _document_date(doc_payload) > to_bound:
+        doc_date = _document_date(doc_payload)
+        if doc_date and (doc_date > to_bound or doc_date < from_dt.date()):
             continue
         cache[sbis_document_id] = doc_payload
         summaries.append(_build_summary(sbis_document_id, doc_payload))

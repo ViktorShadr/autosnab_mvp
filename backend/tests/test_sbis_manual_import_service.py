@@ -62,6 +62,27 @@ def test_list_documents_filters_by_configured_type_and_date_to(monkeypatch):
     assert "doc-in-range" in session.documents_cache
 
 
+def test_list_documents_filters_by_date_from(monkeypatch):
+    """СБИС.СписокИзменений filters by change-event time, not the document's
+    own `Дата`, so a document dated well before `date_from` can still be
+    returned if it had a recent event -- the service must filter it back out."""
+    documents = [
+        _xml_document("doc-in-range", document_type="ДокОтгрВх", date_="15.07.2026"),
+        _xml_document("doc-before-range", document_type="ДокОтгрВх", date_="31.03.2026"),
+    ]
+
+    def fake_get_changes(self, *, date_from):
+        return {"result": {"Документ": documents, "Навигация": {"ЕстьЕще": "Нет"}}}
+
+    monkeypatch.setattr(SbisClient, "get_changes", fake_get_changes)
+
+    session = _session()
+    result = import_service.list_documents(session, date_from="2026-07-10", date_to="2026-07-31")
+
+    ids = {doc.sbis_document_id for doc in result.documents}
+    assert ids == {"doc-in-range"}
+
+
 def test_list_documents_computes_attachment_flags(monkeypatch):
     document = _xml_document("doc-1")
     monkeypatch.setattr(
