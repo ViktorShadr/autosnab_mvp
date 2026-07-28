@@ -334,7 +334,7 @@ _PAGE_HTML = """
         option.textContent = label;
         recipientFilter.appendChild(option);
       }
-      document.getElementById('recipientFilterField').classList.toggle('hidden', seen.size <= 1);
+      document.getElementById('recipientFilterField').classList.toggle('hidden', seen.size === 0);
     }
 
     function renderFilteredRows() {
