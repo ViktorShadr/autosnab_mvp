@@ -791,14 +791,31 @@ def _pick_target_attachment(document: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _next_cursor(documents: list[dict[str, Any]], previous_cursor: str) -> str | None:
-    latest: str | None = None
+    """Advance the СписокИзменений cursor to the true maximum ДатаВремяСоздания
+    seen in this page. SBIS does not guarantee the page is sorted strictly
+    ascending by creation time -- confirmed live against a real account: a
+    page's last array element can have an *earlier* timestamp than an
+    element earlier in the same page, which made the old "just take the
+    last element" logic pick a cursor that goes backwards on the next page,
+    got stuck oscillating between two timestamps, and silently never
+    advanced past that point no matter how many pages were fetched."""
+    latest_raw: str | None = None
+    latest_dt: datetime | None = None
     for document in documents:
         raw = document.get("ДатаВремяСоздания")
-        if raw:
-            latest = raw
-    if not latest:
+        if not raw:
+            continue
+        parsed = _parse_event_datetime(raw)
+        if parsed is None:
+            if latest_dt is None and latest_raw is None:
+                latest_raw = raw
+            continue
+        if latest_dt is None or parsed > latest_dt:
+            latest_dt = parsed
+            latest_raw = raw
+    if not latest_raw:
         return None
-    normalized = _normalize_datetime_for_filter(latest)
+    normalized = _normalize_datetime_for_filter(latest_raw)
     return normalized if normalized != previous_cursor else None
 
 
@@ -810,6 +827,13 @@ def _normalize_datetime_for_filter(value: str) -> str:
     if not time_part:
         return value.strip()
     return f"{date_part} {time_part.replace('.', ':')}"
+
+
+def _parse_event_datetime(value: str) -> datetime | None:
+    try:
+        return datetime.strptime(_normalize_datetime_for_filter(value), "%d.%m.%Y %H:%M:%S")
+    except ValueError:
+        return None
 
 
 def _initial_date_from() -> str:

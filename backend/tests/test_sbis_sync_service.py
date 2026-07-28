@@ -3,6 +3,7 @@ from app.services.sbis_sync_service import (
     _configured_document_types,
     _group_by_document_id,
     _merge_occurrences,
+    _next_cursor,
     _normalize_datetime_for_filter,
     _pick_target_attachment,
 )
@@ -21,6 +22,32 @@ def test_normalize_datetime_for_filter_converts_dots_to_colons():
     # Confirmed against a real production dump: ДатаВремяСоздания uses dots,
     # but the СписокИзменений filter requires colons.
     assert _normalize_datetime_for_filter("12.07.2026 08.43.08") == "12.07.2026 08:43:08"
+
+
+def test_next_cursor_uses_true_maximum_not_last_array_element():
+    """Confirmed live against a real SBIS account: a page is not guaranteed
+    sorted strictly ascending by ДатаВремяСоздания -- the last element can
+    have an earlier timestamp than an earlier element in the same page. The
+    old "just take the last element" logic picked that earlier timestamp as
+    the next cursor, which then goes backwards on the next call and gets
+    stuck oscillating between two values forever, never advancing past that
+    point (observed: 60 pages stuck between two January timestamps)."""
+    documents = [
+        {"ДатаВремяСоздания": "09.01.2026 09.46.09"},
+        {"ДатаВремяСоздания": "09.01.2026 09.41.17"},  # earlier, but listed last
+    ]
+
+    result = _next_cursor(documents, previous_cursor="09.01.2026 00:00:00")
+
+    assert result == "09.01.2026 09:46:09"
+
+
+def test_next_cursor_stops_when_max_equals_previous_cursor():
+    documents = [{"ДатаВремяСоздания": "09.01.2026 09.41.17"}]
+
+    result = _next_cursor(documents, previous_cursor="09.01.2026 09:41:17")
+
+    assert result is None
 
 
 def test_group_by_document_id_merges_repeated_events():
