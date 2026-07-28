@@ -36,6 +36,7 @@ class SbisManualDocumentListResponse(BaseModel):
     documents: list[SbisManualDocumentSummary] = Field(default_factory=list)
     truncated: bool = False
     pages_fetched: int = 0
+    next_cursor: str | None = None
 
 
 class SbisManualImportResultResponse(BaseModel):

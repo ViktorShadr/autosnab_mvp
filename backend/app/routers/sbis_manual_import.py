@@ -65,10 +65,11 @@ def logout(request: Request, response: Response) -> dict:
 def list_documents(
     date_from: str = Query(...),
     date_to: str = Query(...),
+    cursor: str | None = Query(None),
     session: SbisManualSession = Depends(require_manual_session),
 ) -> SbisManualDocumentListResponse:
     try:
-        return import_service.list_documents(session, date_from=date_from, date_to=date_to)
+        return import_service.list_documents(session, date_from=date_from, date_to=date_to, cursor=cursor)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 - surface SBIS transport/API errors as a clean 502
@@ -191,6 +192,10 @@ _PAGE_HTML = """
           <label for="recipientFilter">Юрлицо-получатель</label>
           <select id="recipientFilter"></select>
         </div>
+        <div class="field" id="docTypeFilterField" style="max-width: 260px;">
+          <label for="docTypeFilter">Тип документа</label>
+          <select id="docTypeFilter"></select>
+        </div>
         <div class="field" style="max-width: 420px;">
           <label for="supplierFilter">Поиск по поставщику</label>
           <input type="text" id="supplierFilter" placeholder="Название или ИНН поставщика" autocomplete="off" />
@@ -206,6 +211,7 @@ _PAGE_HTML = """
       </table>
       <div class="row" style="margin-top: 16px;">
         <button id="importBtn" disabled>Импортировать выбранные</button>
+        <button class="secondary-btn hidden" id="loadMoreBtn">Показать ещё</button>
       </div>
       <div id="summary" class="summary hidden"></div>
     </div>
@@ -228,8 +234,18 @@ _PAGE_HTML = """
     const dateTo = document.getElementById('dateTo');
     const dateFrom = document.getElementById('dateFrom');
     const recipientFilter = document.getElementById('recipientFilter');
+    const docTypeFilter = document.getElementById('docTypeFilter');
     const supplierFilter = document.getElementById('supplierFilter');
+    const loadMoreBtn = document.getElementById('loadMoreBtn');
     let allDocuments = [];
+    let activeDateFrom = null;
+    let activeDateTo = null;
+    let pendingCursor = null;
+
+    const DOC_TYPE_LABELS = {
+      'ДокОтгрВх': 'Накладная / УПД (ДокОтгрВх)',
+      'СчетВх': 'Счёт (СчетВх)',
+    };
 
     function todayStr() {
       return new Date().toISOString().slice(0, 10);
@@ -284,24 +300,77 @@ _PAGE_HTML = """
       resultsCard.classList.add('hidden');
     });
 
+    async function fetchDocuments(cursor) {
+      const params = new URLSearchParams({ date_from: activeDateFrom, date_to: activeDateTo });
+      if (cursor) params.set('cursor', cursor);
+      const res = await fetch('/api/v1/sbis-manual/documents?' + params.toString());
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Не удалось получить список документов.');
+      }
+      return res.json();
+    }
+
+    function updateLoadMoreState(truncated) {
+      if (truncated && pendingCursor) {
+        loadMoreBtn.classList.remove('hidden');
+        listHint.textContent = 'Показаны не все документы за период (лимит страниц за один запрос) — нажмите "Показать ещё", чтобы продолжить с того же места.';
+        listHint.classList.remove('hidden');
+      } else {
+        loadMoreBtn.classList.add('hidden');
+        listHint.classList.add('hidden');
+      }
+    }
+
     listBtn.addEventListener('click', async () => {
       listError.classList.add('hidden');
       listHint.classList.add('hidden');
       listBtn.disabled = true;
+      activeDateFrom = dateFrom.value;
+      activeDateTo = dateTo.value;
       try {
-        const params = new URLSearchParams({ date_from: dateFrom.value, date_to: dateTo.value });
-        const res = await fetch('/api/v1/sbis-manual/documents?' + params.toString());
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          listError.textContent = err.detail || 'Не удалось получить список документов.';
-          listError.classList.remove('hidden');
-          resultsCard.classList.add('hidden');
-          return;
-        }
-        const data = await res.json();
-        renderDocuments(data);
+        const data = await fetchDocuments(null);
+        allDocuments = data.documents;
+        supplierFilter.value = '';
+        pendingCursor = data.next_cursor || null;
+        updateLoadMoreState(data.truncated);
+        populateRecipientFilter();
+        populateDocTypeFilter();
+        renderFilteredRows();
+        resultsCard.classList.remove('hidden');
+        summary.classList.add('hidden');
+        documentsBody.addEventListener('change', updateImportButtonState);
+      } catch (err) {
+        listError.textContent = err.message;
+        listError.classList.remove('hidden');
+        resultsCard.classList.add('hidden');
       } finally {
         listBtn.disabled = false;
+      }
+    });
+
+    loadMoreBtn.addEventListener('click', async () => {
+      if (!pendingCursor) return;
+      loadMoreBtn.disabled = true;
+      try {
+        const data = await fetchDocuments(pendingCursor);
+        const existingIds = new Set(allDocuments.map((doc) => doc.sbis_document_id));
+        for (const doc of data.documents) {
+          if (!existingIds.has(doc.sbis_document_id)) {
+            allDocuments.push(doc);
+            existingIds.add(doc.sbis_document_id);
+          }
+        }
+        pendingCursor = data.next_cursor || null;
+        updateLoadMoreState(data.truncated);
+        populateRecipientFilter();
+        populateDocTypeFilter();
+        renderFilteredRows();
+      } catch (err) {
+        listError.textContent = err.message;
+        listError.classList.remove('hidden');
+      } finally {
+        loadMoreBtn.disabled = false;
       }
     });
 
@@ -309,18 +378,26 @@ _PAGE_HTML = """
       return (doc.recipient_inn || '') + '|' + (doc.recipient_name || '');
     }
 
-    function renderDocuments(data) {
-      allDocuments = data.documents;
-      supplierFilter.value = '';
-      if (data.truncated) {
-        listHint.textContent = 'Показаны не все документы за период (достигнут лимит страниц) — сузьте период.';
-        listHint.classList.remove('hidden');
+    function populateDocTypeFilter() {
+      const seen = new Map();
+      for (const doc of allDocuments) {
+        const type = doc.document_type || '';
+        if (!seen.has(type)) {
+          seen.set(type, DOC_TYPE_LABELS[type] || type || 'Без типа');
+        }
       }
-      populateRecipientFilter();
-      renderFilteredRows();
-      resultsCard.classList.remove('hidden');
-      summary.classList.add('hidden');
-      documentsBody.addEventListener('change', updateImportButtonState);
+      docTypeFilter.innerHTML = '';
+      const allOption = document.createElement('option');
+      allOption.value = '';
+      allOption.textContent = 'Все типы (' + allDocuments.length + ')';
+      docTypeFilter.appendChild(allOption);
+      for (const [type, label] of seen) {
+        const option = document.createElement('option');
+        option.value = type;
+        option.textContent = label;
+        docTypeFilter.appendChild(option);
+      }
+      document.getElementById('docTypeFilterField').classList.toggle('hidden', seen.size === 0);
     }
 
     function populateRecipientFilter() {
@@ -348,6 +425,10 @@ _PAGE_HTML = """
     function renderFilteredRows() {
       const filterValue = recipientFilter.value;
       let documents = filterValue ? allDocuments.filter((doc) => recipientKey(doc) === filterValue) : allDocuments;
+      const typeValue = docTypeFilter.value;
+      if (typeValue) {
+        documents = documents.filter((doc) => (doc.document_type || '') === typeValue);
+      }
       const supplierQuery = supplierFilter.value.trim().toLowerCase();
       if (supplierQuery) {
         documents = documents.filter((doc) => {
@@ -386,6 +467,7 @@ _PAGE_HTML = """
     }
 
     recipientFilter.addEventListener('change', renderFilteredRows);
+    docTypeFilter.addEventListener('change', renderFilteredRows);
     supplierFilter.addEventListener('input', renderFilteredRows);
 
     function updateImportButtonState() {

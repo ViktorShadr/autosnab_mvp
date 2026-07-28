@@ -86,6 +86,41 @@ def test_list_documents_filters_by_date_from(monkeypatch):
     assert ids == {"doc-in-range"}
 
 
+def test_list_documents_continues_from_cursor_when_truncated(monkeypatch):
+    """When СБИС.СписокИзменений has more events than `_MAX_LIST_PAGES` covers
+    (confirmed live on a wide date range), list_documents must report a
+    resumable `next_cursor` instead of silently dropping later documents --
+    and a follow-up call with that cursor must accumulate into the same
+    session cache rather than replacing the first page's results."""
+    monkeypatch.setattr(import_service, "_MAX_LIST_PAGES", 1)
+    page1_doc = _xml_document("doc-page1", date_="10.07.2026")
+    page1_doc["ДатаВремяСоздания"] = "10.07.2026 10:00:00"
+    page2_doc = _xml_document("doc-page2", date_="12.07.2026")
+    page2_doc["ДатаВремяСоздания"] = "12.07.2026 10:00:00"
+
+    def fake_get_changes(self, *, date_from):
+        if date_from == "10.07.2026 00:00:00":
+            return {"result": {"Документ": [page1_doc], "Навигация": {"ЕстьЕще": "Да"}}}
+        return {"result": {"Документ": [page2_doc], "Навигация": {"ЕстьЕще": "Нет"}}}
+
+    monkeypatch.setattr(SbisClient, "get_changes", fake_get_changes)
+
+    session = _session()
+    first = import_service.list_documents(session, date_from="2026-07-10", date_to="2026-07-31")
+
+    assert first.truncated is True
+    assert first.next_cursor == "10.07.2026 10:00:00"
+    assert {doc.sbis_document_id for doc in first.documents} == {"doc-page1"}
+
+    second = import_service.list_documents(
+        session, date_from="2026-07-10", date_to="2026-07-31", cursor=first.next_cursor
+    )
+
+    assert second.truncated is False
+    assert {doc.sbis_document_id for doc in second.documents} == {"doc-page2"}
+    assert {"doc-page1", "doc-page2"} <= set(session.documents_cache.keys())
+
+
 def test_list_documents_computes_attachment_flags(monkeypatch):
     document = _xml_document("doc-1")
     monkeypatch.setattr(

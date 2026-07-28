@@ -46,34 +46,47 @@ def login(*, login: str, password: str, account_number: str | None) -> str:
     return session_service.create_session(login=login, password=password, account_number=account_number)
 
 
-def list_documents(session: SbisManualSession, *, date_from: str, date_to: str) -> SbisManualDocumentListResponse:
+def list_documents(
+    session: SbisManualSession, *, date_from: str, date_to: str, cursor: str | None = None
+) -> SbisManualDocumentListResponse:
     """List SBIS documents for [date_from, date_to] (both YYYY-MM-DD), filtered
-    to the same document types the automatic scheduler already handles."""
+    to the same document types the automatic scheduler already handles.
+
+    СБИС.СписокИзменений is a change feed, not a date-range search: a wide
+    period can carry far more change events than `_MAX_LIST_PAGES` covers in
+    one call (confirmed live -- a query from January only reached early
+    January before hitting the page cap). Pass the `next_cursor` this
+    function returns back in as `cursor` to continue from where the previous
+    call left off, without re-walking the events already seen."""
     from_dt = datetime.strptime(date_from, "%Y-%m-%d")
     to_bound = datetime.strptime(date_to, "%Y-%m-%d").date()
     if to_bound < from_dt.date():
         raise ValueError("Дата начала периода позже даты окончания.")
 
     client = SbisClient(login=session.login, password=session.password, account_number=session.account_number)
-    cursor = from_dt.strftime("%d.%m.%Y 00:00:00")
+    current_cursor = cursor or from_dt.strftime("%d.%m.%Y 00:00:00")
     all_raw_documents: list[dict[str, Any]] = []
     pages_fetched = 0
+    next_cursor: str | None = None
 
     for _ in range(_MAX_LIST_PAGES):
-        payload = client.get_changes(date_from=cursor)
+        payload = client.get_changes(date_from=current_cursor)
         changes = payload.get("result") or {}
         documents = changes.get("Документ") or []
         all_raw_documents.extend(documents)
         pages_fetched += 1
 
-        next_cursor = _next_cursor(documents, cursor)
+        advanced_cursor = _next_cursor(documents, current_cursor)
         navigation = changes.get("Навигация") or {}
         has_more = str(navigation.get("ЕстьЕще") or "").strip().casefold() == "да"
-        if not documents or not has_more or not next_cursor or next_cursor == cursor:
+        if not documents or not has_more or not advanced_cursor or advanced_cursor == current_cursor:
             break
-        cursor = next_cursor
+        current_cursor = advanced_cursor
+    else:
+        # Loop exhausted _MAX_LIST_PAGES without a natural break -> more events remain.
+        next_cursor = current_cursor
 
-    truncated = pages_fetched >= _MAX_LIST_PAGES
+    truncated = next_cursor is not None
     grouped = _group_by_document_id(all_raw_documents)
     merged = {doc_id: _merge_occurrences(occurrences) for doc_id, occurrences in grouped.items()}
 
@@ -95,9 +108,14 @@ def list_documents(session: SbisManualSession, *, date_from: str, date_to: str) 
     # dict (get_session returns it by reference, not a copy), so mutating it
     # here persists the cache for the subsequent import_document call(s)
     # without needing to thread the opaque token back into this function.
-    session.documents_cache = cache
+    # A continuation call (cursor given) accumulates into the existing cache
+    # instead of discarding what a prior page already found.
+    if cursor is None:
+        session.documents_cache = cache
+    else:
+        session.documents_cache.update(cache)
     return SbisManualDocumentListResponse(
-        documents=summaries, truncated=truncated, pages_fetched=pages_fetched
+        documents=summaries, truncated=truncated, pages_fetched=pages_fetched, next_cursor=next_cursor
     )
 
 
