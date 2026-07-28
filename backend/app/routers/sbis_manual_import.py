@@ -186,9 +186,15 @@ _PAGE_HTML = """
     </div>
 
     <div class="card hidden" id="resultsCard">
-      <div class="field" id="recipientFilterField" style="max-width: 420px;">
-        <label for="recipientFilter">Юрлицо-получатель</label>
-        <select id="recipientFilter"></select>
+      <div class="row">
+        <div class="field" id="recipientFilterField" style="max-width: 420px;">
+          <label for="recipientFilter">Юрлицо-получатель</label>
+          <select id="recipientFilter"></select>
+        </div>
+        <div class="field" style="max-width: 420px;">
+          <label for="supplierFilter">Поиск по поставщику</label>
+          <input type="text" id="supplierFilter" placeholder="Название или ИНН поставщика" autocomplete="off" />
+        </div>
       </div>
       <table>
         <thead>
@@ -222,6 +228,7 @@ _PAGE_HTML = """
     const dateTo = document.getElementById('dateTo');
     const dateFrom = document.getElementById('dateFrom');
     const recipientFilter = document.getElementById('recipientFilter');
+    const supplierFilter = document.getElementById('supplierFilter');
     let allDocuments = [];
 
     function todayStr() {
@@ -304,6 +311,7 @@ _PAGE_HTML = """
 
     function renderDocuments(data) {
       allDocuments = data.documents;
+      supplierFilter.value = '';
       if (data.truncated) {
         listHint.textContent = 'Показаны не все документы за период (достигнут лимит страниц) — сузьте период.';
         listHint.classList.remove('hidden');
@@ -339,7 +347,15 @@ _PAGE_HTML = """
 
     function renderFilteredRows() {
       const filterValue = recipientFilter.value;
-      const documents = filterValue ? allDocuments.filter((doc) => recipientKey(doc) === filterValue) : allDocuments;
+      let documents = filterValue ? allDocuments.filter((doc) => recipientKey(doc) === filterValue) : allDocuments;
+      const supplierQuery = supplierFilter.value.trim().toLowerCase();
+      if (supplierQuery) {
+        documents = documents.filter((doc) => {
+          const name = (doc.counterparty_name || '').toLowerCase();
+          const inn = (doc.counterparty_inn || '').toLowerCase();
+          return name.includes(supplierQuery) || inn.includes(supplierQuery);
+        });
+      }
       documentsBody.innerHTML = '';
       for (const doc of documents) {
         const tr = document.createElement('tr');
@@ -370,6 +386,7 @@ _PAGE_HTML = """
     }
 
     recipientFilter.addEventListener('change', renderFilteredRows);
+    supplierFilter.addEventListener('input', renderFilteredRows);
 
     function updateImportButtonState() {
       const checked = documentsBody.querySelectorAll('.doc-checkbox:checked');
