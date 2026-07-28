@@ -113,7 +113,7 @@ _PAGE_HTML = """
     .subtitle { color: #6b7280; margin-bottom: 20px; line-height: 1.5; text-align: center; }
     label { display: block; font-weight: 700; margin-bottom: 6px; }
     .field { margin-bottom: 14px; }
-    input[type="text"], input[type="password"], input[type="date"] {
+    input[type="text"], input[type="password"], input[type="date"], select {
       width: 100%; box-sizing: border-box; padding: 10px;
       border: 1px solid #d1d5db; border-radius: 10px; font-size: 15px;
     }
@@ -186,10 +186,14 @@ _PAGE_HTML = """
     </div>
 
     <div class="card hidden" id="resultsCard">
+      <div class="field" id="recipientFilterField" style="max-width: 420px;">
+        <label for="recipientFilter">Юрлицо-получатель</label>
+        <select id="recipientFilter"></select>
+      </div>
       <table>
         <thead>
           <tr>
-            <th></th><th>Дата</th><th>Тип</th><th>Номер</th><th>Контрагент</th><th>ИНН</th><th>Сумма</th><th>Статус</th>
+            <th></th><th>Дата</th><th>Тип</th><th>Номер</th><th>Контрагент</th><th>ИНН</th><th>Получатель</th><th>Сумма</th><th>Статус</th>
           </tr>
         </thead>
         <tbody id="documentsBody"></tbody>
@@ -217,6 +221,8 @@ _PAGE_HTML = """
     const summary = document.getElementById('summary');
     const dateTo = document.getElementById('dateTo');
     const dateFrom = document.getElementById('dateFrom');
+    const recipientFilter = document.getElementById('recipientFilter');
+    let allDocuments = [];
 
     function todayStr() {
       return new Date().toISOString().slice(0, 10);
@@ -292,13 +298,50 @@ _PAGE_HTML = """
       }
     });
 
+    function recipientKey(doc) {
+      return (doc.recipient_inn || '') + '|' + (doc.recipient_name || '');
+    }
+
     function renderDocuments(data) {
-      documentsBody.innerHTML = '';
+      allDocuments = data.documents;
       if (data.truncated) {
         listHint.textContent = 'Показаны не все документы за период (достигнут лимит страниц) — сузьте период.';
         listHint.classList.remove('hidden');
       }
-      for (const doc of data.documents) {
+      populateRecipientFilter();
+      renderFilteredRows();
+      resultsCard.classList.remove('hidden');
+      summary.classList.add('hidden');
+      documentsBody.addEventListener('change', updateImportButtonState);
+    }
+
+    function populateRecipientFilter() {
+      const seen = new Map();
+      for (const doc of allDocuments) {
+        const key = recipientKey(doc);
+        if (!seen.has(key)) {
+          seen.set(key, doc.recipient_name ? doc.recipient_name + (doc.recipient_inn ? ' (ИНН ' + doc.recipient_inn + ')' : '') : 'Без получателя');
+        }
+      }
+      recipientFilter.innerHTML = '';
+      const allOption = document.createElement('option');
+      allOption.value = '';
+      allOption.textContent = 'Все юрлица (' + allDocuments.length + ')';
+      recipientFilter.appendChild(allOption);
+      for (const [key, label] of seen) {
+        const option = document.createElement('option');
+        option.value = key;
+        option.textContent = label;
+        recipientFilter.appendChild(option);
+      }
+      document.getElementById('recipientFilterField').classList.toggle('hidden', seen.size <= 1);
+    }
+
+    function renderFilteredRows() {
+      const filterValue = recipientFilter.value;
+      const documents = filterValue ? allDocuments.filter((doc) => recipientKey(doc) === filterValue) : allDocuments;
+      documentsBody.innerHTML = '';
+      for (const doc of documents) {
         const tr = document.createElement('tr');
         tr.dataset.id = doc.sbis_document_id;
         const checkboxCell = document.createElement('td');
@@ -312,7 +355,7 @@ _PAGE_HTML = """
         }
         checkboxCell.appendChild(checkbox);
         tr.appendChild(checkboxCell);
-        for (const value of [doc.document_date, doc.document_type, doc.document_number, doc.counterparty_name, doc.counterparty_inn, doc.amount]) {
+        for (const value of [doc.document_date, doc.document_type, doc.document_number, doc.counterparty_name, doc.counterparty_inn, doc.recipient_name, doc.amount]) {
           const td = document.createElement('td');
           td.textContent = value || '';
           tr.appendChild(td);
@@ -322,12 +365,11 @@ _PAGE_HTML = """
         tr.appendChild(statusCell);
         documentsBody.appendChild(tr);
       }
-      resultsCard.classList.remove('hidden');
-      summary.classList.add('hidden');
-      importBtn.disabled = data.documents.length === 0;
+      importBtn.disabled = documents.length === 0;
       updateImportButtonState();
-      documentsBody.addEventListener('change', updateImportButtonState);
     }
+
+    recipientFilter.addEventListener('change', renderFilteredRows);
 
     function updateImportButtonState() {
       const checked = documentsBody.querySelectorAll('.doc-checkbox:checked');

@@ -114,6 +114,7 @@ def _document_date(payload: dict[str, Any]) -> date | None:
 def _build_summary(sbis_document_id: str, payload: dict[str, Any]) -> SbisManualDocumentSummary:
     counterparty = payload.get("Контрагент") or {}
     party = counterparty.get("СвЮЛ") or counterparty.get("СвФЛ") or {}
+    recipient_party = _recipient_party(payload)
     attachment_count = sum(1 for a in _iter_attachments(payload) if not _is_service_attachment(a))
     return SbisManualDocumentSummary(
         sbis_document_id=sbis_document_id,
@@ -123,10 +124,22 @@ def _build_summary(sbis_document_id: str, payload: dict[str, Any]) -> SbisManual
         title=payload.get("Название"),
         counterparty_name=party.get("НазваниеПолное") or party.get("Название"),
         counterparty_inn=party.get("ИНН"),
+        recipient_name=recipient_party.get("НазваниеПолное") or recipient_party.get("Название"),
+        recipient_inn=recipient_party.get("ИНН"),
         amount=payload.get("Сумма"),
         attachment_count=attachment_count,
         has_target_attachment=_pick_target_attachment(payload) is not None,
     )
+
+
+def _recipient_party(payload: dict[str, Any]) -> dict[str, Any]:
+    """`НашаОрганизация` is SBIS's own-organization ("recipient") field on each
+    document -- distinct from `Контрагент` (the supplier). One SBIS login can
+    have access to several of the client's legal entities, so this is what
+    the manual tool filters on (confirmed present in the real 2026-07-20
+    production dump)."""
+    our_org = payload.get("НашаОрганизация") or {}
+    return our_org.get("СвЮЛ") or our_org.get("СвФЛ") or {}
 
 
 def import_document(

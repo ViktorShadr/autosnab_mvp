@@ -25,6 +25,8 @@ class SbisManualDocumentSummary(BaseModel):
     title: str | None = None
     counterparty_name: str | None = None
     counterparty_inn: str | None = None
+    recipient_name: str | None = None
+    recipient_inn: str | None = None
     amount: str | None = None
     attachment_count: int = 0
     has_target_attachment: bool = False

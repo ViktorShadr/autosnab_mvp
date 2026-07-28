@@ -13,7 +13,9 @@ def _event(*attachments):
     return {"Вложение": list(attachments)}
 
 
-def _xml_document(document_id: str, *, document_type="ДокОтгрВх", date_="15.07.2026") -> dict:
+def _xml_document(
+    document_id: str, *, document_type="ДокОтгрВх", date_="15.07.2026", recipient_inn="9990001122"
+) -> dict:
     return {
         "Идентификатор": document_id,
         "Тип": document_type,
@@ -22,6 +24,7 @@ def _xml_document(document_id: str, *, document_type="ДокОтгрВх", date_
         "Название": "Накладная",
         "Сумма": "1200.00",
         "Контрагент": {"СвЮЛ": {"НазваниеПолное": "ООО Ромашка", "ИНН": "1234567890"}},
+        "НашаОрганизация": {"СвЮЛ": {"НазваниеПолное": "ООО АвтоСнаб", "ИНН": recipient_inn}},
         "Событие": [
             _event(
                 {
@@ -98,6 +101,28 @@ def test_list_documents_computes_attachment_flags(monkeypatch):
     assert summary.attachment_count == 1
     assert summary.counterparty_name == "ООО Ромашка"
     assert summary.counterparty_inn == "1234567890"
+    assert summary.recipient_name == "ООО АвтоСнаб"
+    assert summary.recipient_inn == "9990001122"
+
+
+def test_list_documents_exposes_distinct_recipient_orgs(monkeypatch):
+    """`НашаОрганизация` (recipient legal entity) must survive into the
+    summary so the manual-import page can filter by it -- one SBIS login
+    can have access to several of the client's legal entities."""
+    documents = [
+        _xml_document("doc-org-a", recipient_inn="1110001111"),
+        _xml_document("doc-org-b", recipient_inn="2220002222"),
+    ]
+    monkeypatch.setattr(
+        SbisClient,
+        "get_changes",
+        lambda self, *, date_from: {"result": {"Документ": documents, "Навигация": {"ЕстьЕще": "Нет"}}},
+    )
+
+    result = import_service.list_documents(_session(), date_from="2026-07-01", date_to="2026-07-31")
+
+    recipient_inns = {doc.recipient_inn for doc in result.documents}
+    assert recipient_inns == {"1110001111", "2220002222"}
 
 
 def test_list_documents_rejects_inverted_date_range():
