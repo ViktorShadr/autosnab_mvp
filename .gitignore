@@ -219,6 +219,7 @@ __marimo__/
 
 # АвтоСнаб local secrets and uploaded invoice files
 .env
+env.prod
 service-account.json
 *-service-account*.json
 personal-*.json
@@ -241,6 +242,7 @@ backend/uploads/sbis/*
 /exports/golden/
 /exports/invoice_review_*.csv
 /backend/exports/*.csv
+/backend/exports/openai_debug/
 .env.local
 
 # Local Codex CLI tool config — workstation-specific, not project data
