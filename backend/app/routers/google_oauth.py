@@ -1,11 +1,11 @@
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from app.services.google_credentials_service import get_sheets_auth_status
 from app.services.google_oauth_service import (
     GoogleOAuthAuthorizationError,
     GoogleOAuthConfigurationError,
     build_authorization_url,
-    get_oauth_status,
     revoke_local_token,
     save_token_from_callback_url,
 )
@@ -15,7 +15,7 @@ router = APIRouter(prefix="/google-oauth", tags=["google-oauth"])
 
 @router.get("/status")
 def google_oauth_status():
-    return get_oauth_status()
+    return get_sheets_auth_status()
 
 
 @router.get("/authorize")

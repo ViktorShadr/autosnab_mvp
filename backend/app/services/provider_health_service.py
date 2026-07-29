@@ -32,6 +32,12 @@ def mineru_health() -> dict[str, Any]:
 
 
 def _google_ocr_health() -> dict[str, Any]:
+    if settings.google_ocr_provider == "google_cloud_vision":
+        configured = bool(settings.google_service_account_json_b64)
+        return {
+            "ready": configured,
+            "reason": None if configured else "GOOGLE_SERVICE_ACCOUNT_JSON_B64 is not configured",
+        }
     if not settings.google_drive_ocr_enabled:
         return {"ready": False, "reason": "GOOGLE_DRIVE_OCR_ENABLED is false"}
     required = {

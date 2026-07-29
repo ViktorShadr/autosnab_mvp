@@ -1301,9 +1301,9 @@ def _read_google_sheet_values(
         from googleapiclient.discovery import build
     except ImportError as exc:
         raise ValueError("Не установлены зависимости Google API. Выполните pip install -r backend/requirements.txt.") from exc
-    from app.services.google_oauth_service import get_google_user_credentials
+    from app.services.google_credentials_service import get_sheets_credentials
 
-    credentials = get_google_user_credentials()
+    credentials = get_sheets_credentials()
     sheets_service = build("sheets", "v4", credentials=credentials)
 
     if sheet_name and block_start_row and block_end_row:

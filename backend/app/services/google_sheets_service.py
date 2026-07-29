@@ -3,7 +3,7 @@ import re
 from typing import Any
 
 from app.config import settings
-from app.services.google_oauth_service import get_google_user_credentials
+from app.services.google_credentials_service import get_sheets_credentials
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -236,6 +236,13 @@ def create_invoice_review_spreadsheet(
 
 
 def _create_invoice_review_spreadsheet(sheets_service, drive_service, sheet_data: dict) -> dict[str, Any]:
+    if settings.google_sheets_auth_mode == "service_account":
+        raise GoogleSheetsConfigurationError(
+            "Создание новой Google-таблицы недоступно в режиме "
+            "GOOGLE_SHEETS_AUTH_MODE=service_account (у сервисного аккаунта нет "
+            "собственной квоты Google Drive). Укажите GOOGLE_TARGET_SPREADSHEET_ID "
+            "существующей таблицы, расшаренной на email сервисного аккаунта."
+        )
     primary_sheet_name = sheet_data.get("primary_sheet_name") or next(iter(sheet_data["sheets"]))
     spreadsheet_body = {
         "properties": {"title": sheet_data["spreadsheet_name"]},
@@ -596,7 +603,7 @@ def _build_google_services():
         raise GoogleSheetsConfigurationError(
             "Не установлены зависимости google-api-python-client/google-auth/google-auth-oauthlib. Выполните pip install -r requirements.txt."
         ) from exc
-    credentials = get_google_user_credentials()
+    credentials = get_sheets_credentials()
     return (
         build("sheets", "v4", credentials=credentials),
         build("drive", "v3", credentials=credentials),

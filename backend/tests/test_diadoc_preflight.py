@@ -43,13 +43,35 @@ def test_preflight_requires_google_oauth_when_sheets_are_enabled(monkeypatch, tm
     monkeypatch.setattr(settings, "google_target_sheet_name", "Накладная")
     monkeypatch.setattr(
         sync_service,
-        "get_google_oauth_status",
-        lambda: {"authorized": False, "error": "expired"},
+        "get_google_sheets_auth_status",
+        lambda: {"auth_mode": "oauth", "authorized": False, "error": "expired"},
     )
 
     result = sync_service.run_diadoc_preflight()
 
     assert result["ready"] is False
-    google_check = next(item for item in result["checks"] if item["name"] == "google_oauth")
+    google_check = next(item for item in result["checks"] if item["name"] == "google_sheets_auth")
     assert google_check["required"] is True
     assert google_check["ready"] is False
+
+
+def test_preflight_reflects_service_account_mode_when_configured(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    monkeypatch.setattr(settings, "google_sheets_enabled", True)
+    monkeypatch.setattr(settings, "google_target_spreadsheet_id", "sheet-id")
+    monkeypatch.setattr(settings, "google_target_sheet_name", "Накладная")
+    monkeypatch.setattr(
+        sync_service,
+        "get_google_sheets_auth_status",
+        lambda: {
+            "auth_mode": "service_account",
+            "authorized": True,
+            "service_account_email": "id-698@personal-453020.iam.gserviceaccount.com",
+        },
+    )
+
+    result = sync_service.run_diadoc_preflight()
+
+    google_check = next(item for item in result["checks"] if item["name"] == "google_sheets_auth")
+    assert google_check["ready"] is True
+    assert "service_account" in google_check["detail"]
