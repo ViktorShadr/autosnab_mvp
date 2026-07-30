@@ -95,8 +95,21 @@ Google Sheets.
    since the fact this was already true wasn't caught by anyone until now.
 4. Upload accepts one file, so a multi-page invoice is split into unrelated
    documents.
-5. Rotated and perspective-distorted photos are not normalized before
-   extraction.
+5. **(Stale as of 2026-07-29 — Phase 3 is actually implemented.)** This
+   blocker said rotated/perspective-distorted photos are not normalized
+   before extraction. `document_image_preparation_service.py` already does
+   EXIF orientation, perspective crop, quarter-turn correction, deskew,
+   autocontrast, and upscale to ≥1800px, plus quality metrics
+   (`blur_score`/`glare_ratio`/`dark_ratio`/`clipping_ratio`/`text_coverage_ratio`)
+   with `review_reasons`/`stop_reasons`, wired into
+   `document_extraction_service.py` and surfaced as `review_flags` on the
+   invoice via `openai_invoice_parser_service.py`. Never recorded as done in
+   this plan or the log. Remaining real gap (see
+   `docs/wiki/current-status.md` 2026-07-29 entry): the quality check only
+   fires *after* extraction, producing a soft warning flag on an
+   already-created invoice — nothing currently uses `stop_recommended` to
+   block a bad photo *before* the OpenAI call, which is the actual complaint
+   behind Lilia's new "low-quality photos recognize poorly" feedback.
 6. There is no executable golden-set comparison for the five reviewed photos.
 7. **(New, found 2026-07-17)** `hybrid`/`mineru`-only extraction is
    consistently non-functional for scanned/rotated table-form documents like

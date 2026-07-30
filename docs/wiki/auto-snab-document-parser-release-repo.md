@@ -472,3 +472,276 @@ Since `deploy-dev` on `ci-templates` triggers automatically for any push to
 `develop`, this merge is expected to auto-deploy to
 `avtosnab.testant.online/docparser` (the real DEV environment real users
 hit) — not separately verified live after the merge in this session.
+
+## Update, 2026-07-29: parity re-check against `autosnab_mvp` — one real regression found
+
+User asked whether this repo still matches `autosnab_mvp`. Re-verified live
+(`git fetch`, `git log origin/develop`, direct file diff, a local pytest run)
+instead of trusting this page.
+
+**Confirmed still in sync / already ported**: iiko removal, `packaging_facts`
+Phases 1-3, `count_in_package`/`quantity_document` fix, `Кол-во в УС`/`Цена в
+УС` passthrough, bot UI redesign (inline buttons), Diadoc integration,
+`document_image_preparation_service.py` (the photo quality-gate module) —
+present at `backend/app/domains/invoice_pipeline/services/…`, logic
+byte-for-byte identical to `autosnab_mvp`'s copy (diff is pure `ruff format`
+line-wrapping only, since this repo lints formatting and `autosnab_mvp`
+doesn't). `avtosnab.testant.online/docparser/health/runtime` → `200` live.
+
+**New activity since the 2026-07-28 audit, not previously tracked**:
+Aliaksandr Nikifarau's own 2026-07-27 proposal (split Alembic migrations into
+a separate container) is now actually done — `docker/docker-compose.yml`
+gained a `migrate` service (`alembic upgrade head`, `depends_on:
+condition: service_completed_successfully` gating the `app` service),
+`backend/docker-entrypoint.sh` no longer runs alembic itself, and
+`.gitlab-ci.yml` had its `test` stage / `postgresql_validation` job removed
+entirely (63 lines). The `PGSSLCERT`/`PGSSLROOTCERT` root cause from
+2026-07-26 was fixed more robustly this time, in `backend/migrations/env.py`:
+Alembic's `run_migrations_online` now passes `connect_args={"sslcert": "",
+"sslkey": ""}` for any postgres URL, which stops libpq from looking for a
+client cert at all regardless of which `PGSSL*` variable is set — resolves
+the "not confirmed done" status from the last audit for real.
+
+**Real regression found while verifying**: the same `docker-compose.yml`
+change also hardcoded `PGSSLMODE=require` on both the `migrate` and `app`
+services, replacing the previous `${PGSSLMODE:-verify-full}` default.
+`require` only encrypts the connection; unlike `verify-full` it does **not**
+verify the server certificate against the CA or check the hostname — a real
+weakening of the TLS posture for the production database connection, and not
+something flagged as an intentional tradeoff anywhere in the commit history.
+This broke an existing regression test written specifically to guard this
+property: `tests/test_config.py::test_production_compose_verifies_postgresql_certificate`
+now fails (`assert 'PGSSLMODE: ${PGSSLMODE:-verify-full}' in compose`).
+Because the `.gitlab-ci.yml` `test` stage was deleted in the same round of
+changes, this failure is very likely no longer caught by CI — `build-fastapi.yml`
+covers lint/build, not this project's own `test_config.py` suite, so a
+red pytest result may not block deploys anymore. Local run (SQLite, no
+postgres integration tests): 237 passed / 9 failed — 8 match the
+long-tracked pre-existing `test_receiving.py` baseline (unrelated
+header-name-drift, already tracked as pre-existing), the 9th
+(`test_production_compose_verifies_postgresql_certificate`) is this new,
+real regression, not part of the known baseline. **Not fixed** — flagged
+here for a decision (revert to `verify-full`, or update the test if `require`
+was actually intentional) rather than acted on unilaterally, since Aliaksandr
+owns this infra path and the tradeoff reasoning isn't visible from the repo
+alone.
+
+**Confirmed still genuinely not ported** (present in `autosnab_mvp`'s
+`develop` as of 2026-07-29, absent here):
+- **Google dual-mode auth** (OAuth ⇄ service account for Sheets/OCR;
+  `google_service_account_service.py`/`google_credentials_service.py`/
+  `google_api_retry_service.py`/`google_vision_ocr_service.py`,
+  `google_sheets_auth_mode`/`google_ocr_provider` settings) — no equivalent
+  file anywhere in `backend/app/domains/google_workspace/services/` (only
+  `google_oauth_service.py`/`google_sheets_service.py`, OAuth-only, same as
+  before). Merged into `autosnab_mvp`'s `develop` on 2026-07-29, not yet
+  requested to be ported here.
+- **SBIS manual pick-and-import tool** (`sbis_manual_import_service.py`/
+  `sbis_manual_session_service.py`, `/api/v1/sbis-manual/page`) — absent from
+  `backend/app/domains/edo_sbis/services/` (only `sbis_client.py`/
+  `sbis_scheduler_service.py`/`sbis_sync_service.py`, the automatic-scheduler
+  path that per the 2026-07-28 TOR-comparison entry has never actually run
+  against a real SBIS account in either repo). This means the *only*
+  SBIS path that has ever been live-tested end-to-end with a real account
+  (`autosnab_mvp`, 2026-07-27) — plus its 2026-07-28/29 date-range and
+  cursor-oscillation bugfixes — has no counterpart here at all.
+
+**Bottom line**: the repo tracks `autosnab_mvp` well for everything that's
+been explicitly ported so far, and infra work (migration container split)
+progressed independently and correctly except for the `PGSSLMODE` regression
+above. Two real feature gaps remain open (dual-mode Google auth, SBIS manual
+import) and one new regression needs a decision.
+
+## Update, 2026-07-30: dual-mode Google auth port already in progress locally; `ENV_DEV` updated with its 4 new keys
+
+Found the local clone (`~/PycharmProjects/auto-snab-document-parser`) is
+already sitting on an uncommitted, unpushed branch `feature/google-dual-auth-vision`
+that ports the same dual-mode Google auth feature described above as "not yet
+ported" — `config.py`/`.env.example` diffs and new
+`google_service_account_service.py`/`google_credentials_service.py`/
+`google_api_retry_service.py`/`google_vision_ocr_service.py` files match the
+`autosnab_mvp` port shape exactly. Not part of this session's own work,
+found while auditing — origin/status of that branch (who started it, when)
+not investigated further this session.
+
+Also found: `origin/develop` has moved since the 2026-07-29 audit —
+`feature/sbis-manual-import` (`9b485dd` "Port SBIS manual pick-and-import
+tool from autosnab_mvp") is merged (`a657b17`). The "SBIS manual-import tool
+absent here" gap noted above is therefore stale; needs its own fresh
+verification pass, not done in this session.
+
+User asked (in the browser, live GitLab UI) what CI/CD variables need
+adding, then scoped it explicitly: `ENV_PROD` is out of scope entirely (not
+pursuing real prod), only add/change `ENV_DEV`, never touch database
+variables, Google/OpenAI-related only. Compared `ENV_DEV`'s actual key names
+(extracted via a JS snippet reading the raw textarea value client-side —
+key names only, values never displayed or transcribed) against every
+`google_`/`openai_`-prefixed setting in `config.py` including the
+uncommitted dual-auth branch. Result: all 33 pre-existing Google/OpenAI keys
+were already present; exactly the 4 new dual-auth keys were missing.
+
+**Added to `ENV_DEV` (File variable, project-level) this session**, values
+left at their safe defaults (matches `.env.example`, no behavior change
+until the code is actually merged and someone flips a toggle):
+```
+GOOGLE_SHEETS_AUTH_MODE=oauth
+GOOGLE_OCR_PROVIDER=google_drive_ocr
+GOOGLE_SERVICE_ACCOUNT_JSON_B64=
+GOOGLE_VISION_PDF_RENDER_SCALE=2.0
+```
+Confirmed saved via GitLab's own "Variable ENV_DEV has been updated."
+banner. Inert until `feature/google-dual-auth-vision` (or an equivalent
+port) is committed, pushed, and merged into `develop` — no code in this
+repo's `develop` reads these settings yet.
+
+Incidental finding while on the CI/CD Variables page: a group-level
+inherited variable `ENV_PROXY` (File, Protected) exists under
+`antipov-backend` — the 2026-07-28 audit reported "Group variables
+(inherited): 0", so this is either new since then or was missed by that
+check. Not investigated further (out of this session's Google/OpenAI-only
+scope). Also noted: `ENV_DEV`'s Visibility flag is "Visible" (not Masked),
+so its values — including `DATABASE_URL` and other secrets — are technically
+revealable in plain text via the CI/CD settings UI by anyone with
+Maintainer+ access; not changed this session (out of scope: user said don't
+touch database variables), just flagged here since it was observed
+incidentally.
+
+## Update, 2026-07-30 (same day): `feature/google-dual-auth-vision` committed and pushed
+
+User asked how to actually use the Google service-account JSON key Pavel
+gave them (`personal-453020-285299f6b7b6.json`) — the file itself is no
+longer present on this workstation (not in the repo root, not in the raw
+root, not found anywhere under `/home`; only its manifest entry survives).
+Per that manifest entry's own established rule ("base64-encoding and env
+placement left entirely to the user"), the assistant did not attempt to
+locate/handle the actual key material — the user still needs to find the
+file themselves, base64-encode it (`base64 -w0 <file>`), and paste the
+result into `ENV_DEV`'s `GOOGLE_SERVICE_ACCOUNT_JSON_B64` value directly in
+the GitLab UI.
+
+What the assistant did instead: committed and pushed the code half of this
+port. The local clone already had the uncommitted `feature/google-dual-auth-vision`
+branch (20 files: `config.py`/`.env.example` diffs plus 4 new
+`google_credentials_service.py`/`google_service_account_service.py`/
+`google_api_retry_service.py`/`google_vision_ocr_service.py` files and their
+tests — mirrors `autosnab_mvp`'s already-merged port). Verified before
+committing: full suite on this branch is 268 passed / 9 failed / 2 skipped;
+stashed the changes and re-ran on plain `develop` to confirm the same 9
+failures pre-exist there too (237 passed / same 9 failed) — the known
+`test_receiving.py` ×8 baseline plus the still-open `PGSSLMODE`
+regression from the 2026-07-29 audit, zero regressions from this branch.
+Committed (`6b01b47`) and pushed to `origin/feature/google-dual-auth-vision`.
+**Not merged, no MR opened yet** — left for the user to open via the GitLab
+web UI logged in as `v.viktor.shadrin` (per `[[gitlab-ci-actor-identity-access]]`),
+same as the `!22`/`!23` precedent.
+
+Housekeeping during this: rebase onto `origin/develop` (2 commits ahead,
+the `feature/sbis-manual-import` merge, no file overlap) was attempted but
+blocked by the local tooling's safety classifier; skipped as unnecessary
+since there's no conflict risk. A `git stash pop` hit a real collision with
+a stray `exports/invoice_review_1.csv` test-run artifact (this repo's test
+suite writes to a root-level `exports/` dir that isn't gitignored, unlike
+`backend/exports/*` which is) — resolved by deleting the generated artifact
+and dropping the now-redundant stash entry once the working tree was
+confirmed already fully restored.
+
+## Plan, 2026-07-30: migrate to Pavel's service account (`personal-453020`) — next steps
+
+Goal: stop depending on the developer's personal Gmail (`vitek19852007@gmail.com`)
+for this repo's Google access, moving onto Pavel's GCP-project service account
+(`id-698@personal-453020.iam.gserviceaccount.com`) instead — Sheets first
+(low-risk, already reasoned safe), OCR second and only once Pavel has done
+his one required console step. Scope is `ENV_DEV` only (the de facto
+production environment real users hit at `avtosnab.testant.online/docparser`)
+— `ENV_PROD` is explicitly out of scope per user decision, and database
+variables are never touched by this plan.
+
+### Day 1 — land the code
+
+1. Open an MR for `feature/google-dual-auth-vision` → `develop` via the
+   GitLab web UI, logged in as `v.viktor.shadrin` (not the API token — see
+   [[gitlab-ci-actor-identity-access]], the same precedent as MRs `!22`/`!23`).
+2. Watch the pipeline (build/lint/security-scan/deploy). If `ruff format
+   --check` fails like it did for MR `!22`, fix formatting locally and push
+   a follow-up commit — this repo lints formatting, `autosnab_mvp` doesn't.
+3. Merge once green. `deploy-dev` auto-triggers on any push to `develop`, so
+   this redeploys `avtosnab.testant.online/docparser` immediately.
+4. Verify `curl -o /dev/null -w '%{http_code}' https://avtosnab.testant.online/docparser/health/runtime`
+   still returns `200` after the merge-triggered redeploy, before touching
+   any variables.
+
+### Day 1-2 — migrate Sheets to the service account
+
+5. Locate the actual JSON key file from Pavel
+   (`personal-453020-285299f6b7b6.json` or whatever it's currently named) —
+   it is **not** on this workstation anymore (checked repo root, raw root,
+   and all of `/home` — nothing found). Get it from Pavel again if it's
+   genuinely gone, or find wherever it was last saved.
+6. Base64-encode it yourself: `base64 -w0 <file>.json`. Never paste the raw
+   JSON or the encoded value into chat — this is a live credential.
+7. GitLab → `auto-snab-document-parser` → Settings → CI/CD → Variables →
+   edit `ENV_DEV` → paste the result as the value of the already-present
+   `GOOGLE_SERVICE_ACCOUNT_JSON_B64=` line (added empty on 2026-07-30, see
+   the update above).
+8. In the same `ENV_DEV` file content, change `GOOGLE_SHEETS_AUTH_MODE=oauth`
+   to `GOOGLE_SHEETS_AUTH_MODE=service_account`. Leave `GOOGLE_OCR_PROVIDER`
+   as `google_drive_ocr` for now — the two toggles are fully independent;
+   OCR keeps using the personal-Gmail OAuth credential regardless of what
+   Sheets is set to (confirmed via `ocr_service.py`: the `google_drive_ocr`
+   path always calls `get_google_user_credentials()`, never reads
+   `google_sheets_auth_mode`).
+9. **Share every Google Sheet this backend reads or writes** (at minimum the
+   spreadsheet behind `GOOGLE_TARGET_SPREADSHEET_ID`) with
+   `id-698@personal-453020.iam.gserviceaccount.com` as Editor, via each
+   sheet's own Share dialog in the Google Sheets UI. This is a manual step
+   in Google's own UI, not an env variable — without it, every Sheets write
+   will fail with a permission error even with correct code/config.
+10. Save the `ENV_DEV` edit. Trigger a fresh `deploy-dev` run (push a no-op
+    commit, or re-run the last pipeline manually) so the new File-variable
+    content actually gets baked into the running container — editing a
+    GitLab CI/CD variable does not itself redeploy anything.
+11. Verify: hit this repo's Google-auth status endpoint (mode-aware per the
+    2026-07-28 dual-auth port — confirm the exact path in
+    `routers/google_oauth.py` once merged) and confirm it reports
+    `auth_mode: service_account`, `authorized: true`. Then run one real
+    document upload through and confirm the row actually lands in the
+    target Google Sheet.
+
+### Day 2-3 — migrate OCR to the service account (gated on Pavel)
+
+12. Ask Pavel to enable **Cloud Billing + the Vision API** on GCP project
+    `personal-453020` in the Cloud Console — only he has access there. This
+    is the Vision path's one hard blocker; nothing on the code/variable
+    side works around it.
+13. Once confirmed enabled, do a side-by-side accuracy check before
+    committing to it in production: run the same known-hard real documents
+    (the `Метро.pdf`/`Метро2.pdf`/`Метро3.pdf` series used for prior OCR
+    regression checks) through the current `google_drive_ocr` path and
+    compare against `google_cloud_vision` output. Vision is a genuinely
+    different OCR engine, not a drop-in identical result — only proceed if
+    it matches or beats current accuracy on real documents, per the
+    original migration plan's own stated gate
+    (`docs/wiki/google-auth-vision-migration-plan.md`).
+14. If accuracy holds up, set `GOOGLE_OCR_PROVIDER=google_cloud_vision` in
+    `ENV_DEV` (credentials already resolved from the same
+    `GOOGLE_SERVICE_ACCOUNT_JSON_B64` set in step 7 — no Sheets/Drive
+    sharing needed for Vision, it calls the image/PDF directly). Redeploy,
+    verify with a real upload.
+
+### Rollback
+
+Both toggles are independently reversible at any point: set
+`GOOGLE_SHEETS_AUTH_MODE=oauth` and/or `GOOGLE_OCR_PROVIDER=google_drive_ocr`
+back in `ENV_DEV` and redeploy to fully revert to today's personal-Gmail-only
+behavior, with zero code rollback needed.
+
+### Explicitly out of scope for this plan
+
+- `ENV_PROD` / real prod deploy (`main` branch still has no `.gitlab-ci.yml`
+  at all — a separate, larger structural gap, not pursued per user decision).
+- Database variables (`DATABASE_URL`, `PGSSL*`) — never touched here.
+- `autosnab_mvp`'s own personal-VPS deploy (`78.17.160.248`) — this plan is
+  scoped to the GitLab release repo only; that VPS already has the
+  dual-auth code merged into its own `develop` since 2026-07-29 but has not
+  had its own `.env`/toggles touched either, and is a separate, lower-
+  priority target from this repo's real-user-facing dev environment.
