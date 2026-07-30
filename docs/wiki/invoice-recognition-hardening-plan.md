@@ -7,8 +7,10 @@ compiled_from:
   - src_c408edb166
   - src_6f6622e548
   - src_ec8c54a020
+  - src_20260730_pavel_audio
+  - src_20260730_pavel_audio_transcript
 created: 2026-07-04
-updated: 2026-07-04
+updated: 2026-07-30
 tags: [invoices, openai, ocr, mineru, multipage, testing, plan]
 status: current
 ---
@@ -363,6 +365,60 @@ evidence reaches OpenAI.
 - Phase 5 validation
 - Phase 6 full golden evaluation
 - Phase 7 Google Sheets retest
+
+## Idea (proposed by Pavel, 2026-07-30, not yet approved or scoped): piecewise/puzzle-style recapture
+
+Pavel sent a voice message (`src_20260730_pavel_audio`, transcript
+`src_20260730_pavel_audio_transcript`) proposing an alternative to a flat
+"retake the whole photo" quality gate (see the 2026-07-29 low-quality-photos
+open item in `docs/wiki/current-status.md`): instead of rejecting a bad photo
+outright, let the agent extract whatever fields it can read from the current
+shot, then ask the user to photograph specific missing/unreadable pieces of
+the same invoice, and assemble the final document from all the partial shots
+like a puzzle. He suggested the pieces could be tied back to the same
+in-progress document by invoice number (or some other identifier exchanged
+with the user) and offered to help design that identification logic further.
+
+This is a genuinely different shape from Phase 2's multi-page upload (which
+assumes each page is a full page of the same document supplied together, all
+at once) and from the 2026-07-29 pre-upload quality gate (which assumes a
+binary accept/retake decision on one shot). Piecewise recapture would need,
+at minimum: a per-field/per-region confidence or "missing" signal from the
+extraction step (not just a whole-document quality score), a way to tell the
+user in plain language which part of the invoice to reshoot (e.g. "сфотографируй
+шапку документа" / "сфотографируй строки товаров снизу таблицы"), and a
+session/identifier mechanism so a follow-up photo merges into the same
+in-progress document instead of starting a new one — the Telegram bot already
+has a draft/session concept (`_finalize_and_start_poll`,
+`DRAFT_ACTIONS_KEYBOARD`) that this could potentially reuse rather than
+inventing a new one.
+
+**Not designed, not scoped, no code written.** Open questions before this can
+become a phase: how per-region confidence would actually be computed (OpenAI
+has no notion of "this field wasn't visible" vs. "this field is genuinely
+absent from the invoice"), whether recapture should be scoped to the existing
+draft/session flow, and whether Pavel's offered help on the identification
+logic should be taken up before or after Lilia's concrete failing examples
+(still pending, per the 2026-07-29 entry) are available to validate that
+photo quality is really the dominant failure mode worth solving this way.
+
+**Feasibility assessment, 2026-07-30 (assistant opinion, not yet validated against real data):**
+technically buildable — the Telegram bot's existing draft/session concept
+already gives per-chat correlation for follow-up photos, so Pavel's proposed
+invoice-number matching is likely unnecessary complexity for the single-active-draft
+case (it would only matter for a batch/no-session import path, which this
+isn't). GPT-5-mini vision is plausibly capable of describing "table cut off
+at the bottom" or "header not visible" in plain language, which is the core
+per-region signal the idea needs.
+
+The real risk is whether it targets the actual failure mode. Piecewise recapture
+only helps when content is genuinely out of frame (a long invoice that doesn't
+fit one shot). It does nothing for whole-image blur or glare — reshooting a
+crop of the same document under the same lighting/focus conditions reproduces
+the same defect. Recommendation: do not design this further until Lilia's
+concrete failing examples (still pending) show that "missing region" rather
+than "uniformly bad capture" is the dominant failure — otherwise this risks
+solving a problem the real complaints don't actually have.
 
 ## Non-goals
 
