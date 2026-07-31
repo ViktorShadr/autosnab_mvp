@@ -942,6 +942,22 @@ def _invoice_separator_column_count(
     return max(table_column_count, 1)
 
 
+def _normalize_header_key(value: Any) -> str:
+    """Collapse all whitespace (including a stray line break inside a cell,
+    e.g. from an accidental Enter while editing the header row) so cosmetic
+    formatting in the live sheet doesn't break header matching."""
+    return re.sub(r"\s+", "", str(value))
+
+
+def _reconcile_headers_with_canonical_spelling(headers: list[str]) -> list[str]:
+    """Map each fetched header back onto its canonical `SHARED_INVOICE_HEADERS`
+    spelling when they match ignoring whitespace, so a formatting-only edit in
+    the live sheet (stray newline/extra space) doesn't desync the header text
+    used for name-keyed column lookups downstream."""
+    canonical_by_key = {_normalize_header_key(name): name for name in SHARED_INVOICE_HEADERS}
+    return [canonical_by_key.get(_normalize_header_key(header), header) for header in headers]
+
+
 def _read_target_headers(
     sheets_service,
     spreadsheet_id: str,
@@ -959,6 +975,7 @@ def _read_target_headers(
     )
     if not headers:
         raise GoogleSheetsConfigurationError(f"Строка заголовков {header_row_number} листа '{sheet_name}' пуста.")
+    headers = _reconcile_headers_with_canonical_spelling(headers)
 
     missing = [header for header in SHARED_INVOICE_HEADERS if header not in headers]
     if missing == ["Состав упаковки"]:
@@ -969,11 +986,13 @@ def _read_target_headers(
             sheet_name,
             header_row_number,
         )
-        headers = _fetch_target_headers(
-            values_resource,
-            spreadsheet_id,
-            sheet_name,
-            header_row_number,
+        headers = _reconcile_headers_with_canonical_spelling(
+            _fetch_target_headers(
+                values_resource,
+                spreadsheet_id,
+                sheet_name,
+                header_row_number,
+            )
         )
         missing = [header for header in SHARED_INVOICE_HEADERS if header not in headers]
     if missing:

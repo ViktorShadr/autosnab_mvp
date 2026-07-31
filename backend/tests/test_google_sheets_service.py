@@ -263,6 +263,34 @@ def test_project_shared_rows_to_target_headers_survives_inserted_live_columns():
     ]
 
 
+def test_read_target_headers_tolerates_stray_whitespace_in_live_header_cell(monkeypatch):
+    """Regression test for a real production bug (2026-07-31): Lilia's live
+    `Накладная` sheet had a stray line break typed into the "Форма документа"
+    header cell (rendered by the Sheets API as "Форма доку\nмента"), which
+    made every real bot upload fail the required-headers check and never
+    reach the sheet, even though nothing about the column layout itself had
+    changed. Header matching must ignore whitespace differences like this."""
+
+    class _FakeValuesGet:
+        def __init__(self, headers):
+            self.headers = headers
+
+        def get(self, **kwargs):
+            return _FakeExecute({"values": [self.headers]})
+
+    corrupted_headers = list(SHARED_INVOICE_HEADERS)
+    corrupted_headers[corrupted_headers.index("Форма документа")] = "Форма доку\nмента"
+
+    headers = google_sheets_service_module._read_target_headers(
+        SimpleNamespace(spreadsheets=lambda: SimpleNamespace(values=lambda: _FakeValuesGet(corrupted_headers))),
+        "test-id",
+        "Накладная",
+        2,
+    )
+
+    assert headers == SHARED_INVOICE_HEADERS
+
+
 def test_reference_catalog_loader_reads_fixed_google_sheet_tabs(monkeypatch):
     class ReferenceValues:
         def __init__(self):
