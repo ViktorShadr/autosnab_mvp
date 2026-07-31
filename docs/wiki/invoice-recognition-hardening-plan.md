@@ -10,7 +10,7 @@ compiled_from:
   - src_20260730_pavel_audio
   - src_20260730_pavel_audio_transcript
 created: 2026-07-04
-updated: 2026-07-30
+updated: 2026-07-31
 tags: [invoices, openai, ocr, mineru, multipage, testing, plan]
 status: current
 ---
@@ -139,6 +139,26 @@ Google Sheets.
    fixed yet — would need either teaching the legacy regex parser to strip
    HTML table markup first, or making `_extract_mineru_content_list_fields`
    the primary path with the regex parser only as a last-resort fallback.
+
+## Diagnostic findings, 2026-07-31: what's actually causing poor recognition (real DB data, not guesses)
+
+User asked to identify, directly from the live server, which invoices recognize poorly and why — instead of continuing to wait for Lilia's promised concrete failing examples (still not sent as of this writing). Scanned all 93 `receiving_documents` ever created on `78.17.160.248` and categorized every stored `review_flags` entry from each document's `recognized_items_json`.
+
+**Headline finding: the built-in photo-quality gate (`blur_score`/`glare_ratio`/`dark_ratio`/`clipping_ratio`/`text_coverage_ratio`, see blocker #5 above) has never fired, not once, across all 93 documents.** By the pipeline's own measurements, no uploaded photo has ever been too blurry, glary, dark, clipped, or text-sparse. This reframes Lilia's 2026-07-29 "low-quality photos recognize poorly" report: it is very unlikely to be classic lens/lighting photo quality, since that's exactly what this gate measures and it has never once tripped.
+
+**What the flags actually show, by volume (across all 93 documents' `review_flags`):**
+- 599× `Товар не найден в справочнике` (product not in the `Товары` catalog) — a catalog-completeness gap, not a recognition failure; the text was read correctly, it just doesn't match anything on file.
+- 553× `Фасовка не найдена в справочнике` (no matching `Правила фасовок` rule) — same category, packaging/conversion side.
+- 217× line-amount-vs-quantity×price mismatches — the closest thing to a genuine misread (wrong digit) in the whole dataset, but could equally be legitimate rounding/discount lines; not isolated further this session.
+
+**The real, concrete "poor recognition" signal — 8 page-structure problems, all with a specific identifiable pattern:**
+1. **Накладная №43958, ИП Полуян Денис Дмитриевич** — uploaded twice (2026-07-30 10:53 and 14:14), **both times missing page 1** (`"В маркерах страниц пропущены страницы: 1"`). Confirmed by listing the actual uploaded files on disk: both drafts contain exactly 2 photos, never 3. Systematic, not a one-off — whoever photographs this specific invoice consistently skips its first page.
+2. **МЕТРО накладные (4 separate uploads: receiving ids 4, 26, 27, 32)** — each one's own page markers declare ≥3 pages, but only 2 were ever uploaded (`"Маркер страниц документа указывает минимум на 3 стр., но загружено только 2"`). Also systematic across 4 independent uploads, not one mistake.
+3. **Receiving id 91 (БАЛТСМАК ПЛЮС, №26745), 2026-07-31 ~14:32** — the 2 photos in this one draft turned out to belong to **two different invoices** (`"На страницах найдены разные значения номера документа: 14882, 26745"`). Cross-checked file timestamps on disk: the draft's first photo has the exact same modification time as when the *previous* invoice (id 90, №14882) was finalized ("Готово"). This looks less like a user mistake and more like a possible draft-state carryover bug (a leftover page from the prior draft not fully cleared before the next one started collecting pages) — **not confirmed, just flagged**; needs either a code trace of the draft-reset path (`bot_ingestion_service.py`/`handlers.py`) or direct confirmation from Lilia on whether she intentionally photographed two different накладные in one sitting.
+
+**Practical conclusion**: the actual, evidenced "poor recognition" complaint is about **incomplete or mixed page capture** during upload, not photo sharpness/lighting/blur as the 2026-07-29 assumption had it. Recommended next step (not yet done): investigate the draft-carryover hypothesis for finding #3 in the bot code, since it's the only one of the three that looks like a possible bug rather than a user capture habit.
+
+**Not done this session**: recomputing actual numeric `blur_score`/`glare_ratio` values against the raw stored photos (the DB only ever stores the pass/fail text flags, never the underlying numbers, so no historical trail of real quality scores exists — only a fresh recomputation against files still on disk under `/app/uploads/invoices/` could produce them).
 
 ## Delivery order
 
