@@ -167,3 +167,59 @@ def test_get_latest_upload_status_returns_none_when_no_history(db):
 def test_get_upload_status_raises_for_unknown_upload_id(db):
     with pytest.raises(ValueError):
         bot_gateway_service.get_upload_status(db, "bot-upload-does-not-exist")
+
+
+def test_quality_rejected_status_asks_for_replacement():
+    message = bot_gateway_service._bot_status_message("quality_rejected", None)
+
+    assert "После автоматического улучшения" in message
+    assert "Замените скан" in message
+    assert "перефотографируйте" in message
+
+
+def test_background_marks_quality_rejection_for_bot(db, monkeypatch):
+    from fastapi import HTTPException
+
+    from app.routers import invoice_review
+
+    draft = bot_gateway_service.append_draft_page(
+        db,
+        chat_id="chat-quality",
+        source_user_id="tg-quality",
+        source_username=None,
+        filename="blurred.jpg",
+        content_type="image/jpeg",
+        file_bytes=b"image",
+    )
+
+    def reject_quality(**_kwargs):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error_message": (
+                    "Качество фотографии недостаточно. "
+                    "Замените скан или перефотографируйте документ."
+                ),
+                "error_code": "image_quality_rejected",
+            },
+        )
+
+    monkeypatch.setattr(bot_gateway_service, "SessionLocal", TestingSessionLocal)
+    monkeypatch.setattr(invoice_review, "_process_invoice_upload", reject_quality)
+
+    bot_gateway_service._process_bot_upload_background(
+        trace_id="trace-quality",
+        upload_id=draft.upload_id,
+        file_paths=[str(Path(settings.uploaded_invoices_dir) / "unused.jpg")],
+        file_names=["blurred.jpg"],
+        file_types=["image/jpeg"],
+        create_google_sheet=False,
+        extraction_method="openai",
+        public_api_base_url="http://test",
+    )
+
+    db.expire_all()
+    status = bot_gateway_service.get_upload_status(db, draft.upload_id)
+    assert status.status == "quality_rejected"
+    assert status.completed is True
+    assert "Замените скан" in status.message

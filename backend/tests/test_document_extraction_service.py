@@ -718,3 +718,439 @@ def test_extract_invoice_document_hybrid_skips_unhealthy_mineru_before_fallback(
     assert result["error"] == "MinerU model cache is incomplete"
     assert mineru_calls == []
     assert any(log["stage"] == "mineru_skipped_unhealthy" for log in result["pipeline_logs"])
+
+
+def test_low_quality_image_stops_before_ocr_and_openai(monkeypatch, tmp_path):
+    source = tmp_path / "blurred-invoice.jpg"
+    source.write_bytes(b"image")
+
+    monkeypatch.setattr(
+        document_extraction_service,
+        "prepare_document_page",
+        lambda _path: {
+            "prepared_path": str(source),
+            "transformations": ["autocontrast"],
+            "quality": {
+                "stop_recommended": True,
+                "stop_reasons": [
+                    "Качество страницы слишком низкое для надежного извлечения."
+                ],
+                "review_reasons": ["Низкая резкость страницы."],
+            },
+        },
+    )
+
+    def unexpected_ocr(*_args, **_kwargs):
+        raise AssertionError("OCR must not run after failed quality check")
+
+    def unexpected_openai(*_args, **_kwargs):
+        raise AssertionError("OpenAI must not receive a rejected image")
+
+    monkeypatch.setattr(document_extraction_service, "_extract_with_ocr", unexpected_ocr)
+    monkeypatch.setattr(
+        document_extraction_service,
+        "parse_invoice_with_openai",
+        unexpected_openai,
+    )
+
+    result = document_extraction_service.extract_invoice_document(
+        str(source),
+        source.name,
+        extraction_method="openai",
+    )
+
+    assert result["provider"] == "image_quality_rejected"
+    assert result["stop_recommended"] is True
+    assert result["replacement_recommended"] is True
+    assert result["error_code"] == "image_quality_rejected"
+    assert "После автоматического улучшения" in result["error"]
+    assert "не передано на автоматическое распознавание" in result["error"]
+    assert "Замените скан или перефотографируйте" in result["error"]
+    assert not any(
+        log["stage"] == "openai_request_start" for log in result["pipeline_logs"]
+    )
+
+
+def test_multipage_quality_rejection_stops_before_openai(monkeypatch, tmp_path):
+    files = [tmp_path / f"page-{index}.jpg" for index in range(1, 4)]
+    for file_path in files:
+        file_path.write_bytes(b"image")
+    collected = []
+
+    def fake_collect(path, filename, **_kwargs):
+        page_number = int(filename.removeprefix("page-").removesuffix(".jpg"))
+        collected.append(page_number)
+        rejected = page_number == 2
+        return {
+            "evidence_version": "1.0",
+            "logical_document_id": f"page-{page_number}",
+            "filename": filename,
+            "source_type": "image",
+            "ocr_used": not rejected,
+            "extraction_method": (
+                "image_quality_check" if rejected else "google_drive_ocr"
+            ),
+            "raw_text": "" if rejected else f"text page {page_number}",
+            "structured_document": None,
+            "pages": 1,
+            "page_sources": [
+                {
+                    "page_number": 1,
+                    "filename": filename,
+                    "source_type": "image",
+                    "original_path": path,
+                    "prepared_path": path,
+                    "transformations": [],
+                    "quality": {
+                        "stop_recommended": rejected,
+                        "stop_reasons": ["На странице много бликов."]
+                        if rejected
+                        else [],
+                    },
+                }
+            ],
+            "provider_attempts": [],
+            "errors": [],
+            "consistency_warnings": [],
+            "error": None,
+        }
+
+    def unexpected_openai(*_args, **_kwargs):
+        raise AssertionError("OpenAI must not receive a rejected document set")
+
+    monkeypatch.setattr(document_extraction_service, "_collect_openai_evidence", fake_collect)
+    monkeypatch.setattr(
+        document_extraction_service,
+        "parse_invoice_with_openai",
+        unexpected_openai,
+    )
+
+    result = document_extraction_service.extract_invoice_document_set(
+        [str(file_path) for file_path in files],
+        [file_path.name for file_path in files],
+        extraction_method="openai",
+    )
+
+    assert collected == [1, 2]
+    assert result["provider"] == "image_quality_rejected"
+    assert result["quality_rejections"][0]["page_number"] == 2
+    assert "страница 2" in result["error"]
+
+
+def test_unresolved_upside_down_orientation_stops_before_ocr_and_openai(
+    monkeypatch,
+    tmp_path,
+):
+    source = tmp_path / "upside-down-invoice.jpg"
+    source.write_bytes(b"image")
+
+    monkeypatch.setattr(
+        document_extraction_service,
+        "prepare_document_page",
+        lambda _path: {
+            "prepared_path": str(source),
+            "transformations": [],
+            "quality": {
+                "orientation_rotation_detected": 180,
+                "orientation_confidence": 1.77,
+                "orientation_unresolved": True,
+                "orientation_unresolved_reason": (
+                    "nonzero_osd_below_confidence"
+                ),
+                "critical_error_codes": [
+                    "critical_orientation_unresolved"
+                ],
+                "stop_recommended": True,
+                "stop_reasons": [
+                    "Ориентацию документа определить надёжно не удалось."
+                ],
+            },
+        },
+    )
+
+    def unexpected_ocr(*_args, **_kwargs):
+        raise AssertionError("OCR must not run for unresolved 180-degree orientation")
+
+    def unexpected_openai(*_args, **_kwargs):
+        raise AssertionError(
+            "Automatic recognition must not receive unresolved orientation"
+        )
+
+    monkeypatch.setattr(
+        document_extraction_service,
+        "_extract_with_ocr",
+        unexpected_ocr,
+    )
+    monkeypatch.setattr(
+        document_extraction_service,
+        "parse_invoice_with_openai",
+        unexpected_openai,
+    )
+
+    result = document_extraction_service.extract_invoice_document(
+        str(source),
+        source.name,
+        extraction_method="openai",
+    )
+
+    assert result["provider"] == "image_quality_rejected"
+    assert result["error_code"] == "image_quality_rejected"
+    assert result["replacement_recommended"] is True
+    assert result["stop_recommended"] is True
+    assert not any(
+        log["stage"] == "openai_request_start"
+        for log in result["pipeline_logs"]
+    )
+
+
+def test_initial_quality_failure_does_not_stop_after_successful_improvement(
+    monkeypatch,
+    tmp_path,
+):
+    source = tmp_path / "improved-invoice.jpg"
+    prepared = tmp_path / "prepared-invoice.jpg"
+    source.write_bytes(b"source-image")
+    prepared.write_bytes(b"prepared-image")
+    ocr_calls = []
+
+    monkeypatch.setattr(
+        document_extraction_service,
+        "prepare_document_page",
+        lambda _path: {
+            "prepared_path": str(prepared),
+            "transformations": ["autocontrast", "deskew_+8.00deg"],
+            "quality": {
+                "original_quality": {
+                    "quality_decision": "reject",
+                    "stop_recommended": True,
+                    "critical_error_codes": ["critical_blur"],
+                },
+                "prepared_quality": {
+                    "quality_decision": "accept",
+                    "stop_recommended": False,
+                },
+                "quality_decision": "accept",
+                "stop_recommended": False,
+                "stop_reasons": [],
+                "review_reasons": [],
+                "improvement_successful": True,
+                "final_quality_gate_stage": "after_automatic_improvement",
+            },
+        },
+    )
+
+    def fake_ocr(path, _filename):
+        ocr_calls.append(path)
+        return {
+            "provider": "google_drive_ocr",
+            "raw_text": "Накладная после улучшения",
+            "pages": 1,
+            "error": None,
+        }
+
+    monkeypatch.setattr(document_extraction_service, "_extract_with_ocr", fake_ocr)
+
+    evidence = document_extraction_service._collect_openai_evidence(
+        str(source),
+        source.name,
+    )
+
+    assert ocr_calls == [str(prepared)]
+    assert evidence["raw_text"] == "Накладная после улучшения"
+    assert evidence["extraction_method"] == "google_drive_ocr"
+    assert evidence["error"] is None
+    assert evidence["page_sources"][0]["quality"]["improvement_successful"] is True
+
+
+def test_image_preparation_failure_stops_before_ocr_and_openai(
+    monkeypatch,
+    tmp_path,
+):
+    source = tmp_path / "invoice.jpg"
+    source.write_bytes(b"image")
+
+    def failed_preparation(_path):
+        raise RuntimeError("quality gate crashed")
+
+    def unexpected_ocr(*_args, **_kwargs):
+        raise AssertionError("OCR must not run after quality-gate failure")
+
+    def unexpected_openai(*_args, **_kwargs):
+        raise AssertionError("OpenAI must not run after quality-gate failure")
+
+    monkeypatch.setattr(
+        document_extraction_service,
+        "prepare_document_page",
+        failed_preparation,
+    )
+    monkeypatch.setattr(
+        document_extraction_service,
+        "_extract_with_ocr",
+        unexpected_ocr,
+    )
+    monkeypatch.setattr(
+        document_extraction_service,
+        "parse_invoice_with_openai",
+        unexpected_openai,
+    )
+
+    result = document_extraction_service.extract_invoice_document(
+        str(source),
+        source.name,
+        extraction_method="openai",
+    )
+
+    assert result["provider"] == "image_quality_rejected"
+    assert result["error_code"] == "image_quality_rejected"
+    assert result["stop_recommended"] is True
+    assert result["replacement_recommended"] is True
+    page_quality = result["evidence"]["page_sources"][0]["quality"]
+    assert page_quality["quality_gate_failed"] is True
+    assert page_quality["quality_decision"] == "reject"
+    assert page_quality["critical_error_codes"] == [
+        "critical_quality_gate_failure"
+    ]
+    assert "не удалось завершить автоматическую проверку" in result[
+        "error"
+    ].lower()
+    assert not any(
+        log["stage"] == "openai_request_start"
+        for log in result["pipeline_logs"]
+    )
+
+
+def test_critical_original_resolution_stops_before_ocr_after_upscale(
+    monkeypatch,
+    tmp_path,
+):
+    from PIL import Image, ImageDraw
+
+    from app.services import (
+        document_image_preparation_service as preparation_service,
+    )
+
+    source = tmp_path / "critically-small-invoice.jpg"
+    image = Image.new("RGB", (600, 900), "white")
+    draw = ImageDraw.Draw(image)
+    for y in range(60, 820, 45):
+        for x in range(50, 550, 35):
+            draw.rectangle((x, y, x + 24, y + 18), fill="black")
+    image.save(source, quality=95)
+
+    monkeypatch.setattr(
+        preparation_service.settings,
+        "uploaded_invoices_dir",
+        str(tmp_path / "uploads"),
+    )
+    monkeypatch.setattr(
+        preparation_service,
+        "_orientation_analysis",
+        lambda _image: preparation_service._empty_orientation_analysis(),
+    )
+    monkeypatch.setattr(
+        preparation_service,
+        "_estimate_skew_angle",
+        lambda _image: 0.0,
+    )
+    monkeypatch.setattr(
+        preparation_service,
+        "_perspective_crop",
+        lambda _image: None,
+    )
+
+    def unexpected_ocr(*_args, **_kwargs):
+        raise AssertionError("OCR must not run for critical original resolution")
+
+    def unexpected_openai(*_args, **_kwargs):
+        raise AssertionError("OpenAI must not receive a critically small image")
+
+    monkeypatch.setattr(
+        document_extraction_service,
+        "_extract_with_ocr",
+        unexpected_ocr,
+    )
+    monkeypatch.setattr(
+        document_extraction_service,
+        "parse_invoice_with_openai",
+        unexpected_openai,
+    )
+
+    result = document_extraction_service.extract_invoice_document(
+        str(source),
+        source.name,
+        extraction_method="openai",
+    )
+
+    page_quality = result["evidence"]["page_sources"][0]["quality"]
+    assert result["provider"] == "image_quality_rejected"
+    assert result["error_code"] == "image_quality_rejected"
+    assert page_quality["original_short_side"] == 600
+    assert "critical_low_resolution" in page_quality["critical_error_codes"]
+    assert page_quality["quality_decision"] == "reject"
+    assert page_quality["stop_recommended"] is True
+
+
+def test_resolution_below_900_alone_continues_to_ocr(monkeypatch, tmp_path):
+    from PIL import Image, ImageDraw
+
+    from app.services import (
+        document_image_preparation_service as preparation_service,
+    )
+
+    source = tmp_path / "small-but-readable-invoice.jpg"
+    image = Image.new("RGB", (820, 1160), "white")
+    draw = ImageDraw.Draw(image)
+    for y in range(80, 1050, 55):
+        for x in range(80, 740, 45):
+            draw.rectangle((x, y, x + 25, y + 18), fill="black")
+    image.save(source, quality=95)
+
+    monkeypatch.setattr(
+        preparation_service.settings,
+        "uploaded_invoices_dir",
+        str(tmp_path / "uploads"),
+    )
+    monkeypatch.setattr(
+        preparation_service,
+        "_orientation_analysis",
+        lambda _image: preparation_service._empty_orientation_analysis(),
+    )
+    monkeypatch.setattr(
+        preparation_service,
+        "_estimate_skew_angle",
+        lambda _image: 0.0,
+    )
+    monkeypatch.setattr(
+        preparation_service,
+        "_perspective_crop",
+        lambda _image: None,
+    )
+    ocr_calls = []
+
+    def fake_ocr(path, _filename):
+        ocr_calls.append(path)
+        return {
+            "provider": "google_drive_ocr",
+            "raw_text": "Читаемая накладная",
+            "pages": 1,
+            "error": None,
+        }
+
+    monkeypatch.setattr(
+        document_extraction_service,
+        "_extract_with_ocr",
+        fake_ocr,
+    )
+
+    evidence = document_extraction_service._collect_openai_evidence(
+        str(source),
+        source.name,
+    )
+
+    page_quality = evidence["page_sources"][0]["quality"]
+    assert len(ocr_calls) == 1
+    assert page_quality["original_short_side"] == 820
+    assert page_quality["warning_codes"] == ["low_resolution"]
+    assert page_quality["critical_error_codes"] == []
+    assert page_quality["quality_decision"] == "review"
+    assert page_quality["stop_recommended"] is False

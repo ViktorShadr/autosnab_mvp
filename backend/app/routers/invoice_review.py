@@ -1398,6 +1398,9 @@ def _process_invoice_upload(
                 "pipeline_logs": pipeline_logs,
                 "retry_recommended_method": extraction.get("retry_recommended_method"),
                 "retry_recommended_label": extraction.get("retry_recommended_label"),
+                "error_code": extraction.get("error_code"),
+                "replacement_recommended": extraction.get("replacement_recommended", False),
+                "quality_rejections": extraction.get("quality_rejections") or [],
             },
         )
     if settings.google_sheets_enabled and settings.google_target_spreadsheet_id:

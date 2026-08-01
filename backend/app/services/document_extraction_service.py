@@ -97,6 +97,49 @@ def extract_invoice_document(
             ),
             on_log=on_log,
         )
+        quality_rejections = _image_quality_rejections(evidence)
+        if quality_rejections:
+            error_message = _image_quality_rejection_message(quality_rejections)
+            quality_gate_failed = any(item.get("quality_gate_failed") for item in quality_rejections)
+            _append_pipeline_log(
+                pipeline_logs,
+                _pipeline_log(
+                    "image_quality_rejected",
+                    "error",
+                    (
+                        "Автоматическая проверка качества завершилась ошибкой; распознавание остановлено."
+                        if quality_gate_failed
+                        else "После автоматического улучшения изображение всё ещё не прошло проверку качества."
+                    ),
+                    recommendation=(
+                        "Загрузите документ повторно; если ошибка повторится, замените скан или "
+                        "перефотографируйте документ."
+                        if quality_gate_failed
+                        else "Замените скан или перефотографируйте документ и загрузите его заново."
+                    ),
+                    rejected_pages=quality_rejections,
+                ),
+                on_log=on_log,
+            )
+            manual_result = _manual_review_result(error_message, fallback_filename)
+            manual_result.update(
+                {
+                    "provider": "image_quality_rejected",
+                    "raw_text": evidence.get("raw_text") or "",
+                    "pages": evidence.get("pages"),
+                    "selected_method": backend,
+                    "evidence": evidence,
+                    "pipeline_logs": pipeline_logs,
+                    "stop_recommended": True,
+                    "error": error_message,
+                    "error_code": "image_quality_rejected",
+                    "replacement_recommended": True,
+                    "quality_rejections": quality_rejections,
+                    "retry_recommended_method": None,
+                    "retry_recommended_label": None,
+                }
+            )
+            return manual_result
         if not _evidence_has_content(evidence):
             error_message = (
                 "Перед OpenAI parser не удалось получить текст или структурированный evidence. "
@@ -359,16 +402,21 @@ def extract_invoice_document_set(
             else None,
         )
         page_evidence.append(evidence)
+        quality_rejected = bool(_image_quality_rejections(evidence))
         if on_log is not None:
             on_log(
                 _pipeline_log(
                     "document_page_complete",
-                    "ok" if _evidence_has_content(evidence) else "warning",
-                    f"Страница {page_number} подготовлена.",
+                    "error" if quality_rejected else ("ok" if _evidence_has_content(evidence) else "warning"),
+                    f"Страница {page_number} не прошла проверку качества."
+                    if quality_rejected
+                    else f"Страница {page_number} подготовлена.",
                     page_number=page_number,
                     raw_text_length=len(evidence.get("raw_text") or ""),
                 )
             )
+        if quality_rejected:
+            break
 
     combined = _merge_page_evidence(page_evidence, filenames)
     return extract_invoice_document(
@@ -572,9 +620,15 @@ def _collect_openai_evidence(
                 ),
                 on_attempt,
             )
-        except Exception as exc:  # noqa: BLE001 - original image remains a safe fallback
+            if page.quality.get("stop_recommended") or page.quality.get("stop_reasons"):
+                evidence.extraction_method = "image_quality_check"
+                evidence.error = "Изображение не прошло проверку качества."
+                return evidence.model_dump(mode="json")
+        except Exception as exc:  # noqa: BLE001 - quality gate must fail closed
             message = f"Image preparation failed: {exc}"
             evidence.errors.append(message)
+            page = evidence.page_sources[0]
+            page.quality = _quality_gate_failure_report(exc)
             _add_evidence_attempt(
                 evidence,
                 EvidenceProviderAttempt(
@@ -586,6 +640,12 @@ def _collect_openai_evidence(
                 ),
                 on_attempt,
             )
+            evidence.extraction_method = "image_quality_check"
+            evidence.error = (
+                "Не удалось выполнить автоматическую проверку и подготовку изображения. "
+                "Распознавание остановлено."
+            )
+            return evidence.model_dump(mode="json")
 
     if source_type == "pdf":
         _notify_evidence_attempt_start("pdf_text", on_attempt)
@@ -715,6 +775,77 @@ def _collect_openai_evidence(
             "опирается только на изображение без OCR-текста."
         )
     return evidence.model_dump(mode="json")
+
+
+def _image_quality_rejections(evidence: dict[str, Any]) -> list[dict[str, Any]]:
+    rejections: list[dict[str, Any]] = []
+    for page in evidence.get("page_sources") or []:
+        if not isinstance(page, dict):
+            continue
+        quality = page.get("quality") or {}
+        stop_reasons = [str(reason).strip() for reason in quality.get("stop_reasons") or [] if str(reason).strip()]
+        if not quality.get("stop_recommended") and not stop_reasons:
+            continue
+        if not stop_reasons:
+            stop_reasons = ["Качество изображения недостаточно для надежного распознавания."]
+        rejections.append(
+            {
+                "page_number": page.get("page_number"),
+                "filename": page.get("filename"),
+                "reasons": stop_reasons,
+                "quality_gate_failed": bool(quality.get("quality_gate_failed")),
+            }
+        )
+    return rejections
+
+
+def _image_quality_rejection_message(rejections: list[dict[str, Any]]) -> str:
+    page_details = []
+    for rejection in rejections:
+        page_number = rejection.get("page_number")
+        filename = rejection.get("filename")
+        label = f"страница {page_number}" if page_number else "изображение"
+        if filename:
+            label += f" ({filename})"
+        reasons = "; ".join(rejection.get("reasons") or [])
+        page_details.append(f"{label}: {reasons}")
+    details = " ".join(page_details)
+    if any(item.get("quality_gate_failed") for item in rejections):
+        return (
+            "Не удалось завершить автоматическую проверку и подготовку изображения. "
+            "Файл не передан на распознавание. "
+            f"{details} "
+            "Загрузите документ повторно. Если ошибка повторится, замените скан "
+            "или перефотографируйте документ."
+        )
+    return (
+        "После автоматического улучшения качество фотографии осталось "
+        "недостаточным для надежного распознавания. Изображение не передано "
+        "на автоматическое распознавание. "
+        f"{details} "
+        "Замените скан или перефотографируйте документ: держите камеру ровно, "
+        "обеспечьте хорошее освещение, исключите блики и убедитесь, что весь текст в фокусе."
+    )
+
+
+def _quality_gate_failure_report(exc: Exception) -> dict[str, Any]:
+    reason = "Не удалось выполнить автоматическую проверку и улучшение качества изображения."
+    return {
+        "quality_gate_failed": True,
+        "quality_gate_error_type": type(exc).__name__,
+        "quality_gate_error": str(exc),
+        "quality_decision": "reject",
+        "warning_codes": [],
+        "critical_error_codes": ["critical_quality_gate_failure"],
+        "warning_count": 0,
+        "critical_error_count": 1,
+        "review_reasons": [reason],
+        "stop_reasons": [reason],
+        "requires_review": True,
+        "stop_recommended": True,
+        "replacement_recommended": True,
+        "final_quality_gate_stage": "quality_gate_failed",
+    }
 
 
 def _extract_pdf_text(file_path: str) -> str:

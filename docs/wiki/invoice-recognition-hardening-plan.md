@@ -140,6 +140,199 @@ Google Sheets.
    HTML table markup first, or making `_extract_mineru_content_list_fields`
    the primary path with the regex parser only as a last-resort fallback.
 
+## Hard pre-recognition quality gate ported from `auto-snab-document-parser` (2026-07-31)
+
+Closes the long-standing gap in blocker #5 above ("nothing currently uses
+`stop_recommended` to block a bad photo before the OpenAI call") and directly
+targets the 2026-07-29 "low-quality photos recognize poorly" complaint.
+
+**Source**: Andrey Gomzikov's branch `feature/document-image-quality-gate`
+(commit `992bc11`, 2026-07-31) in the separate `auto-snab-document-parser`
+GitLab repo (`gitlab.testant.online/antipov-backend/auto-snab-document-parser`,
+not merged into that repo's `develop` yet). User asked to evaluate and port it
+into this repo.
+
+**Conflict assessment before porting**: compared each touched file against
+that repo's own `develop` baseline (the common ancestor with this repo's
+current files) rather than diffing branch-vs-this-repo directly, since the two
+repos have independently diverged (different directory layout: their
+domain-driven `app/domains/invoice_pipeline/...` vs this repo's flat
+`app/services/...`, plus this repo has its own MinerU integration absent from
+that repo entirely). Finding: `document_image_preparation_service.py` was
+byte-for-byte functionally identical to that repo's baseline (only ruff
+line-wrap differences) — zero conflict, straight replacement. Andrey's
+insertions into `document_extraction_service.py`/`_collect_openai_evidence`/
+`extract_invoice_document_set` land at points in the function bodies that this
+repo's own MinerU additions do not touch — no structural overlap. Same for
+`bot_gateway_service.py` (divergence was 100% formatting/import-path noise)
+and the router (`retry_recommended_label` dict literal was byte-identical).
+This assessment held up in practice — the actual port needed only import-path
+edits, not logic reconciliation.
+
+**What was ported**:
+- `document_image_preparation_service.py` replaced wholesale with Andrey's
+  version: real orientation detection via **Tesseract OSD** (not just
+  heuristics), foreground-contrast checks, edge-touch/cropped-document
+  detection, verified deskew, and — the important part — **critical**-severity
+  thresholds (`CRITICAL_BLUR_SCORE`, `CRITICAL_GLARE_RATIO`,
+  `CRITICAL_DARK_RATIO`, `CRITICAL_LOW_RESOLUTION`, etc.) separate from the
+  existing soft warning thresholds. Backward compatible: same
+  `prepare_document_page(file_path)` entry point, same output keys
+  (`blur_score`, `stop_recommended`, `stop_reasons`, ...), just enriched.
+- `document_extraction_service.py`: `extract_invoice_document` now calls
+  `_image_quality_rejections(evidence)` right after evidence collection (for
+  `backend == "openai"`) and returns a stopped, unwritten result
+  (`error_code=image_quality_rejected`, `stop_recommended=True`,
+  `replacement_recommended=True`) before ever calling OpenAI when a page's
+  quality gate says stop. `extract_invoice_document_set` now breaks out of the
+  per-page loop as soon as one page is rejected, instead of preparing every
+  page first. `_collect_openai_evidence` checks the gate immediately after
+  image preparation (before OCR/MinerU are attempted) and fails closed — if
+  `prepare_document_page` itself raises, that's now treated as a rejection
+  (`_quality_gate_failure_report`), not silently swallowed with the original
+  image kept as fallback like before.
+- `bot_gateway_service.py`: new upload-journal status `quality_rejected`
+  (distinct from generic `processing_error`), counted as completed, with a
+  Telegram-facing message asking the user to reshoot/replace the file.
+- `routers/invoice_review.py`: the shared 422 error detail now also carries
+  `error_code`/`replacement_recommended`/`quality_rejections` (additive, three
+  keys) so the same information reaches both the bot and the web upload page.
+- Dependencies: added `pytesseract>=0.3.13,<1` and (new, not merely implicit)
+  `opencv-python>=4.10.0,<5` to `backend/requirements.txt`; added
+  `tesseract-ocr`/`tesseract-ocr-osd` to the `Dockerfile` apt install plus a
+  build-time smoke test (`tesseract --list-langs | grep -qx osd`).
+- Tests: ported the full `test_document_image_preparation.py` (34 tests,
+  replacing this repo's 3 pre-existing ones which are a strict subset) and the
+  new quality-gate-specific tests from `test_document_extraction_service.py`
+  (7) and `test_bot_gateway_service.py` (2), with only import-path edits
+  (`app.domains.invoice_pipeline.services...` → `app.services...`).
+
+**Real, unanticipated issue found during porting (not a code conflict — a
+dependency-resolution one)**: this repo's `requirements.txt` never pinned
+`opencv-python` directly; it was pulled in transitively and unpinned by
+`mineru`, and on this workstation resolved to `opencv-python 5.0.0.93` — a
+major version whose `cv2.HoughLinesP` return shape broke Andrey's line-angle
+skew-estimation code (`lines[:, 0]` unpacking `TypeError`). The
+`auto-snab-document-parser` repo avoids this by pinning
+`opencv-python-headless>=4.10.0,<5` explicitly. Fixed here by adding the same
+upper-bound pin (`opencv-python>=4.10.0,<5`, matching the existing
+non-headless package name already in use) and reinstalling; confirmed
+`mineru`'s own requirement (`opencv-python>=4.11.0.86`, no upper bound) is
+compatible with the pin. All 34 image-preparation tests pass after the pin.
+**Anyone reinstalling this repo's venv from a clean `pip install` should get
+opencv 4.x automatically now that it's pinned** — before this fix a fresh
+install could have silently picked up 5.x and broken skew estimation exactly
+like this.
+
+**Verification**: full backend suite outside the two known-quirky files
+(`test_receiving.py` hangs/has 10 pre-existing failures,
+`test_telegram_bot.py` can't collect — missing `aiogram` dev dependency, both
+pre-existing and unrelated) — **299 passed, 1 failed**. The 1 failure
+(`test_collect_openai_evidence_falls_back_to_mineru_after_empty_ocr`) is
+pre-existing, confirmed identical before and after this change via
+`git stash`. `test_receiving.py`'s 10 failures also confirmed byte-identical
+before/after via the same method. **Zero regressions.**
+
+**Deliberate scope decision, not yet resolved**: the quality gate as ported
+only naturally covers `backend == "openai"` (the only backend that exists in
+`auto-snab-document-parser`, where Andrey wrote this). This repo also has
+`mineru`/`hybrid` backends with their own code paths in
+`extract_invoice_document` that do not currently call
+`_image_quality_rejections` — a bad photo run through `mineru`/`hybrid` mode
+is not gated by this change. Whether to extend the gate there is an open
+product decision, not done in this port.
+
+**Deployed live 2026-07-31/08-01** to `78.17.160.248` (`autosnab_backend_mvp4`,
+the developer's personal/draft VPS, also running an unrelated Amnezia
+WireGuard/Xray VPN service on the same box). SSH access re-authorized for
+this session (not durable across sessions, per established pattern — user
+added this session's key to `authorized_keys`). Backed up the 7 changed files
+to `/opt/autosnab_mvp_backups/2026-07-31-quality-gate-port/` first. Compared
+each target file against the VPS's actual current content before touching
+anything: 6 of 7 were byte-identical to this repo's pre-port `HEAD`
+(`document_image_preparation_service.py`, `document_extraction_service.py`,
+`bot_gateway_service.py`, `routers/invoice_review.py`,
+`openai_invoice_parser_service.py`, `Dockerfile`) — no drift for these
+specific files despite the VPS's known general drift from `develop` (see the
+2026-07-31 header-whitespace deploy entry) — and `requirements.txt` differed
+by exactly one pre-existing missing line (`pypdfium2`) that this port's own
+version already carries. Given near-zero drift, deployed via direct `scp` of
+the 7 files rather than the heavier full-tree `git archive` method.
+
+**Real deploy-process bug hit and caught before declaring success**: the
+first `docker compose --profile public-ip build backend` produced an image
+whose `document_extraction_service.py` had **zero** occurrences of the new
+code — the file on the VPS host itself was confirmed correct (byte-identical
+to local, `image_quality_rejected` present) both before and after that build,
+but the built image (verified via `docker run --rm ... md5sum` on a
+throwaway container, bypassing any doubt about the running container)
+contained an older version, timestamped (per the VPS's own clock) hours
+before the scp. Root cause not conclusively identified — the VPS reports
+`System clock synchronized: no`, so a clock event during the session is one
+plausible explanation, but this was not chased further since a reliable fix
+existed regardless of cause. **Caught by verifying the actual running
+container's source via `inspect.getsource` before declaring the deploy done,
+not by trusting the build/health-check output** — this is the same discipline
+prior deploy log entries in this file already established (e.g. the
+2026-07-26 "confirmed via `docker exec`/`inspect.getsource`" pattern) and it
+paid off directly this time. Fixed by rebuilding with `docker compose build
+--no-cache backend` (new image `69bb5fb51a31`, ~27 min build — apt+full pip
+resync with no layer reuse, plus an unusually slow ~26min layer-export/unpack
+step observed only on this rebuild, cause not investigated) and verifying the
+new image's file contents via a disposable `docker run --rm ... grep`
+**before** recreating the container.
+- Post-deploy verification, all confirmed live via `docker exec` inside the
+  actually-running container (not just the image): `image_quality_rejected`
+  wired into `extract_invoice_document`, `_image_quality_rejections` present,
+  `quality_rejected` wired into `_bot_status_message`, `CRITICAL_BLUR_SCORE`
+  and `_tesseract_orientation` present in the preparation service,
+  `dry_weight_unknown`/`in_brine` present in `SYSTEM_PROMPT` (confirms the
+  same-day packaging-facts prompt fix — see `unit-conversion-rules.md` — rode
+  along in this deploy too, since it touched the same file). `pytesseract`
+  reports a live `tesseract 5.5.0` binary. Container recreated with
+  `--force-recreate`, confirmed `docker inspect` shows `status=running
+  health=healthy` and `/health/runtime` returns
+  `{"status":"ok","database":{"ready":true}}`.
+- **Not done yet**: no live end-to-end test of an actual bad photo being
+  rejected through the real bot/upload flow (only static source-level
+  verification so far); the `mineru`/`hybrid`-backend scope gap noted above
+  is still open; no notification sent to Lilia about this change yet.
+
+**Not done yet** (superseded notes, kept for history — see the deployed
+entry above for current status):
+- Docker image build not fully verified locally: tried twice. Both times the
+  `apt-get install` layer (including the new `tesseract-ocr`/`tesseract-ocr-osd`
+  packages this port added) built and cached cleanly. Both times `pip install
+  -r requirements.txt` inside the container failed on a network read timeout
+  to `pypi.org`/`files.pythonhosted.org` (different package each time —
+  `fastapi` then `sqlalchemy`, both pre-existing pins unrelated to this port).
+  Direct `curl` from the same host to the same URLs succeeded instantly
+  (200, <2s), so this is very likely container-network flakiness specific to
+  this local sandbox's legacy (non-buildx) Docker builder, not a real pypi
+  outage or a defect introduced by this change. **The one part of the
+  Dockerfile this port actually changed (the apt layer) is confirmed working;
+  the full image build (including whether `pip install pytesseract` and the
+  final `tesseract --list-langs | grep -qx osd` smoke test succeed) is still
+  unverified** — needs either a retry in a more stable network environment or
+  verification directly at VPS deploy time. First attempt's exit-code check
+  was itself wrong (piped through `tee | tail`, which reports `tail`'s exit
+  code, not `docker build`'s) — the second attempt used `pipefail` to get an
+  accurate result.
+- No system `tesseract` binary is installed
+  on this dev workstation either, so `pytesseract` calls locally fall back
+  gracefully to their "OSD unavailable" branch (by design — `_tesseract_orientation`
+  catches `ImportError`/any exception and returns a null result) rather than
+  exercising the real OSD path; local test runs did not need real OCR
+  orientation detection to pass, but that specific behavior is unverified
+  outside Docker/VPS.
+- Not deployed anywhere. Needs the same full-tree sync method noted in the
+  2026-07-31 header-whitespace deploy entry (VPS `78.17.160.248` is known to
+  have drifted from `develop`) rather than a single-file `scp`, since this
+  touches the Dockerfile/requirements.txt themselves.
+- The `mineru`/`hybrid`-backend scope gap above.
+- No live end-to-end test yet of an actual bad photo being rejected before
+  reaching OpenAI.
+
 ## Diagnostic findings, 2026-07-31: what's actually causing poor recognition (real DB data, not guesses)
 
 User asked to identify, directly from the live server, which invoices recognize poorly and why — instead of continuing to wait for Lilia's promised concrete failing examples (still not sent as of this writing). Scanned all 93 `receiving_documents` ever created on `78.17.160.248` and categorized every stored `review_flags` entry from each document's `recognized_items_json`.

@@ -985,6 +985,89 @@ correctly, and confirmed the `30X40СМ`-style dimension text is a
 non-computable product-size fact the script won't use, so no AI schema
 changes needed there) are done, so her team can wire up Apps Script.
 
+## `dry_weight_unknown` was firing for ordinary products, not just brine/syrup items (2026-07-31, Lilia feedback via Max)
+
+Lilia reported (Max chat, not a raw file — no attachment, compiled directly):
+starting around row 83 of the live `Факты фасовки AI (техн.)` sheet, ordinary
+products with no brine/syrup/marinade content were coming back with a "risk"
+that asked for a dry weight the product never has, and this blocked packaging
+rule draft creation / document processing in her Apps Script workflow. Manual
+edits to the sheet didn't stick — whatever script re-derives the risk kept
+re-flagging it, so she reverted her manual changes rather than fight it.
+
+Root cause: the `dry_weight_unknown` value in `packaging_risk_flags` was
+described in `SYSTEM_PROMPT` (`backend/app/services/openai_invoice_parser_service.py`)
+as "сухой вес не подтвержден документом" with no scope restriction — the model
+could set it for any product lacking an explicit dry weight, including plain
+items like kefir or napkins where the concept doesn't apply at all.
+
+**Agreed split of responsibility (Max chat, 2026-07-31, user confirmed "Да.
+давай так")**:
+1. Backend (this repo): narrow the AI prompt so `dry_weight_unknown` is only
+   ever set alongside one of `in_brine`/`in_syrup`/`in_marinade`/`in_oil` —
+   i.e. only for products actually packed in liquid (olives, marinades,
+   brined items and similar), never for an ordinary product with a normal
+   declared weight/volume.
+2. Apps Script (Lilia's own side, not this repo): when a row's only signal is
+   `dry_weight_unknown` with no brine/syrup/marinade/oil/olive keyword in the
+   product name, treat it as a non-blocking warning instead of a stopper, so
+   the normal-weight packaging rule draft can still be created. This part is
+   explicitly hers to implement — the live Apps Script bound to the
+   spreadsheet is not this repo's `apps_script/invoice_review_menu.gs` copy
+   (that copy has no reference to the `Факты фасовки AI (техн.)` sheet at
+   all, confirmed by grep — her team's live script has since diverged from
+   the last saved copy here).
+
+**Implemented 2026-07-31 (backend part only)**: `SYSTEM_PROMPT` now states
+`dry_weight_unknown` must only accompany a liquid-packaging risk flag, added
+an explicit "don't set it for ordinary products" instruction, and added two
+worked examples (`МАСЛИНЫ Б/К 300Г` without a separate drained weight → sets
+`in_brine`+`dry_weight_unknown`; `КЕФИР ФЕРМЕРСКИЙ 800Г` → no risk flags at
+all). Prompt-only change, no schema/code logic touched (nothing in this repo
+currently acts on `packaging_risk_flags` for blocking, per the "not yet acted
+on by any conversion logic" note above). `test_openai_invoice_pipeline.py`'s
+existing `SYSTEM_PROMPT` content assertions plus the full
+`test_packaging_facts_sheet_rows.py` suite pass unchanged (60 passed). Not
+yet deployed to the VPS; not yet re-tested against a real upload since a
+prompt-only change can't be verified from unit tests alone — needs a real
+document with an ordinary weighed product to confirm the flag no longer
+fires, ideally paired with Lilia's own Apps Script-side warning-vs-stopper
+change so the full loop closes.
+
+## Other Lilia feedback, 2026-07-31 (Max chat, same conversation)
+
+Compiled directly from the chat, not yet actioned except where noted:
+
+- **UI ask**: make the separator row between invoice blocks in `Накладная`
+  grey (not default) and shorter, since even an empty separator row is hard
+  to visually distinguish from "still loading" — Viktor acknowledged
+  ("Хорошо)"), not yet implemented.
+- **UI ask**: collapsible rows per document number in the first column (`+`
+  collapses all, `−` expands all) so the sheet isn't "one wall of rows" —
+  Viktor's assessment: "должно быть реально... потом можно сделать" (backlog,
+  not scoped/scheduled).
+- **Bug, накл 882 and 616**: table-parsing cell shift — item column-2 product
+  code `166` lands in `Количество в документе` instead of the actual
+  quantity. Reproduced twice on 882 even after a manual fix and re-upload.
+  Not yet traced to a specific function.
+- **Bug, накл 882 and 743**: supplier name/document number/date failed to
+  recognize on 2 of 3 uploaded invoices in one batch. 882's photo quality was
+  reported normal; 743 is a "new form" layout that a similar document (745)
+  parsed correctly but 743 itself did not.
+- **Bug, накл 743**: line/document sums computed incorrectly.
+- **Bug, накл 3688**: `Ставка НДС` column has a percentage number format;
+  the value `Без НДС` is text, so writing it into a %-formatted column causes
+  a format conflict in Sheets (whole-column format change warning when edited
+  manually). Lilia asked whether the write path can set text format
+  specifically for non-numeric VAT values. Not investigated yet.
+- **Resolved, no action needed**: Lilia considered deleting invoices stuck
+  after repeated failed re-uploads; Viktor asked her to export/send the sheet
+  first. She then chose not to delete anything, left as-is.
+
+None of the bug reports above (882/616/743/3688 cell-shift/sum/VAT-format
+issues) have been traced to root cause yet — recorded here as open items for
+the next session, cross-reference from `docs/wiki/current-status.md`.
+
 ## Open questions before production rollout
 
 - Required quantity and price precision in the target accounting system.

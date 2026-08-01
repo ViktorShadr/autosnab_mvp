@@ -299,6 +299,7 @@ def _process_bot_upload_background(
             review_id=review_id,
         )
     except Exception as exc:  # noqa: BLE001 - background job must surface fatal failures in the journal/trace
+        journal_status = "processing_error"
         if isinstance(exc, HTTPException):
             error_detail = exc.detail
             error_message = (
@@ -306,6 +307,8 @@ def _process_bot_upload_background(
                 if isinstance(error_detail, dict)
                 else str(error_detail)
             )
+            if isinstance(error_detail, dict) and error_detail.get("error_code") == "image_quality_rejected":
+                journal_status = "quality_rejected"
         else:
             db_hint = describe_database_write_error(exc)
             error_message = db_hint or str(exc)
@@ -318,7 +321,7 @@ def _process_bot_upload_background(
                 "details": {"error": error_message},
             },
         )
-        update_upload_journal(db, upload_id, status="processing_error", error_text=error_message, trace_id=trace_id)
+        update_upload_journal(db, upload_id, status=journal_status, error_text=error_message, trace_id=trace_id)
         finalize_trace(trace_id, error_message=error_message)
     finally:
         db.close()
@@ -345,6 +348,7 @@ def _build_bot_upload_status_response(db: Session, upload) -> BotUploadStatusRes
     completed_statuses = {
         "unsupported_format",
         "processing_error",
+        "quality_rejected",
         "processed",
         "transferred_to_review",
         "requires_review",
@@ -394,6 +398,11 @@ def _bot_status_message(status: str, error_text: str | None) -> str:
         return "Документ похож на уже загруженный и требует проверки на дубль."
     if status == "unsupported_format":
         return error_text or "Формат файла пока не поддерживается."
+    if status == "quality_rejected":
+        return error_text or (
+            "После автоматического улучшения качество фотографии осталось недостаточным. "
+            "Замените скан или перефотографируйте документ и загрузите его заново."
+        )
     if status == "processing_error":
         return error_text or "Во время обработки произошла ошибка."
     if status == "processed":

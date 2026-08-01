@@ -63,10 +63,17 @@ SYSTEM_PROMPT = """Ты извлекаешь данные российских �
 - packaging_risk_flags: бизнес-риски фасовки, влияющие на дальнейший учет,
   отдельно от recognition-неуверенности. Используй только значения:
   in_brine, in_syrup, in_marinade, in_oil (товар в заливке — масса брутто не
-  равна массе продукта), dry_weight_unknown (сухой вес не подтвержден
-  документом), multiple_ambiguous_values (в тексте несколько несовместимых
-  числовых значений), actual_weight_required (для точного учета нужен
-  фактический вес, а не заявленный/усредненный);
+  равна массе продукта), dry_weight_unknown, multiple_ambiguous_values (в
+  тексте несколько несовместимых числовых значений), actual_weight_required
+  (для точного учета нужен фактический вес, а не заявленный/усредненный).
+  dry_weight_unknown ставь ТОЛЬКО вместе с одним из in_brine/in_syrup/
+  in_marinade/in_oil — то есть только для товаров в рассоле, сиропе,
+  заливке, маринаде или масле (оливки, маслины, консервы в заливке и
+  похожие), когда документ не указывает сухой/отжатый вес отдельно от
+  брутто. НЕ ставь dry_weight_unknown для обычных товаров, у которых просто
+  указан обычный вес или объем фасовки (unit_weight/unit_volume/
+  declared_package_mass без признаков жидкости/заливки) — для них понятие
+  сухого веса неприменимо и не должно запрашиваться;
 - document_unit и quantity_document: единица и количество непосредственно из
   документа; они должны совпадать с unit и quantity;
 - units_per_package: значение из отдельного столбца документа «Состав ед. изм.»
@@ -104,6 +111,13 @@ packaging_risk_flags, не через needs_review.
 - «МАСЛИНЫ Б/К 300Г/150Г ОТЖ.ВЕС» -> packaging_facts [{type:
   declared_package_mass, value: 300, unit: «г», source: «300Г»}, {type:
   dry_weight, value: 150, unit: «г», source: «150Г ОТЖ.ВЕС»}];
+- «МАСЛИНЫ Б/К 300Г» (без отдельно указанного отжатого веса) ->
+  packaging_facts [{type: declared_package_mass, value: 300, unit: «г»,
+  source: «300Г»}], packaging_risk_flags [in_brine, dry_weight_unknown] —
+  сухой вес не указан именно у товара в заливке;
+- «КЕФИР ФЕРМЕРСКИЙ 800Г» -> packaging_facts [{type: unit_weight,
+  value: 800, unit: «г», source: «800Г»}], packaging_risk_flags [] —
+  обычный товар без заливки, dry_weight_unknown НЕ ставится;
 - «0,33Л ГАЗ НАП COCA-COLA ORIGINAL Ж/Б», document_unit=ШТ,
   quantity_document=72 (столбец «Количество» в таблице документа) ->
   packaging_facts [{type: unit_volume, value: 0.33, unit: «л»,

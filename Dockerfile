@@ -15,6 +15,8 @@ RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.l
         libxcb1 \
         libxext6 \
         libxrender1 \
+        tesseract-ocr \
+        tesseract-ocr-osd \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/requirements.txt /tmp/requirements.txt
@@ -24,7 +26,8 @@ COPY backend/app /app/app
 COPY backend/exports /app/exports
 
 RUN mkdir -p /app/uploads/invoices
-RUN python -c "import cv2; import mineru"
+RUN python -c "import cv2, pytesseract; import mineru" \
+    && tesseract --list-langs 2>/dev/null | grep -qx osd
 
 EXPOSE 8000
 
