@@ -1598,3 +1598,13 @@
 
 - Создана страница `openai-invoice-parser-prompt.md`: полный system prompt, модель (gpt-5-mini), принцип работы, таблица ключевых ограничений.
 - Добавлена в index.md.
+
+## [2026-08-02] fix | auto-snab-document-parser ENV_DEV had empty OPENAI_API_KEY/Google-OAuth/BOT_API_SHARED_SECRET — fixed from VPS
+
+- Пользователь попросил перенести рабочие env-настройки с личного VPS (78.17.160.248) в GitLab CI/CD переменную ENV_DEV репозитория auto-snab-document-parser.
+- Перед копированием сравнил оба .env по именам ключей и по SHA-256 хэшам значений (секреты в чат/tool-output не выводились). Нашёл реальную проблему: в ENV_DEV пустые OPENAI_API_KEY, все GOOGLE_OAUTH_* (CLIENT_ID/SECRET/ACCESS_TOKEN/REFRESH_TOKEN/TOKEN_EXPIRY), GOOGLE_SERVICE_ACCOUNT_JSON_B64 (тоже пусто) и BOT_API_SHARED_SECRET — при этом GOOGLE_SHEETS_ENABLED=true и DOCUMENT_EXTRACTION_BACKEND=openai. Dev-окружение (avtosnab.testant.online/docparser, фактический прод) не могло распознавать накладные и писать в Google Sheets вообще, несмотря на зелёный health-check.
+- ENV_DEV оказался не "отстающим" от VPS, а наоборот содержал больше конфигурации (полные DIADOC_*/SBIS_*, Postgres/GOOGLE_SERVICE_ACCOUNT_JSON_B64) — слепой перенос всего файла с VPS всё бы сломал. Скопированы только реально пустые/отсутствующие ключи.
+- По решению пользователя: OAuth-креды временно скопированы с VPS (личный Gmail) как промежуточное решение до нахождения service-account ключа Павла; добавлен SBIS_MANUAL_IMPORT_TARGET_SPREADSHEET_ID (фича давно смержена, переменной не было); включён TELEGRAM_BOT_ENABLED=true на этом окружении, и в связи с этим остановлен backend-контейнер на VPS (docker compose stop backend на 78.17.160.248), чтобы не было конфликта двух long-polling клиентов с одним токеном бота.
+- Обновление ENV_DEV сделано через GitLab REST API, проверено пересравнением по хэшам после записи (133 ключа, 0 расхождений). Передеплой (`develop`, pipeline #755) прошёл все стадии, `/health/runtime` → 200. Через временную debug-logs CI job (по established-паттерну, ветка удалена после использования) подтверждено отсутствие ошибок/трейсбеков в логах пересозданного контейнера.
+- Не проверено: реальный round-trip через Telegram-бота и запись в Google Sheets на новом окружении. VPS backend остаётся остановленным до ручного перезапуска.
+- Полный детальный отчёт: `docs/wiki/auto-snab-document-parser-release-repo.md` → "Update, 2026-08-02".

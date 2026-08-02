@@ -728,6 +728,31 @@ variables are never touched by this plan.
     sharing needed for Vision, it calls the image/PDF directly). Redeploy,
     verify with a real upload.
 
+### Day 1 confirmed already done (audit, 2026-08-02)
+
+`git log develop` shows `eac73a1 Merge branch 'feature/google-dual-auth-vision' into 'develop'` (`6b01b47` is an ancestor) — the MR from the plan above was opened and merged at some point without a corresponding wiki update. The "Day 1 — land the code" checklist above is stale; treat it as done.
+
+## Update, 2026-08-02: ENV_DEV had empty critical secrets — fixed by copying working values from the VPS
+
+User asked to transfer working env settings from the personal VPS (`78.17.160.248`, `autosnab_mvp`'s own test deploy) into this repo's `ENV_DEV`. Before blindly copying, compared both sides key-by-key via SHA-256 hashes of values (never printing plaintext secrets into chat/tool output) — this surfaced a real, previously-undiscovered problem, not just a routine sync:
+
+**`ENV_DEV` had empty values for**: `OPENAI_API_KEY` (while `DOCUMENT_EXTRACTION_BACKEND=openai` — invoice recognition could not have worked at all), `GOOGLE_OAUTH_CLIENT_ID`/`CLIENT_SECRET`/`ACCESS_TOKEN`/`REFRESH_TOKEN`/`TOKEN_EXPIRY` (while `GOOGLE_SHEETS_ENABLED=true`, `GOOGLE_SHEETS_AUTH_MODE=oauth`, and `GOOGLE_SERVICE_ACCOUNT_JSON_B64` was *also* empty — Sheets writes could not have worked via either auth path), `BOT_API_SHARED_SECRET`, and `TELEGRAM_BOT_TOKEN` (this last one harmless right now since `TELEGRAM_BOT_ENABLED` was `false`). The dev environment at `avtosnab.testant.online/docparser` — the de facto production endpoint real users hit — has apparently been unable to actually parse invoices or write to Sheets this whole time, despite `/health/runtime` reporting healthy (health check only verifies DB connectivity, not these app secrets).
+
+**User's decisions**: (1) temporarily reuse the VPS's personal-Gmail OAuth credentials as an interim fix rather than wait for Pavel's still-not-located service-account JSON key; (2) also add `SBIS_MANUAL_IMPORT_TARGET_SPREADSHEET_ID` (present on the VPS, merged into this repo's `develop` via `feature/sbis-manual-import`, but never added to `ENV_DEV`); (3) enable the Telegram bot on this environment too (`TELEGRAM_BOT_ENABLED=true`) — and to avoid two long-polling clients fighting over one bot token (Telegram allows only one), **stop the VPS's own bot** rather than mint a separate token.
+
+**Done**:
+- Compared `ENV_DEV` (108 keys) vs. VPS `.env` (47 keys) by key name and by value hash. Found `ENV_DEV` actually has substantially *more* config than the VPS (full `DIADOC_*`/`SBIS_*` sets, `GOOGLE_SERVICE_ACCOUNT_JSON_B64`, `PGSSL*`/`DATABASE_URL` for Postgres) — this was never a simple "GitLab is behind the VPS" situation, so a blind full-file overwrite from the VPS would have destroyed working repo-specific config. Only the specific empty/missing keys above were changed.
+- `GOOGLE_OAUTH_REDIRECT_URI` was **not** overwritten — `ENV_DEV`'s existing value already correctly points at `https://avtosnab.testant.online/docparser/api/v1/google-oauth/callback` (someone set this correctly before); the VPS's own value is `https://78-17-160-248.nip.io:8443/...`, which would have been wrong here. Google's token-refresh grant doesn't validate `redirect_uri`, so the copied `refresh_token`/`access_token` should work fine against this repo's own callback URL without needing a fresh consent flow.
+- Updated `ENV_DEV` (project variable, file type) via the GitLab REST API using the stored `oauth2` git-credential token; verified the write by re-fetching and hash-comparing every one of the 133 resulting keys against what was sent — zero mismatches.
+- Stopped the VPS's `autosnab_backend_mvp4` container (`docker compose stop backend` on `78.17.160.248`; `caddy` left running) — this also stops `autosnab_mvp`'s own bot/API, not just Telegram polling, since the native bot runs inside the same FastAPI process, not a separate container.
+- Triggered a fresh `develop` pipeline via the API (`#755`) to bake the new `ENV_DEV` content into a redeployed container — passed all stages. `curl https://avtosnab.testant.online/docparser/health/runtime` → `200`, `database.ready: true`.
+- Verified via the established temporary-CI-debug-job technique (`[[gitlab-ci-actor-identity-access]]`-adjacent pattern, branch `tmp/debug-logs-verify`, deleted after use): the redeployed container (`StartedAt` matching the `#755` deploy) produced zero `error`/`exception`/`traceback`/`conflict` log lines, and FastAPI's lifespan has no try/except around `start_bot()` — if the bot's `Bot(token=...)`/`delete_webhook()` calls had raised (e.g. on a bad token), the entire app startup would have failed and `/health/runtime` would not be returning `200`. The absence of the expected `"Native Telegram bot polling started."` INFO line is inconclusive on its own (this app never configures root/module logging level anywhere — diadoc/sbis scheduler startup logs are equally absent from the same container's logs), not evidence of failure.
+- **Not done / not verified**: an actual real-world Telegram message round-trip through the bot (only inferred healthy via the absence of startup errors, not a live `/status` or document upload test); whether Google Sheets writes actually succeed now (OAuth token copied from a working VPS source, but not exercised with a real upload against this repo's Sheets code path yet); the VPS backend stays stopped until someone restarts it (`docker compose start backend` on `78.17.160.248` — its own bot/API is fully down, not just idle, until then).
+
+## Guiding note for future `ENV_DEV` changes
+
+Before ever copying a `.env` wholesale between `autosnab_mvp`'s VPS and this repo's `ENV_DEV` again: diff by key name and by value hash first (never print raw secret values into chat/tool output — `grep -oE '^[A-Z0-9_]+='` for names, `sha256sum` for value-equality checks). The two envs are not "one behind the other" — each has config unique to its own deploy shape (Postgres vs. SQLite, Diadoc/SBIS full integration vs. VPS's leaner set, differing OAuth redirect URIs). A blind overwrite in either direction will regress the other.
+
 ### Rollback
 
 Both toggles are independently reversible at any point: set
