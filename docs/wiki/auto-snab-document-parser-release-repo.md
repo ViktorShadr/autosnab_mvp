@@ -768,6 +768,24 @@ Not caught anywhere in the call chain, so the bot silently dies mid-update with 
 
 **Not done**: no code change to make this self-healing (e.g., an entrypoint step that `chown`s as root before dropping to the `app` user, or catching this exception in `bot_gateway_service.py` to reply to the user instead of dying silently) — the user explicitly asked for the `chown`-only fix, not a code change. Also not yet confirmed with a real end-to-end bot upload after the fix (only the filesystem permission itself was verified).
 
+## Real infra blocker found, 2026-08-02: OpenAI API is geo-blocked from this repo's own deploy host (Yandex Cloud, Moscow)
+
+Once the same-day `ENV_DEV` fix (above) populated a real `OPENAI_API_KEY`, invoice parsing started failing with a *new* error instead of an auth error:
+
+```
+OpenAI invoice parsing failed: Error code: 403 - {'error': {'code': 'unsupported_country_region_territory', 'message': 'Country, region, or territory not supported', 'param': None, 'type': 'request_forbidden'}}
+```
+
+**Root cause, confirmed directly (not guessed) via a temporary debug-CI job**: `docker exec` into the live container and `curl https://api.openai.com/v1/models` (even with a fake bearer token) returns a bare `403` — this is a network/geo-level block, not a credential problem. `curl https://ifconfig.me` from inside the same container returns `217.28.228.152`; `ipinfo.io` resolves that to **Moscow, Russia, AS200350 Yandex.Cloud LLC**. OpenAI blocks API access from Russia at the network level regardless of key validity.
+
+**For contrast**, `autosnab_mvp`'s own personal VPS (`78.17.160.248`, where the copied `OPENAI_API_KEY` has always worked) resolves to **Paris, France, AS57043 HOSTKEY B.V.** — not blocked. This is the actual reason OpenAI parsing has always worked there and not here: it was never really about the key, and today's `ENV_DEV` fix (copying that same key) could not have fixed this on its own — it just swapped an "empty key" failure for a "geo-blocked" failure, surfacing the real, deeper problem for the first time.
+
+**Practical implication**: this repo's `develop` → `deploy-dev` pipeline deploys onto Yandex Cloud infrastructure physically located in Russia. As long as that stays true, **no valid `OPENAI_API_KEY` will ever make direct OpenAI calls succeed from this environment** — this is an infrastructure-level blocker, not something fixable via `ENV_DEV` or application code alone.
+
+**Likely-relevant, not yet investigated**: the 2026-07-30 audit of this project's GitLab CI/CD variables noted (but didn't investigate, out of that session's Google/OpenAI-only scope) a group-level inherited variable `ENV_PROXY` (File, Protected) under the `antipov-backend` group — plausibly provisioned by DevOps exactly for this kind of sanctioned-country egress problem. Could not confirm its contents or intended use this session: `GET /groups/antipov-backend/variables` returns `403 Forbidden` for this account (consistent with the 2026-07-28 finding that group settings aren't accessible here). The codebase currently has **zero proxy support anywhere** — no `HTTPS_PROXY`/`OPENAI_BASE_URL`/custom `httpx` client wiring in `openai_invoice_parser_service.py` or `config.py` — so even if `ENV_PROXY` is populated correctly, nothing in the app would currently use it for outbound OpenAI calls.
+
+**Not done**: no fix attempted (this needs an infra/ownership decision, not a quick patch like the `chown` fix above) — flagged to the user, who is deciding whether to (a) ask DevOps (Aliaksandr Nikifarau, owner of `ci-templates`/`ENV_PROXY`) what `ENV_PROXY` is for and whether it's meant to cover this, or (b) have the code side (an `HTTPS_PROXY`-aware or `base_url`-redirected OpenAI client) built proactively so it's ready once a proxy is confirmed. Nothing changed in code or `ENV_DEV` for this issue.
+
 ## Guiding note for future `ENV_DEV` changes
 
 Before ever copying a `.env` wholesale between `autosnab_mvp`'s VPS and this repo's `ENV_DEV` again: diff by key name and by value hash first (never print raw secret values into chat/tool output — `grep -oE '^[A-Z0-9_]+='` for names, `sha256sum` for value-equality checks). The two envs are not "one behind the other" — each has config unique to its own deploy shape (Postgres vs. SQLite, Diadoc/SBIS full integration vs. VPS's leaner set, differing OAuth redirect URIs). A blind overwrite in either direction will regress the other.
