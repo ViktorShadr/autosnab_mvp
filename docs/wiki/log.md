@@ -1594,3 +1594,7 @@
 - Post-deploy verification, all via `docker exec` inside the actually-running container: `image_quality_rejected` wired into `extract_invoice_document`, `_image_quality_rejections`/`_quality_gate_failure_report` present, `quality_rejected` wired into `_bot_status_message`/`_process_bot_upload_background`, `CRITICAL_BLUR_SCORE`/`_tesseract_orientation` present in the preparation service, `dry_weight_unknown`+`in_brine` present together in `SYSTEM_PROMPT` (confirms the same-day packaging-facts prompt fix rode along too, since it touches the same file). `pytesseract.get_tesseract_version()` returns a live `5.5.0`. `docker inspect` confirms `status=running health=healthy`; `/health/runtime` returns `{"status":"ok","database":{"ready":true}}`.
 - Not done: no live end-to-end test of an actual bad photo being rejected through the real bot/upload flow; `mineru`/`hybrid` backends still not covered by the gate; Lilia not yet notified that this shipped.
 - Full detail in `docs/wiki/invoice-recognition-hardening-plan.md` → "Hard pre-recognition quality gate ported from `auto-snab-document-parser` (2026-07-31)" → "Deployed live" section.
+## [2026-08-02] doc | OpenAI invoice parser system prompt documented in wiki
+
+- Создана страница `openai-invoice-parser-prompt.md`: полный system prompt, модель (gpt-5-mini), принцип работы, таблица ключевых ограничений.
+- Добавлена в index.md.
