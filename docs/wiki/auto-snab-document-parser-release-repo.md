@@ -802,6 +802,10 @@ Both bots share one `TELEGRAM_BOT_TOKEN` (copied into `ENV_DEV` on 2026-08-02), 
 
 **Not done / open — explicitly temporary**: once DevOps confirms the OpenAI-egress proxy fix works from the GitLab dev host, revert: set `TELEGRAM_BOT_ENABLED=true` back in `ENV_DEV`, redeploy, and stop the VPS's `autosnab_backend_mvp4` container again to avoid the same token conflict in reverse.
 
+## Update, 2026-08-03 (same day): proxy fix status pinged with Pavel, still pending
+
+Told Pavel via Telegram (18:51) that the proxy on the dev-environment host still isn't working — GPT requests aren't going through — and that Alexander (who owns the gateway/egress side per the 2026-08-02 blocker above) had already been messaged the day before with no response yet. Pavel replied he'd check ("Сейчас уточню" / "Посмотрит сейчас", 18:54–18:57). No resolution confirmed in the chat as of this writing — still the same open item as the 2026-08-02 "Not done" note (DevOps decision on `ENV_PROXY` / proxy-aware OpenAI client), just escalated, not resolved.
+
 ## Guiding note for future `ENV_DEV` changes
 
 Before ever copying a `.env` wholesale between `autosnab_mvp`'s VPS and this repo's `ENV_DEV` again: diff by key name and by value hash first (never print raw secret values into chat/tool output — `grep -oE '^[A-Z0-9_]+='` for names, `sha256sum` for value-equality checks). The two envs are not "one behind the other" — each has config unique to its own deploy shape (Postgres vs. SQLite, Diadoc/SBIS full integration vs. VPS's leaner set, differing OAuth redirect URIs). A blind overwrite in either direction will regress the other.

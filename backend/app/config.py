@@ -148,6 +148,16 @@ class Settings(BaseSettings):
     openai_image_detail: str = "high"
     openai_debug_log_enabled: bool = True
     openai_debug_log_dir: str = "exports/openai_debug"
+
+    # Optional Langfuse tracing for the OpenAI invoice-parse call (observability/
+    # metrics only, never required for the pipeline to run). Off by default;
+    # missing credentials also disable it even if the flag is true. See
+    # docs/wiki/langfuse-observability-integration-plan.md.
+    langfuse_enabled: bool = False
+    langfuse_public_key: str | None = None
+    langfuse_secret_key: str | None = None
+    langfuse_host: str = "https://cloud.langfuse.com"
+
     bot_upload_max_file_bytes: int = 20_000_000
     bot_api_shared_secret: str | None = None
     telegram_bot_token: str | None = None

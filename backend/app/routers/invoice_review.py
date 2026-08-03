@@ -1356,6 +1356,12 @@ def _process_invoice_upload(
         if upload_trace_id:
             append_trace_log(upload_trace_id, log)
 
+    # Langfuse tracing tag (see docs/wiki/langfuse-observability-integration-plan.md):
+    # falls back to "invoice_review" for the direct /upload-photo web endpoint,
+    # which doesn't go through the bot-ingestion journal and so has no
+    # source_metadata of its own.
+    trace_source_channel = (source_metadata or {}).get("source_channel") or "invoice_review"
+
     source_paths = file_paths or [file_path]
     source_names = file_names or [file_name]
     if len(source_paths) == 1:
@@ -1364,6 +1370,8 @@ def _process_invoice_upload(
             source_names[0],
             extraction_method=extraction_method,
             on_log=trace_log,
+            source_channel=trace_source_channel,
+            user_id=user_id,
         )
     else:
         extraction = extract_invoice_document_set(
@@ -1371,6 +1379,8 @@ def _process_invoice_upload(
             source_names,
             extraction_method=extraction_method,
             on_log=trace_log,
+            source_channel=trace_source_channel,
+            user_id=user_id,
         )
     parsed = extraction["payload"]
     pipeline_logs = extraction.get("pipeline_logs", [])

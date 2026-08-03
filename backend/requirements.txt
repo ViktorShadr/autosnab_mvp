@@ -8,6 +8,7 @@ python-multipart==0.0.20
 pytest==8.3.4
 httpx==0.28.1
 openai>=2.26.0,<3
+langfuse>=4.14,<5
 pypdf>=5.1.0,<7
 pillow>=11.0.0,<13
 opencv-python>=4.10.0,<5

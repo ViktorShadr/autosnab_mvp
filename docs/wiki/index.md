@@ -33,4 +33,5 @@
 - [auto-snab-document-parser-porting-plan.md](./auto-snab-document-parser-porting-plan.md)
 - [auto-snab-document-parser-release-repo.md](./auto-snab-document-parser-release-repo.md)
 - [openai-invoice-parser-prompt.md](./openai-invoice-parser-prompt.md)
+- [langfuse-observability-integration-plan.md](./langfuse-observability-integration-plan.md)
 - [log.md](./log.md)

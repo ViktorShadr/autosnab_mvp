@@ -928,6 +928,7 @@ def _parse_unstructured_document(path: Path) -> InvoiceReviewCreateRequest:
         str(path),
         path.name,
         extraction_method=settings.diadoc_unstructured_extraction_method,
+        source_channel="diadoc",
     )
     if extraction.get("stop_recommended"):
         raise ValueError(extraction.get("error") or "Не удалось разобрать вложение Диадок")
