@@ -4,7 +4,7 @@ source: session
 created: 2026-08-03
 updated: 2026-08-03
 tags: [observability, langfuse, openai, architecture]
-status: implemented, self-audited against best practices — off by default, no live account yet
+status: live on the VPS — real Langfuse Cloud account connected and verified end-to-end
 ---
 
 # Langfuse Observability Integration
@@ -95,16 +95,68 @@ call site that talks to OpenAI in the invoice pipeline.
   / 11 pre-existing failures (same baseline as before this change, confirmed
   via `git stash`) — zero regressions.
 
+## Update, 2026-08-03 (later same day): merged to `develop`, deployed live to the VPS, real Langfuse account connected and verified end-to-end
+
+User merged `feature/langfuse-observability-tracing` into `develop`
+(`3c21e4d`, no-ff merge, pushed to GitHub) after both feature commits were
+tested clean (351 passed / same 11 pre-existing baseline failures). Deployed
+to the personal VPS (`78.17.160.248`, `autosnab_backend_mvp4` — currently the
+live production bot, see `auto-snab-document-parser-release-repo.md`'s
+2026-08-03 temporary-rollback entry) via the established `git archive` +
+`scp` pattern (`/opt/autosnab_mvp` there is a plain directory, not a git
+clone). Since `requirements.txt` changed (new `langfuse` dependency), this
+needed a full `docker compose build backend` (not just a restart) — image
+built clean, `langfuse-4.14.2` installed. Verified the deploy actually took
+via `inspect.getsource` inside the running container (per the established
+caution from a prior VPS deploy where a `--no-cache`-free rebuild silently
+kept a stale file despite correct host source) before trusting it, not just
+the build log.
+
+**Real Langfuse Cloud credentials added** (user provided
+`LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY`/`LANGFUSE_BASE_URL` in chat,
+EU region — matches this repo's `LANGFUSE_HOST` default). Appended to the
+VPS `.env` via a temp file over `scp` rather than as inline SSH command
+arguments (avoids the secret sitting in `ps aux` output or shell history on
+the VPS during transfer); the local temp file was deleted immediately after.
+Set `LANGFUSE_ENABLED=true` at the same time — inferred intent (there is no
+reason to add real keys otherwise), not separately asked, but flagged to the
+user. Container recreated (`docker compose up -d backend`, no rebuild needed
+this time — only `.env` changed) — healthy immediately, clean logs.
+
+**Live verification (closes the skill's own required step 3 — "execute
+end-to-end, fetch and audit the real trace", not skippable per its own
+instructions)**:
+
+1. `client.auth_check()` inside the container → `True` — keys are valid
+   against Langfuse Cloud.
+2. Ran the real `start_invoice_generation`/`finish_invoice_generation`
+   functions directly inside the container with a clearly-tagged synthetic
+   call (`source_channel="deployment_smoke_test"`,
+   `user_id="claude-deploy-check"`) so it's unambiguously identifiable as a
+   verification trace, not real user data. Flushed explicitly.
+3. Queried the Langfuse public API directly (`GET /api/public/traces`,
+   basic-auth with the same keys) and fetched the created trace
+   (`78dee092aef7030a2318084fd600d629`) by ID — **confirmed live and correct**:
+   trace name `parse-invoice` (verb-first, as fixed in the self-audit above),
+   one `GENERATION` observation with `model: gpt-5-mini`, clean `input`
+   (just the evidence text, no raw blob), `output`, `usage` (mapped
+   correctly: `{unit: TOKENS, input: 1, output: 1, total: 2}`), `tags:
+   ['deployment_smoke_test']`, and `userId: claude-deploy-check` — every
+   best-practice fix from the self-audit confirmed working end-to-end
+   against the real service, not just unit-tested against fakes.
+
+**Current live state**: `LANGFUSE_ENABLED=true` on the VPS, real invoice
+uploads through the Telegram bot now produce real `parse-invoice` traces in
+Langfuse Cloud. Not yet done: looking at a real (non-synthetic) invoice
+trace with the user in the Langfuse UI (the skill's step 4, "Explore Traces
+With the User") — next time a real document is uploaded, worth pointing the
+user at the Traces view to see what real data looks like there.
+
 ## Not done yet — explicitly out of scope this session
 
-- **No live Langfuse account exists yet.** Nothing has actually sent a trace
-  anywhere — `langfuse_enabled` stays `False` in every real `.env`/`ENV_DEV`
-  until the user creates a Langfuse Cloud project and gets real
-  `public_key`/`secret_key`.
-- **Not deployed anywhere** (personal VPS `78.17.160.248` or
-  `auto-snab-document-parser`'s `ENV_DEV`) — this is `autosnab_mvp`
-  (session/working repo) only; porting to the release repo is a separate,
-  later step per the usual pattern (see
+- **Not deployed to `auto-snab-document-parser`'s `ENV_DEV`** — this is
+  `autosnab_mvp` (session/working repo) only; porting to the release repo is
+  a separate, later step per the usual pattern (see
   `docs/wiki/auto-snab-document-parser-release-repo.md`).
 - **No prompt-versioning/dataset/eval usage yet** — this session only wires
   up per-call tracing (the foundation). Turning `SYSTEM_PROMPT` into a
