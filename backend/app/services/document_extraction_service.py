@@ -38,6 +38,8 @@ def extract_invoice_document(
     extraction_method: str | None = None,
     on_log: Any | None = None,
     *,
+    source_channel: str | None = None,
+    user_id: str | None = None,
     _evidence_override: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Extract evidence and return a normalized invoice payload."""
@@ -185,6 +187,10 @@ def extract_invoice_document(
             ),
             on_log=on_log,
         )
+        if source_channel:
+            evidence["source_channel"] = source_channel
+        if user_id:
+            evidence["user_id"] = user_id
         try:
             payload = parse_invoice_with_openai(evidence)
         except OpenAIInvoiceParserError as exc:
@@ -348,6 +354,9 @@ def extract_invoice_document_set(
     fallback_filenames: list[str] | None = None,
     extraction_method: str | None = None,
     on_log: Any | None = None,
+    *,
+    source_channel: str | None = None,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
     if not file_paths:
         raise DocumentExtractionError("At least one document page is required.")
@@ -360,6 +369,8 @@ def extract_invoice_document_set(
             filenames[0],
             extraction_method=extraction_method,
             on_log=on_log,
+            source_channel=source_channel,
+            user_id=user_id,
         )
     backend = _resolve_extraction_method(extraction_method)
     if backend != "openai":
@@ -424,6 +435,8 @@ def extract_invoice_document_set(
         f"{len(file_paths)} pages: {filenames[0]}",
         extraction_method="openai",
         on_log=on_log,
+        source_channel=source_channel,
+        user_id=user_id,
         _evidence_override=combined,
     )
 

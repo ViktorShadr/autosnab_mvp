@@ -159,19 +159,36 @@ def parse_invoice_with_openai(
     }
     if settings.openai_reasoning_effort:
         request_kwargs["reasoning"] = {"effort": settings.openai_reasoning_effort}
-    # request_payload has no image bytes (those are only added to request_input
-    # below), so it's safe to reuse as-is for the Langfuse trace input.
-    lf_generation = start_invoice_generation(trace_input=request_payload, model=settings.openai_invoice_model)
+    # Langfuse best practice: trace input/output should be what a reviewer
+    # needs at a glance (the evidence text being parsed), not a raw blob of
+    # every field -- filename/page metadata/provider attempts go in metadata
+    # instead. No image bytes here either way (those are only added to
+    # request_input below, for the actual OpenAI call).
+    lf_trace_input = {
+        "raw_text": request_payload.get("raw_text"),
+        "structured_document": request_payload.get("structured_document"),
+    }
+    lf_metadata = {
+        key: value for key, value in request_payload.items() if key not in ("raw_text", "structured_document")
+    }
+    lf_generation = start_invoice_generation(
+        trace_input=lf_trace_input,
+        model=settings.openai_invoice_model,
+        source_channel=evidence.get("source_channel"),
+        user_id=evidence.get("user_id"),
+    )
     try:
         response = _call_responses_parse_with_timeout_retry(api_client, request_kwargs)
     except Exception as exc:  # noqa: BLE001 - provider failures are pipeline errors
-        finish_invoice_generation(lf_generation, error=str(exc))
+        finish_invoice_generation(lf_generation, error=str(exc), metadata=lf_metadata)
         _write_debug_log(evidence, None, None, error=str(exc))
         raise OpenAIInvoiceParserError(f"OpenAI invoice parsing failed: {exc}") from exc
 
     parsed = getattr(response, "output_parsed", None)
     if parsed is None:
-        finish_invoice_generation(lf_generation, error="OpenAI returned no structured invoice payload.")
+        finish_invoice_generation(
+            lf_generation, error="OpenAI returned no structured invoice payload.", metadata=lf_metadata
+        )
         raise OpenAIInvoiceParserError("OpenAI returned no structured invoice payload.")
     validated = parsed if isinstance(parsed, InvoiceParserResult) else InvoiceParserResult.model_validate(parsed)
     validated.source_trace = _source_trace(evidence, validated.source_trace)
@@ -194,8 +211,7 @@ def parse_invoice_with_openai(
         output=normalized.model_dump(mode="json"),
         usage=usage_details_from_openai_response(response),
         metadata={
-            "source_type": evidence.get("source_type"),
-            "ocr_used": bool(evidence.get("ocr_used")),
+            **lf_metadata,
             "review_flags_count": len(validated.review_flags),
             "needs_review_items": sum(1 for item in validated.items if item.needs_review),
         },

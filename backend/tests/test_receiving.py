@@ -378,7 +378,7 @@ def test_upload_photo_passes_selected_extraction_method(monkeypatch, tmp_path):
     captured = {}
     monkeypatch.setattr(invoice_review_router.settings, "uploaded_invoices_dir", str(tmp_path))
 
-    def fake_extract(file_path, fallback_filename=None, extraction_method=None, on_log=None):
+    def fake_extract(file_path, fallback_filename=None, extraction_method=None, on_log=None, **_kwargs):
         captured["file_path"] = file_path
         captured["fallback_filename"] = fallback_filename
         captured["extraction_method"] = extraction_method
@@ -430,7 +430,7 @@ def test_upload_photo_stops_and_returns_pipeline_logs_for_empty_result(monkeypat
 
     monkeypatch.setattr(invoice_review_router.settings, "uploaded_invoices_dir", str(tmp_path))
 
-    def fake_extract(file_path, fallback_filename=None, extraction_method=None, on_log=None):
+    def fake_extract(file_path, fallback_filename=None, extraction_method=None, on_log=None, **_kwargs):
         return {
             "provider": "openai_empty_evidence",
             "selected_method": "openai",
@@ -477,7 +477,7 @@ def test_upload_trace_endpoint_returns_live_trace(monkeypatch, tmp_path):
 
     monkeypatch.setattr(invoice_review_router.settings, "uploaded_invoices_dir", str(tmp_path))
 
-    def fake_extract(file_path, fallback_filename=None, extraction_method=None, on_log=None):
+    def fake_extract(file_path, fallback_filename=None, extraction_method=None, on_log=None, **_kwargs):
         if on_log:
             on_log(
                 {
@@ -543,7 +543,7 @@ def test_upload_photo_live_returns_trace_id_and_background_result(monkeypatch, t
 
     monkeypatch.setattr(invoice_review_router.settings, "uploaded_invoices_dir", str(tmp_path))
 
-    def fake_extract(file_path, fallback_filename=None, extraction_method=None, on_log=None):
+    def fake_extract(file_path, fallback_filename=None, extraction_method=None, on_log=None, **_kwargs):
         if on_log:
             on_log(
                 {

@@ -193,17 +193,34 @@ def test_openai_parser_records_langfuse_generation_when_enabled(monkeypatch):
             "ocr_used": True,
             "extraction_method": "google_drive_ocr",
             "raw_text": "invoice evidence",
+            "page_sources": [{"page_number": 1, "filename": "invoice.jpg", "source_type": "image"}],
+            "source_channel": "sbis",
+            "user_id": "user-1",
         },
         client=SimpleNamespace(responses=FakeResponses()),
     )
 
     # The pipeline result is unaffected by tracing being on.
     assert result["parser_provider"] == "openai"
+    assert fake_client.started_with["name"] == "parse-invoice"
     assert fake_client.started_with["as_type"] == "generation"
     assert fake_client.started_with["model"] == "gpt-5-mini"
-    # No raw image bytes leak into the trace input -- only the same metadata
-    # payload already sent to OpenAI as text, never the base64 page images.
-    assert "page_sources" in fake_client.started_with["input"]
+    # Best-practices split: trace input is just the evidence text being
+    # parsed (readable at a glance), not a raw blob of every field -- no
+    # image bytes and no filename/page metadata/provider-attempts noise.
+    assert fake_client.started_with["input"] == {"raw_text": "invoice evidence", "structured_document": None}
+    # The rest of the evidence payload (filename/page metadata/etc.) lives in
+    # metadata instead, set when the generation is closed.
+    assert fake_client.generation.updated_with["metadata"]["page_sources"] == [
+        {
+            "page_number": 1,
+            "filename": "invoice.jpg",
+            "source_type": "image",
+            "transformations": [],
+            "quality": {},
+        }
+    ]
+    assert fake_client.generation.updated_with["metadata"]["source_type"] == "image"
     assert fake_client.generation.updated_with["usage_details"] == {"input": 42, "output": 7, "total": 49}
     assert fake_client.generation.ended is True
 

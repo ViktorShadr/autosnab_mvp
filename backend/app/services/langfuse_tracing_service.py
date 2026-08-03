@@ -36,15 +36,34 @@ def _get_client() -> Any | None:
     return _client
 
 
-def start_invoice_generation(*, trace_input: dict[str, Any], model: str) -> Any | None:
+def start_invoice_generation(
+    *,
+    trace_input: dict[str, Any],
+    model: str,
+    source_channel: str | None = None,
+    user_id: str | None = None,
+) -> Any | None:
     """Start a Langfuse "generation" observation for one invoice-parse call.
     Returns None if tracing is off/unavailable; the returned handle (or None)
-    must be passed to finish_invoice_generation regardless."""
+    must be passed to finish_invoice_generation regardless.
+
+    Named "parse-invoice" (verb-first) per Langfuse's own naming guidance
+    (https://langfuse.com/docs/observability/best-practices). source_channel
+    (e.g. "telegram_bot"/"sbis"/"diadoc") becomes a trace tag and user_id a
+    trace attribute -- both propagated via propagate_attributes() since
+    start_observation() itself has no user_id/tags parameters (those are
+    trace-level, not observation-level, in the SDK)."""
     client = _get_client()
     if client is None:
         return None
     try:
-        return client.start_observation(name="invoice-parse", as_type="generation", input=trace_input, model=model)
+        from langfuse import propagate_attributes
+
+        tags = [source_channel] if source_channel else None
+        with propagate_attributes(user_id=user_id, tags=tags):
+            return client.start_observation(
+                name="parse-invoice", as_type="generation", input=trace_input, model=model
+            )
     except Exception:  # noqa: BLE001 - tracing must never break invoice parsing
         logger.exception("Langfuse tracing failed while starting the invoice-parse observation.")
         return None
@@ -64,7 +83,7 @@ def finish_invoice_generation(
         return
     try:
         if error is not None:
-            generation.update(level="ERROR", status_message=error)
+            generation.update(level="ERROR", status_message=error, metadata=metadata)
         else:
             generation.update(output=output, usage_details=usage, metadata=metadata)
     except Exception:  # noqa: BLE001 - tracing must never break invoice parsing

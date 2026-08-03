@@ -4,7 +4,7 @@ source: session
 created: 2026-08-03
 updated: 2026-08-03
 tags: [observability, langfuse, openai, architecture]
-status: implemented (code only — off by default, no live account yet)
+status: implemented, self-audited against best practices — off by default, no live account yet
 ---
 
 # Langfuse Observability Integration
@@ -122,13 +122,159 @@ call site that talks to OpenAI in the invoice pipeline.
   built from Langfuse's own public API/SDK, not from their real-world
   usage experience.
 
+## Self-audit against Langfuse best practices (2026-08-03, later same day)
+
+User asked to install the official Langfuse Claude Code skill
+(`github.com/langfuse/skills`, official `langfuse` GitHub org — inspected
+before installing: `SKILL.md` + `references/*.md`, scoped `allowed-tools`
+restricted to `langfuse.com`/`langfuse-cli`, nothing suspicious) and use it
+to audit/improve the tracing added earlier today. Installed at
+`.claude/skills/langfuse/` (project-level, committed — available to anyone
+using Claude Code on this repo).
+
+Per the skill's "Documentation First" principle, fetched current docs fresh
+rather than relying on memory:
+`https://langfuse.com/integrations/model-providers/openai-py` (confirmed:
+the OpenAI Python drop-in wrapper's structured-output support only
+documents `client.chat.completions.parse(...)`, nothing about the Responses
+API this repo actually uses — validates the earlier decision to
+hand-instrument rather than use the auto-wrapper) and
+`https://langfuse.com/docs/observability/best-practices` (fetched fresh per
+the skill's explicit instruction to never audit from memory). Findings and
+fixes:
+
+- **Observation name was noun-first (`invoice-parse`).** Best practices:
+  "Use active language... verb first." Renamed to **`parse-invoice`**.
+- **Trace `input` was the entire evidence payload** (filename, source_type,
+  page metadata, provider_attempts, evidence_errors, raw_text, etc.) — a
+  direct violation of "Set [input] to what a reviewer needs at a glance...
+  not a raw JSON blob of function arguments. If you need the raw payload
+  for debugging, put it in metadata." **Split**: `input` is now just
+  `{"raw_text": ..., "structured_document": ...}` (the actual evidence text
+  being parsed — the doc's own classification-task example: "the text being
+  classified"); everything else moved to `metadata`.
+- **No trace-level `tags`/`user_id`.** Traced 3 real call sites of
+  `extract_invoice_document`/`extract_invoice_document_set`
+  (`document_extraction_service.py`) back through the codebase:
+  `invoice_review.py` (Telegram bot / web upload), `sbis_sync_service.py`,
+  `diadoc_sync_service.py` — matching the instrumentation guide's own
+  "Multiple distinct endpoints/features → feature tag" row, not a
+  speculative addition. Reused the codebase's own existing
+  `source_channel` concept (`"telegram_bot"`/`"sbis"`/`"diadoc"`, already a
+  first-class value on the `IngestionUpload.source_channel` DB column and
+  used elsewhere in `parser_metadata`) as the tag, and the `user_id` already
+  flowing through `_process_invoice_upload`'s existing `user_id` parameter
+  (from `bot_gateway_service.py`'s `upload.user_id`) as the trace's user ID.
+  New optional keyword-only params on `extract_invoice_document`/
+  `extract_invoice_document_set` (`source_channel`, `user_id`), purely
+  additive — every existing caller that doesn't pass them keeps working
+  identically. Wired via `evidence["source_channel"]`/`evidence["user_id"]`
+  before the `parse_invoice_with_openai(evidence)` call, then via
+  `from langfuse import propagate_attributes` (the correct SDK v4 API for
+  trace-level `user_id`/`tags` — confirmed via
+  `https://langfuse.com/docs/observability/features/users.md` and
+  `.../tags.md`; `start_observation()` itself has no `user_id`/`tags`
+  params, those are trace-level not observation-level).
+- **Model name / token usage / good names beyond this** were already correct
+  from the first pass (model passed, `usage_details` mapped from the OpenAI
+  Responses-API `usage` object, static non-dynamic name).
+- **Not changed**: `environment` attribute (`propagate_attributes` supports
+  it, but this codebase has no existing prod/dev/staging distinction to
+  source it from — flagged as a possible future addition, not fabricated
+  here) and `session_id` (no multi-turn/multi-trace conversation concept
+  exists for one invoice upload — a single trace per document is already
+  the correct scope per the best-practices doc's own guidance on trace
+  scope).
+
+**Regression check**: `extract_invoice_document`/`_set`'s new kwargs broke 3
+test fakes in `test_receiving.py` that didn't accept `**kwargs`
+(`TypeError: got an unexpected keyword argument 'source_channel'`) — fixed
+by adding `**_kwargs` to those 4 fake stubs (same fix applies to a 4th test
+that was already in the pre-existing-failure baseline for an unrelated
+reason). Full suite after all fixes: **351 passed / same 11 pre-existing
+failures as the documented baseline** (confirmed against the baseline
+established earlier this session), zero regressions.
+
+**Not done — explicit limitation**: the skill's workflow step 3 ("Run and
+Self-Audit the Traces") requires executing the instrumented path end-to-end
+and fetching a real trace from Langfuse to verify the fixes above actually
+render correctly in the UI. **This cannot be done yet** — no live Langfuse
+account/keys exist (see "Not done yet" section above, unchanged). This
+audit is a code-level review against the documented best practices, not a
+live-trace-verified one. Once real credentials exist (see "Setup
+instructions" below), re-run this audit step live and confirm.
+
+## Setup instructions (2026-08-03)
+
+Written for `autosnab_mvp` (this repo) first — local/VPS `.env`, not
+`auto-snab-document-parser`'s `ENV_DEV` yet, per "Next steps" below.
+
+### 1. Create a Langfuse Cloud account and project
+
+Go to `https://cloud.langfuse.com` (**EU** region — matches this repo's
+`langfuse_host` default) or `https://us.cloud.langfuse.com` (**US** region,
+if chosen at signup) → sign up → create a new project (e.g.
+`autosnab-mvp`). **The region picked at signup matters**: if the project
+ends up on the US region, `LANGFUSE_HOST` must be changed to
+`https://us.cloud.langfuse.com` or the keys won't authenticate against the
+default EU host.
+
+### 2. Get API keys
+
+In the project: **Settings → API Keys → Create new API key**. This gives a
+`Public Key` (`pk-lf-...`) and a `Secret Key` (`sk-lf-...`) — the secret is
+shown once, save it immediately.
+
+### 3. Set them in `.env`
+
+The root `.env` (same file `docker-compose.yml` mounts into the container —
+see its `env_file`/volume config) is what matters for a real deploy. If it
+doesn't exist yet:
+```bash
+cp .env.example .env
+```
+(if it already exists, edit it directly — don't overwrite other secrets).
+Fill in the block already present from `.env.example`:
+```
+LANGFUSE_ENABLED=true
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_HOST=https://cloud.langfuse.com
+```
+
+### 4. Rebuild and restart the backend
+
+`langfuse` is a new dependency in `backend/requirements.txt`, so this needs
+an **image rebuild**, not just a restart:
+```bash
+docker compose build backend
+docker compose up -d backend
+```
+If testing on the personal VPS (`78.17.160.248`), deploy the
+`feature/langfuse-observability-tracing` branch specifically first — it
+isn't merged into `develop` yet.
+
+### 5. Verify a real trace appears
+
+Upload a real invoice through the bot or the web-upload page, then check
+the Langfuse UI → **Traces**. A record named `invoice-parse` should appear
+with the model, input (the same payload sent to OpenAI, no images), output
+(normalized JSON), and token usage (`input`/`output`/`total`).
+
+If no trace shows up, check `docker logs autosnab_backend_mvp4` — every
+Langfuse failure is logged (bad key, unreachable host, etc.) but never
+blocks the invoice pipeline, so the document still processes normally
+either way; the log line is the only signal something's wrong on the
+tracing side.
+
+### 6. Rollback
+
+Set `LANGFUSE_ENABLED=false` and restart — no image rebuild needed, this is
+a pure feature flag.
+
 ## Next steps, in order
 
-1. Create a Langfuse Cloud account/project, get `public_key`/`secret_key`.
-2. Set `LANGFUSE_ENABLED=true` + the two keys in a real `.env` (local or VPS
-   first, not `auto-snab-document-parser`'s `ENV_DEV` yet), run a real
-   invoice through the bot, confirm a trace appears in the Langfuse UI with
-   the expected input/output/usage.
-3. Only after that live check succeeds: decide whether to port this to
+1. Follow "Setup instructions" above to get one real trace flowing.
+2. Only after that live check succeeds: decide whether to port this to
    `auto-snab-document-parser` too, and whether to start the
    prompt-versioning/dataset work.

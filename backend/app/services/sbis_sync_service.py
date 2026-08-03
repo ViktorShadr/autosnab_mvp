@@ -408,7 +408,10 @@ def _process_document(
 
 def _parse_unstructured_document(path: Path) -> InvoiceReviewCreateRequest:
     extraction = extract_invoice_document(
-        str(path), path.name, extraction_method=settings.sbis_unstructured_extraction_method
+        str(path),
+        path.name,
+        extraction_method=settings.sbis_unstructured_extraction_method,
+        source_channel="sbis",
     )
     if extraction.get("stop_recommended"):
         raise ValueError(extraction.get("error") or "Не удалось разобрать вложение СБИС")
