@@ -353,6 +353,16 @@ User asked to identify, directly from the live server, which invoices recognize 
 
 **Not done this session**: recomputing actual numeric `blur_score`/`glare_ratio` values against the raw stored photos (the DB only ever stores the pass/fail text flags, never the underlying numbers, so no historical trail of real quality scores exists — only a fresh recomputation against files still on disk under `/app/uploads/invoices/` could produce them).
 
+## First real-world example of the "Низкое разрешение" warning band causing actual recognition damage (2026-08-03)
+
+The first real Telegram-bot upload traced through the new Langfuse integration (see `docs/wiki/langfuse-observability-integration-plan.md`) happened to be a low-resolution photo — surfaced the exact cost of the warning-not-block resolution band from the 2026-07-31 hard-gate port above, concretely for the first time.
+
+Photo's short side: **1224px** — inside the `LOW_RESOLUTION_SHORT_SIDE` (900px) to `MIN_QUALITY_SHORT_SIDE` (1500px) band in `document_image_preparation_service.py`, i.e. exactly the "Низкое разрешение... рекомендуется от 1500px" **warning**, not the `CRITICAL_QUALITY_SHORT_SIDE` (650px) hard stop. Confirms the gate behaved exactly as designed for this band (warn, don't block) — not a bug.
+
+**Downstream effect, visible end-to-end in the Langfuse trace**: `document_number`, `document_date`, and `supplier_name` all failed recognition outright (`severity: error`), `supplier_inn` failed validation, and `total_with_vat` didn't reconcile — while the main item table (larger text) still recognized fine (2 items, correct name/unit/quantity/price). This is a plausible mechanism for at least part of the 2026-07-29 "low-quality photos recognize poorly" complaint that the 2026-07-31 diagnostic above concluded was *not* about blur/glare (those never fired) — resolution-band photos in the 900-1500px warning zone can still cause real header/footer recognition loss even when the old blur/glare/dark/clipping metrics all pass clean, since those measure different things than raw pixel resolution.
+
+**Not done / not decided**: whether the 900-1500px band should be tightened toward a harder stop, given this first concrete evidence that it does cause real damage — flagged for a decision, not acted on unilaterally (would need more than one example before tuning a threshold that affects every upload).
+
 ## Delivery order
 
 ### Phase 0: freeze observable contracts
