@@ -10,6 +10,11 @@ from uuid import uuid4
 from app.config import settings
 from app.schemas.invoice_parser import InvoiceParserResult, InvoiceReviewFlag, InvoiceSourceTrace
 from app.services.invoice_normalization_service import normalize_invoice_result, to_legacy_invoice_payload
+from app.services.langfuse_tracing_service import (
+    finish_invoice_generation,
+    start_invoice_generation,
+    usage_details_from_openai_response,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -154,14 +159,19 @@ def parse_invoice_with_openai(
     }
     if settings.openai_reasoning_effort:
         request_kwargs["reasoning"] = {"effort": settings.openai_reasoning_effort}
+    # request_payload has no image bytes (those are only added to request_input
+    # below), so it's safe to reuse as-is for the Langfuse trace input.
+    lf_generation = start_invoice_generation(trace_input=request_payload, model=settings.openai_invoice_model)
     try:
         response = _call_responses_parse_with_timeout_retry(api_client, request_kwargs)
     except Exception as exc:  # noqa: BLE001 - provider failures are pipeline errors
+        finish_invoice_generation(lf_generation, error=str(exc))
         _write_debug_log(evidence, None, None, error=str(exc))
         raise OpenAIInvoiceParserError(f"OpenAI invoice parsing failed: {exc}") from exc
 
     parsed = getattr(response, "output_parsed", None)
     if parsed is None:
+        finish_invoice_generation(lf_generation, error="OpenAI returned no structured invoice payload.")
         raise OpenAIInvoiceParserError("OpenAI returned no structured invoice payload.")
     validated = parsed if isinstance(parsed, InvoiceParserResult) else InvoiceParserResult.model_validate(parsed)
     validated.source_trace = _source_trace(evidence, validated.source_trace)
@@ -179,6 +189,17 @@ def parse_invoice_with_openai(
         ocr_error=None if _evidence_has_image_pages(evidence) else evidence.get("error"),
     )
     payload = to_legacy_invoice_payload(normalized)
+    finish_invoice_generation(
+        lf_generation,
+        output=normalized.model_dump(mode="json"),
+        usage=usage_details_from_openai_response(response),
+        metadata={
+            "source_type": evidence.get("source_type"),
+            "ocr_used": bool(evidence.get("ocr_used")),
+            "review_flags_count": len(validated.review_flags),
+            "needs_review_items": sum(1 for item in validated.items if item.needs_review),
+        },
+    )
     _write_debug_log(evidence, validated, normalized)
     return payload
 

@@ -145,6 +145,102 @@ def test_openai_parser_uses_structured_response_and_returns_legacy_payload(tmp_p
     assert "quantity_multiplier" not in SYSTEM_PROMPT
 
 
+def test_openai_parser_records_langfuse_generation_when_enabled(monkeypatch):
+    from app.services import langfuse_tracing_service as tracing
+
+    parsed = InvoiceParserResult.model_validate(_parsed_invoice())
+    monkeypatch.setattr("app.services.openai_invoice_parser_service.settings.openai_debug_log_enabled", False)
+    monkeypatch.setattr(tracing.settings, "langfuse_enabled", True)
+    monkeypatch.setattr(tracing.settings, "langfuse_public_key", "pk-test")
+    monkeypatch.setattr(tracing.settings, "langfuse_secret_key", "sk-test")
+
+    class FakeGeneration:
+        def __init__(self):
+            self.updated_with = None
+            self.ended = False
+
+        def update(self, **kwargs):
+            self.updated_with = kwargs
+
+        def end(self):
+            self.ended = True
+
+    class FakeLangfuseClient:
+        def __init__(self):
+            self.started_with = None
+            self.generation = FakeGeneration()
+
+        def start_observation(self, **kwargs):
+            self.started_with = kwargs
+            return self.generation
+
+    fake_client = FakeLangfuseClient()
+    monkeypatch.setattr(tracing, "_get_client", lambda: fake_client)
+
+    class Usage:
+        input_tokens = 42
+        output_tokens = 7
+        total_tokens = 49
+
+    class FakeResponses:
+        def parse(self, **kwargs):
+            return SimpleNamespace(output_parsed=parsed, usage=Usage())
+
+    result = parse_invoice_with_openai(
+        {
+            "filename": "invoice.jpg",
+            "source_type": "image",
+            "ocr_used": True,
+            "extraction_method": "google_drive_ocr",
+            "raw_text": "invoice evidence",
+        },
+        client=SimpleNamespace(responses=FakeResponses()),
+    )
+
+    # The pipeline result is unaffected by tracing being on.
+    assert result["parser_provider"] == "openai"
+    assert fake_client.started_with["as_type"] == "generation"
+    assert fake_client.started_with["model"] == "gpt-5-mini"
+    # No raw image bytes leak into the trace input -- only the same metadata
+    # payload already sent to OpenAI as text, never the base64 page images.
+    assert "page_sources" in fake_client.started_with["input"]
+    assert fake_client.generation.updated_with["usage_details"] == {"input": 42, "output": 7, "total": 49}
+    assert fake_client.generation.ended is True
+
+
+def test_openai_parser_langfuse_failure_never_breaks_pipeline(monkeypatch):
+    from app.services import langfuse_tracing_service as tracing
+
+    parsed = InvoiceParserResult.model_validate(_parsed_invoice())
+    monkeypatch.setattr("app.services.openai_invoice_parser_service.settings.openai_debug_log_enabled", False)
+    monkeypatch.setattr(tracing.settings, "langfuse_enabled", True)
+    monkeypatch.setattr(tracing.settings, "langfuse_public_key", "pk-test")
+    monkeypatch.setattr(tracing.settings, "langfuse_secret_key", "sk-test")
+
+    class ExplodingClient:
+        def start_observation(self, **kwargs):
+            raise RuntimeError("langfuse cloud is unreachable")
+
+    monkeypatch.setattr(tracing, "_get_client", lambda: ExplodingClient())
+
+    class FakeResponses:
+        def parse(self, **kwargs):
+            return SimpleNamespace(output_parsed=parsed)
+
+    result = parse_invoice_with_openai(
+        {
+            "filename": "invoice.jpg",
+            "source_type": "image",
+            "ocr_used": True,
+            "extraction_method": "google_drive_ocr",
+            "raw_text": "invoice evidence",
+        },
+        client=SimpleNamespace(responses=FakeResponses()),
+    )
+
+    assert result["parser_provider"] == "openai"
+
+
 def test_openai_parser_retries_once_on_timeout_with_longer_timeout(monkeypatch):
     from openai import APITimeoutError
 
