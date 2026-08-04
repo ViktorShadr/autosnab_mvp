@@ -34,4 +34,5 @@
 - [auto-snab-document-parser-release-repo.md](./auto-snab-document-parser-release-repo.md)
 - [openai-invoice-parser-prompt.md](./openai-invoice-parser-prompt.md)
 - [langfuse-observability-integration-plan.md](./langfuse-observability-integration-plan.md)
+- [telegram-bot-ux-hardening-plan.md](./telegram-bot-ux-hardening-plan.md)
 - [log.md](./log.md)
