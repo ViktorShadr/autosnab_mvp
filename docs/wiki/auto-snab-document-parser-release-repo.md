@@ -1058,3 +1058,60 @@ behavior, with zero code rollback needed.
   dual-auth code merged into its own `develop` since 2026-07-29 but has not
   had its own `.env`/toggles touched either, and is a separate, lower-
   priority target from this repo's real-user-facing dev environment.
+
+## Langfuse tracing MR merged, then a real gap found and fixed: `LANGFUSE_ENABLED` missing from `ENV_DEV` (2026-08-04)
+
+Following the port documented above ("Langfuse tracing ported, 2026-08-04"),
+the MR was merged same-session — confirmed live via `git log origin/develop`
+(`1889c706`, pipeline `#864`, all 4 stages Passed).
+
+**User reported real symptom, not hypothetical**: "в langfuse не отображаются
+запросы к ИИ" (no AI requests showing up in Langfuse) after a real upload
+through the bot. Investigated live rather than guessing:
+
+- Deploy itself was fine — pipeline `#864` for the langfuse merge commit had
+  already passed all stages.
+- Read `ENV_DEV`'s actual key names via the GitLab UI (`Edit variable` panel
+  + a JS snippet reading the textarea, key names only — same technique as
+  the 2026-07-30 audit): `LANGFUSE_SECRET_KEY`, `LANGFUSE_PUBLIC_KEY`, and
+  `LANGFUSE_BASE_URL` were present (copied in from chat earlier), but
+  **`LANGFUSE_ENABLED` was entirely absent**. `backend/app/config.py`'s
+  `langfuse_enabled: bool = False` defaults off, so
+  `langfuse_tracing_service.py`'s `_get_client()` returned `None` before
+  ever reaching the network — code deployed correctly, keys valid, zero
+  errors anywhere in the logs, just silent no-op tracing. Root cause
+  confirmed from the actual variable content, not assumed from the port
+  history.
+- Incidental, harmless: the code reads `LANGFUSE_HOST`, not
+  `LANGFUSE_BASE_URL` (which this `ENV_DEV` used, copied from how the value
+  was described in chat when it was first added). Not a bug here since
+  `LANGFUSE_HOST`'s default (`https://cloud.langfuse.com`) already matches
+  the EU region in use — flagged for future reference, not fixed (`
+  LANGFUSE_BASE_URL` is just inert dead weight in this config, same pattern
+  as `GOOGLE_AUTH_MODE` above).
+- **User added `LANGFUSE_ENABLED=true` to `ENV_DEV` themselves** (assistant
+  write access to that variable is still blocked by the sandbox classifier,
+  same as every prior edit) and triggered a fresh manual pipeline (`#865`) —
+  confirmed necessary and sufficient: editing a GitLab CI/CD file variable
+  does not itself redeploy, so the running container wouldn't have picked
+  up the new value without it.
+- **Confirmed working by the user** after the redeploy: "всё работает" — a
+  real invoice upload through the bot now produces a real trace in Langfuse
+  Cloud. Not independently re-verified against the Langfuse public API this
+  session (unlike the original `autosnab_mvp` live-verification in
+  `docs/wiki/langfuse-observability-integration-plan.md`), but taken as
+  confirmed given the user checked the Langfuse UI directly.
+
+**Reusable lesson, saved to memory** (`langfuse-enabled-flag-gotcha`):
+copying Langfuse credentials into a new environment is not sufficient by
+itself — `langfuse_enabled` is a separate, easy-to-forget opt-in flag.
+Check for it explicitly (by key name, never by transcribing secret values)
+whenever Langfuse traces don't show up despite valid-looking keys, in this
+repo or any future one.
+
+**Current state**: Langfuse tracing is now confirmed live in both
+`autosnab_mvp`'s VPS deployment and `auto-snab-document-parser`'s GitLab dev
+environment (`avtosnab.testant.online/docparser`) — the two real production
+surfaces for this project. Prompt-versioning/dataset work (the next steps
+noted in `docs/wiki/langfuse-observability-integration-plan.md`) is still
+not started in either repo.

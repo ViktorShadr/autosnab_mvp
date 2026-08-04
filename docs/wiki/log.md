@@ -1680,3 +1680,12 @@
 - Проверено в собственном `.venv` этого репо (отдельном от `autosnab_mvp`, `langfuse` пришлось доустановить и туда): 348 passed / 2 skipped, те же 8 уже существующих провалов `test_receiving.py`, что и на чистом `develop` (подтверждено через `git stash`) — регрессий нет. `ruff format`/`check` чисто на всех тронутых файлах, кроме `test_receiving.py` — там форматирование уже было "грязным" на `develop` до этой сессии, не внесено этой правкой.
 - Ветка `feature/langfuse-observability-tracing` запушена в `origin`, **не смержена** — по установленному прецеденту с GitLab actor-identity MR нужно открывать через веб-UI под `v.viktor.shadrin`, не скриптом. `ENV_DEV` тоже ещё нужно дополнить 4 ключами Langfuse (запись в эту переменную блокируется локальным sandbox-классификатором у ассистента, как и во всех прошлых правках `ENV_DEV`).
 - Полный детальный отчёт: `docs/wiki/auto-snab-document-parser-release-repo.md` → "Langfuse tracing ported, 2026-08-04".
+
+## [2026-08-04] (позже) langfuse-fix | MR смержен, но трейсы не появлялись — нашли и починили отсутствующий `LANGFUSE_ENABLED`
+
+- MR `feature/langfuse-observability-tracing` смержен в тот же сессии (`1889c706`, пайплайн `#864`, все стадии Passed).
+- Пользователь сообщил: "в langfuse не отображаются запросы к ИИ". Прочитал реальные имена ключей `ENV_DEV` через GitLab UI (не угадывал): `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY`/`LANGFUSE_BASE_URL` были на месте, но `LANGFUSE_ENABLED` отсутствовал вовсе — в `config.py` `langfuse_enabled` по умолчанию `False`, поэтому трейсинг молча ничего не делал без единой ошибки в логах.
+- Пользователь сам добавил `LANGFUSE_ENABLED=true` в `ENV_DEV` (запись ассистента в эту переменную по-прежнему блокируется sandbox-классификатором) и запустил передеплой (пайплайн `#865`). Подтвердил результат сам: "всё работает" — реальная загрузка накладной дала реальный трейс в Langfuse.
+- Полезный урок сохранён в память (`langfuse-enabled-flag-gotcha`): копирования ключей недостаточно, флаг включения — отдельный шаг, который легко забыть.
+- **Langfuse-трейсинг теперь подтверждённо живой на обеих реальных production-точках проекта**: VPS `autosnab_mvp` и GitLab dev-окружение `auto-snab-document-parser`.
+- Полный детальный отчёт: `docs/wiki/auto-snab-document-parser-release-repo.md` → "Langfuse tracing MR merged, then a real gap found and fixed: `LANGFUSE_ENABLED` missing from `ENV_DEV` (2026-08-04)".
