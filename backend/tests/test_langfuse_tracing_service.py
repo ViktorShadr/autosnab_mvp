@@ -124,6 +124,29 @@ def test_start_invoice_generation_uses_verb_first_name(monkeypatch):
     assert fake_client.started_with["model"] == "gpt-5-mini"
 
 
+def test_start_invoice_generation_links_prompt_when_provided(monkeypatch):
+    _reset_client_cache(monkeypatch)
+    monkeypatch.setattr(tracing.settings, "langfuse_enabled", True)
+    monkeypatch.setattr(tracing.settings, "langfuse_public_key", "pk-test")
+    monkeypatch.setattr(tracing.settings, "langfuse_secret_key", "sk-test")
+
+    class FakeClient:
+        def __init__(self):
+            self.started_with = None
+
+        def start_observation(self, **kwargs):
+            self.started_with = kwargs
+            return "generation-handle"
+
+    fake_client = FakeClient()
+    monkeypatch.setattr(tracing, "_get_client", lambda: fake_client)
+    fake_prompt = object()
+
+    tracing.start_invoice_generation(trace_input={"raw_text": "x"}, model="gpt-5-mini", prompt=fake_prompt)
+
+    assert fake_client.started_with["prompt"] is fake_prompt
+
+
 def test_start_invoice_generation_without_channel_or_user_does_not_raise(monkeypatch):
     _reset_client_cache(monkeypatch)
     monkeypatch.setattr(tracing.settings, "langfuse_enabled", True)
@@ -139,6 +162,64 @@ def test_start_invoice_generation_without_channel_or_user_does_not_raise(monkeyp
     generation = tracing.start_invoice_generation(trace_input={"raw_text": "x"}, model="gpt-5-mini")
 
     assert generation == "generation-handle"
+
+
+def test_get_system_prompt_returns_fallback_when_disabled(monkeypatch):
+    _reset_client_cache(monkeypatch)
+    monkeypatch.setattr(tracing.settings, "langfuse_enabled", False)
+
+    text, prompt = tracing.get_system_prompt("invoice-parser-system-prompt", "fallback text")
+
+    assert text == "fallback text"
+    assert prompt is None
+
+
+def test_get_system_prompt_fetches_and_compiles_managed_prompt(monkeypatch):
+    _reset_client_cache(monkeypatch)
+    monkeypatch.setattr(tracing.settings, "langfuse_enabled", True)
+    monkeypatch.setattr(tracing.settings, "langfuse_public_key", "pk-test")
+    monkeypatch.setattr(tracing.settings, "langfuse_secret_key", "sk-test")
+
+    class FakePrompt:
+        def compile(self):
+            return "managed text from Langfuse"
+
+    class FakeClient:
+        def __init__(self):
+            self.get_prompt_called_with = None
+
+        def get_prompt(self, name, **kwargs):
+            self.get_prompt_called_with = (name, kwargs)
+            return FakePrompt()
+
+    fake_client = FakeClient()
+    monkeypatch.setattr(tracing, "_get_client", lambda: fake_client)
+
+    text, prompt = tracing.get_system_prompt("invoice-parser-system-prompt", "fallback text")
+
+    assert text == "managed text from Langfuse"
+    assert isinstance(prompt, FakePrompt)
+    assert fake_client.get_prompt_called_with[0] == "invoice-parser-system-prompt"
+    assert fake_client.get_prompt_called_with[1]["type"] == "text"
+    assert fake_client.get_prompt_called_with[1]["fallback"] == "fallback text"
+
+
+def test_get_system_prompt_falls_back_when_fetch_raises(monkeypatch):
+    _reset_client_cache(monkeypatch)
+    monkeypatch.setattr(tracing.settings, "langfuse_enabled", True)
+    monkeypatch.setattr(tracing.settings, "langfuse_public_key", "pk-test")
+    monkeypatch.setattr(tracing.settings, "langfuse_secret_key", "sk-test")
+
+    class ExplodingClient:
+        def get_prompt(self, name, **kwargs):
+            raise RuntimeError("langfuse cloud is unreachable")
+
+    monkeypatch.setattr(tracing, "_get_client", lambda: ExplodingClient())
+
+    text, prompt = tracing.get_system_prompt("invoice-parser-system-prompt", "fallback text")
+
+    assert text == "fallback text"
+    assert prompt is None
 
 
 def test_usage_details_from_openai_response_maps_fields():

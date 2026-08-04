@@ -5,6 +5,8 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+LANGFUSE_SYSTEM_PROMPT_NAME = "invoice-parser-system-prompt"
+
 _client: Any | None = None
 _client_init_attempted = False
 
@@ -42,6 +44,7 @@ def start_invoice_generation(
     model: str,
     source_channel: str | None = None,
     user_id: str | None = None,
+    prompt: Any | None = None,
 ) -> Any | None:
     """Start a Langfuse "generation" observation for one invoice-parse call.
     Returns None if tracing is off/unavailable; the returned handle (or None)
@@ -52,7 +55,10 @@ def start_invoice_generation(
     (e.g. "telegram_bot"/"sbis"/"diadoc") becomes a trace tag and user_id a
     trace attribute -- both propagated via propagate_attributes() since
     start_observation() itself has no user_id/tags parameters (those are
-    trace-level, not observation-level, in the SDK)."""
+    trace-level, not observation-level, in the SDK). `prompt` is the object
+    returned by get_system_prompt(); passing it links this generation to the
+    exact managed prompt version that produced it
+    (https://langfuse.com/docs/prompt-management/features/link-to-traces)."""
     client = _get_client()
     if client is None:
         return None
@@ -62,7 +68,7 @@ def start_invoice_generation(
         tags = [source_channel] if source_channel else None
         with propagate_attributes(user_id=user_id, tags=tags):
             return client.start_observation(
-                name="parse-invoice", as_type="generation", input=trace_input, model=model
+                name="parse-invoice", as_type="generation", input=trace_input, model=model, prompt=prompt
             )
     except Exception:  # noqa: BLE001 - tracing must never break invoice parsing
         logger.exception("Langfuse tracing failed while starting the invoice-parse observation.")
@@ -93,6 +99,30 @@ def finish_invoice_generation(
             generation.end()
         except Exception:  # noqa: BLE001 - tracing must never break invoice parsing
             logger.exception("Langfuse tracing failed while closing the invoice-parse observation.")
+
+
+def get_system_prompt(name: str, fallback: str) -> tuple[str, Any | None]:
+    """Fetch a Langfuse-managed text prompt (the "production"-labeled
+    version, SDK default) for versioning/observability. Returns (text,
+    prompt_object) -- prompt_object is passed to start_invoice_generation()
+    to link the trace to the exact prompt version used.
+
+    Falls back to `fallback` with a None prompt_object (nothing gets linked)
+    whenever tracing is off/unavailable or the fetch itself raises, so a
+    Langfuse outage or a not-yet-created prompt can never change what is
+    actually sent to OpenAI -- only whether the call shows up as
+    version-linked in the Langfuse UI. The SDK's own `fallback` kwarg further
+    covers the case where the client exists but the API is briefly
+    unreachable (https://langfuse.com/docs/prompt-management/features/caching)."""
+    client = _get_client()
+    if client is None:
+        return fallback, None
+    try:
+        prompt = client.get_prompt(name, type="text", fallback=fallback)
+        return prompt.compile(), prompt
+    except Exception:  # noqa: BLE001 - tracing must never break invoice parsing
+        logger.exception("Langfuse tracing failed while fetching the managed system prompt %r.", name)
+        return fallback, None
 
 
 def usage_details_from_openai_response(response: Any) -> dict[str, int] | None:
