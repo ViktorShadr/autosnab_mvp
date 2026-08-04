@@ -1115,3 +1115,48 @@ environment (`avtosnab.testant.online/docparser`) — the two real production
 surfaces for this project. Prompt-versioning/dataset work (the next steps
 noted in `docs/wiki/langfuse-observability-integration-plan.md`) is still
 not started in either repo.
+
+## Prompt Management ported, 2026-08-04 (same session as `autosnab_mvp`'s)
+
+Mechanical port of the `autosnab_mvp` Prompt Management change (full design
+rationale in `docs/wiki/langfuse-observability-integration-plan.md` →
+"Update, 2026-08-04 (later): Prompt Management wired up") onto this repo's
+domain-driven layout, on a new branch
+`feature/langfuse-prompt-management` (off `develop`), not yet merged.
+
+Same shape, adapted to this repo's module paths and formatting
+(`ruff format`/`ruff check` clean, unlike `autosnab_mvp` which has no ruff
+config at all):
+
+- `LANGFUSE_SYSTEM_PROMPT_NAME` constant + `get_system_prompt(name,
+  fallback)` added to
+  `backend/app/domains/invoice_pipeline/services/langfuse_tracing_service.py`
+  — fetches the `"production"`-labeled `invoice-parser-system-prompt` via
+  `client.get_prompt(name, type="text", fallback=SYSTEM_PROMPT)`, falls back
+  to the local `SYSTEM_PROMPT` string (unchanged) on any failure or when
+  Langfuse is off, same fail-safe wrapping as the rest of this module.
+- `start_invoice_generation()` gained a `prompt=` kwarg, forwarded to
+  `client.start_observation(..., prompt=prompt)` to link each `parse-invoice`
+  generation to the exact prompt version that produced it.
+- `openai_invoice_parser_service.py`: `parse_invoice_with_openai` now calls
+  `get_system_prompt(LANGFUSE_SYSTEM_PROMPT_NAME, SYSTEM_PROMPT)` for the
+  `instructions` value instead of using `SYSTEM_PROMPT` directly, and passes
+  the returned prompt object into `start_invoice_generation`.
+- New top-level `scripts/push_langfuse_system_prompt.py` (matching this
+  repo's existing top-level `scripts/` convention, e.g.
+  `migrate_sqlite_to_postgresql.py` — `autosnab_mvp` instead keeps its
+  script under `backend/scripts/`, that repo's own convention) — one-off
+  `create_prompt(..., labels=["production"])` push, run manually whenever
+  `SYSTEM_PROMPT` changes in code. **Not yet run** — needs real
+  `LANGFUSE_ENABLED`/keys, only present in `ENV_DEV` on GitLab, not locally.
+
+**Tests**: 5 new tests in `test_langfuse_tracing_service.py`, mirroring
+`autosnab_mvp`'s but reformatted to this repo's line-length convention.
+Full suite: 352 passed / 2 skipped / same 8 pre-existing `test_receiving.py`
+failures as this repo's own documented baseline — zero regressions.
+`ruff check`/`ruff format --check` both clean after running `ruff format`
+once (two files needed line-wrapping to match this repo's style).
+
+**Not done yet**: initial prompt push (needs `ENV_DEV` credentials), MR,
+merge, and live verification of a prompt-linked trace in the Langfuse UI —
+same open items as the `autosnab_mvp` side.

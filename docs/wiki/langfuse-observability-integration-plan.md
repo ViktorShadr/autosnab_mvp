@@ -2,7 +2,7 @@
 title: Langfuse Observability Integration — Plan and Status
 source: session
 created: 2026-08-03
-updated: 2026-08-03
+updated: 2026-08-04
 tags: [observability, langfuse, openai, architecture]
 status: live on the VPS — real Langfuse Cloud account connected and verified end-to-end
 ---
@@ -338,3 +338,67 @@ details, and remaining `ENV_DEV` setup steps are tracked in
 `docs/wiki/auto-snab-document-parser-release-repo.md` (not duplicated here)
 — see its "Langfuse tracing ported" entry. Prompt-versioning/dataset work
 is still not started in either repo.
+
+## Update, 2026-08-04 (later): Prompt Management wired up — `SYSTEM_PROMPT` now Langfuse-managed
+
+Trigger: user asked why the Langfuse **Prompts** tab was empty. Answer
+confirmed correct by reading this page's own history — only per-call
+**tracing** had been wired up (this whole document above); Prompt Management
+is a separate opt-in feature (`langfuse.get_prompt`/`create_prompt`), never
+touched. User asked to implement it, on a new branch, in `autosnab_mvp` first
+and then port carefully into `auto-snab-document-parser` without breaking its
+domain-driven architecture.
+
+**Design decision**: code stays the source of truth, Langfuse mirrors it —
+not the other way around. `SYSTEM_PROMPT` in
+`openai_invoice_parser_service.py` is unchanged in content and stays the
+fallback/seed value. At call time, `get_system_prompt()` (new function in
+`langfuse_tracing_service.py`) fetches the `"production"`-labeled prompt
+named `invoice-parser-system-prompt` from Langfuse
+(`client.get_prompt(name, type="text", fallback=SYSTEM_PROMPT)`, SDK's own
+built-in fallback for API-unreachable) and `.compile()`s it (no template
+variables — the whole string is static instructions, so this is a no-op
+substitution). Same fail-safe wrapping as the rest of this module: any
+exception (missing client, fetch failure, `.compile()` failure) is caught,
+logged, and falls back to the local `SYSTEM_PROMPT` string with a `None`
+prompt handle — a Langfuse outage, or the prompt simply not existing yet in a
+given project, can never change what is actually sent to OpenAI, only
+whether the call shows up as version-linked in the UI. When
+`langfuse_enabled=False` (the default), `_get_client()` returns `None`
+immediately and behavior is byte-identical to before this change — zero risk
+for any environment that hasn't opted in, matching this module's existing
+design principle.
+
+The fetched prompt object is passed through to `start_invoice_generation()`
+(new `prompt=` kwarg, forwarded to `client.start_observation(..., prompt=prompt)`)
+per Langfuse's link-to-traces feature
+(https://langfuse.com/docs/prompt-management/features/link-to-traces) — so
+each `parse-invoice` generation in the UI shows exactly which prompt version
+produced it.
+
+**Pushing prompt versions**: no auto-push from the running app (would mean
+every parse call could silently create prompt versions — rejected). Instead
+a one-off maintenance script,
+`backend/scripts/push_langfuse_system_prompt.py`, following the existing
+`backend/scripts/migrate_diadoc_reliability.py` convention
+(`sys.path` shim + `if __name__ == "__main__"`). Run manually whenever
+`SYSTEM_PROMPT` changes in code, requires real Langfuse credentials with
+`LANGFUSE_ENABLED=true` (fails loudly if not configured — this is a deliberate
+maintenance action, not something that should silently no-op). **Not yet
+run** — no Langfuse credentials exist on this workstation; needs to be run
+once from an environment with real keys (the VPS, per the existing
+credential-handling pattern in this doc) before the Prompts tab will show
+this prompt for the first time.
+
+**Tests**: 5 new tests in `test_langfuse_tracing_service.py`
+(`get_system_prompt` disabled/success/exception-fallback paths, prompt-linking
+in `start_invoice_generation`) plus the existing `test_openai_invoice_pipeline.py`
+suite confirmed unaffected. Full suite: 355 passed / same 11 pre-existing
+`test_receiving.py`/`test_document_extraction_service.py` failures as the
+documented baseline — zero regressions. Built on branch
+`feature/langfuse-prompt-management` (per this session's "new branches"
+instruction), not yet merged or deployed.
+
+**Not done yet**: initial prompt push to Langfuse Cloud (needs VPS
+credentials), merge to `develop`, VPS deploy, live verification of a real
+prompt-linked trace, and the `auto-snab-document-parser` port.

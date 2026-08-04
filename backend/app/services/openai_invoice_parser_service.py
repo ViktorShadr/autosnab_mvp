@@ -11,7 +11,9 @@ from app.config import settings
 from app.schemas.invoice_parser import InvoiceParserResult, InvoiceReviewFlag, InvoiceSourceTrace
 from app.services.invoice_normalization_service import normalize_invoice_result, to_legacy_invoice_payload
 from app.services.langfuse_tracing_service import (
+    LANGFUSE_SYSTEM_PROMPT_NAME,
     finish_invoice_generation,
+    get_system_prompt,
     start_invoice_generation,
     usage_details_from_openai_response,
 )
@@ -19,6 +21,11 @@ from app.services.langfuse_tracing_service import (
 
 logger = logging.getLogger(__name__)
 
+# Source of truth when Langfuse is off/unreachable, and the seed text pushed
+# to Langfuse Prompt Management (see backend/scripts/push_langfuse_system_prompt.py)
+# under the name langfuse_tracing_service.LANGFUSE_SYSTEM_PROMPT_NAME. When
+# Langfuse is enabled, get_system_prompt() fetches the "production"-labeled
+# version from Langfuse instead and falls back to this string on any failure.
 SYSTEM_PROMPT = """Ты извлекаешь данные российских накладных из предоставленного evidence.
 Возвращай только значения, подтвержденные документом. Не придумывай номера,
 суммы, единицы, названия и отсутствующие строки. Сохраняй исходную формулировку
@@ -151,9 +158,10 @@ def parse_invoice_with_openai(
     api_client = client or _create_client()
     request_payload = _build_evidence_payload(evidence)
     request_input = _build_openai_input(evidence, request_payload)
+    system_prompt, langfuse_prompt = get_system_prompt(LANGFUSE_SYSTEM_PROMPT_NAME, SYSTEM_PROMPT)
     request_kwargs: dict[str, Any] = {
         "model": settings.openai_invoice_model,
-        "instructions": SYSTEM_PROMPT,
+        "instructions": system_prompt,
         "input": request_input,
         "text_format": InvoiceParserResult,
     }
@@ -176,6 +184,7 @@ def parse_invoice_with_openai(
         model=settings.openai_invoice_model,
         source_channel=evidence.get("source_channel"),
         user_id=evidence.get("user_id"),
+        prompt=langfuse_prompt,
     )
     try:
         response = _call_responses_parse_with_timeout_retry(api_client, request_kwargs)
