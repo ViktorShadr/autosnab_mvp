@@ -738,6 +738,73 @@ User asked to transfer working env settings from the personal VPS (`78.17.160.24
 
 **`ENV_DEV` had empty values for**: `OPENAI_API_KEY` (while `DOCUMENT_EXTRACTION_BACKEND=openai` — invoice recognition could not have worked at all), `GOOGLE_OAUTH_CLIENT_ID`/`CLIENT_SECRET`/`ACCESS_TOKEN`/`REFRESH_TOKEN`/`TOKEN_EXPIRY` (while `GOOGLE_SHEETS_ENABLED=true`, `GOOGLE_SHEETS_AUTH_MODE=oauth`, and `GOOGLE_SERVICE_ACCOUNT_JSON_B64` was *also* empty — Sheets writes could not have worked via either auth path), `BOT_API_SHARED_SECRET`, and `TELEGRAM_BOT_TOKEN` (this last one harmless right now since `TELEGRAM_BOT_ENABLED` was `false`). The dev environment at `avtosnab.testant.online/docparser` — the de facto production endpoint real users hit — has apparently been unable to actually parse invoices or write to Sheets this whole time, despite `/health/runtime` reporting healthy (health check only verifies DB connectivity, not these app secrets).
 
+## Langfuse tracing ported, 2026-08-04
+
+Ported `autosnab_mvp`'s Langfuse integration (live there since 2026-08-03 —
+see `docs/wiki/langfuse-observability-integration-plan.md`) onto this repo's
+domain-driven layout. Straightforward mechanical port, same shape as every
+prior one in this page's history: re-cloned/verified the local clone was on
+current `origin/develop`, branched `feature/langfuse-observability-tracing`,
+adapted import paths to `app.domains.invoice_pipeline.services.*` instead of
+`app.services.*`.
+
+**What changed**: new `backend/app/domains/invoice_pipeline/services/langfuse_tracing_service.py`
+(identical logic to the source repo — lazy client init, fail-safe
+try/except-only-logs around every Langfuse call, `usage_details_from_openai_response`
+mapper); `openai_invoice_parser_service.py`'s `parse_invoice_with_openai()`
+wraps the OpenAI call with `start_invoice_generation`/`finish_invoice_generation`,
+split trace input (just `raw_text`/`structured_document`) from metadata (the
+rest of the evidence payload) per the source repo's own best-practices
+self-audit; `document_extraction_service.py`'s `extract_invoice_document`/`_set`
+gained optional `source_channel`/`user_id` kwargs, threaded down from the
+three real call sites — `invoice_review.py`'s `/upload-photo` endpoint
+(`source_channel` falls back to `"invoice_review"` when no bot-upload
+`source_metadata` exists), `sbis_sync_service.py` (`"sbis"`),
+`diadoc_sync_service.py` (`"diadoc"`) — confirmed via grep this repo already
+has the identical `source_channel` concept in `IngestionUpload`/`bot_gateway_service.py`,
+so no new concept was invented, just reused; `config.py` gained the same 4
+settings (`langfuse_enabled` default `False`, `langfuse_public_key`/`secret_key`,
+`langfuse_host` default `https://cloud.langfuse.com`); `.env.example` and
+`requirements.txt` (`langfuse>=4.14,<5`) updated to match.
+
+**Tests**: new `backend/tests/test_langfuse_tracing_service.py` (12 tests,
+ported verbatim except the import path) plus 2 new tests in
+`test_openai_invoice_pipeline.py` (records a generation when enabled;
+Langfuse failure never breaks the pipeline). Fixed 4 `fake_extract` stubs in
+`test_receiving.py` that didn't accept `**kwargs` (same fix the source repo
+needed for its own equivalent stubs).
+
+**Verification, not just ported and hoped**: installed `langfuse>=4.14,<5`
+into this repo's own `.venv` (was missing — the repo has its own separate
+venv from `autosnab_mvp`'s, easy to run tests against the wrong one by
+accident). Full suite: 348 passed / 2 skipped, same 8 pre-existing
+`test_receiving.py` failures confirmed identical to this repo's own `develop`
+baseline via `git stash` (not assumed from memory) — zero regressions.
+`ruff format`/`ruff check` clean on every touched file except
+`test_receiving.py`, which was already unformatted on `develop` before this
+change (confirmed via the same `git stash` comparison) — pre-existing drift,
+not introduced here; this session's own additions to that file (the 4
+`**_kwargs` fixes) are correctly formatted.
+
+**Not ported**: the `.claude/skills/langfuse/` skill directory from the
+source repo (documentation/tooling, not part of the feature itself) —
+deliberately left out to keep the MR focused; can be added separately if
+useful for future Claude Code sessions on this repo.
+
+**Pushed, not merged**: branch `feature/langfuse-observability-tracing`
+pushed to `origin`. Per `[[gitlab-ci-actor-identity-access]]`, the MR itself
+needs to be opened via the GitLab web UI logged in as `v.viktor.shadrin`, not
+scripted — same precedent as MRs `!22`/`!23` and the `feature/google-dual-auth-vision`
+port. **Not yet done**: opening the MR, merging (auto-deploys to the DEV
+environment real users hit — same caution as every other `develop` merge in
+this page), and adding `LANGFUSE_ENABLED`/`LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY`/
+`LANGFUSE_HOST` to `ENV_DEV` (assistant write-access to that variable is
+blocked by the local sandbox classifier, same as every prior `ENV_DEV` edit
+in this page — needs the user to do it via the GitLab UI, same real
+Langfuse Cloud credentials already live on `autosnab_mvp`'s VPS can be
+reused, or a separate project/keys if trace separation between the two
+environments is preferred).
+
 **User's decisions**: (1) temporarily reuse the VPS's personal-Gmail OAuth credentials as an interim fix rather than wait for Pavel's still-not-located service-account JSON key; (2) also add `SBIS_MANUAL_IMPORT_TARGET_SPREADSHEET_ID` (present on the VPS, merged into this repo's `develop` via `feature/sbis-manual-import`, but never added to `ENV_DEV`); (3) enable the Telegram bot on this environment too (`TELEGRAM_BOT_ENABLED=true`) — and to avoid two long-polling clients fighting over one bot token (Telegram allows only one), **stop the VPS's own bot** rather than mint a separate token.
 
 **Done**:

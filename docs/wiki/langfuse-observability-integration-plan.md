@@ -330,3 +330,11 @@ a pure feature flag.
 2. Only after that live check succeeds: decide whether to port this to
    `auto-snab-document-parser` too, and whether to start the
    prompt-versioning/dataset work.
+
+## Update, 2026-08-04: ported to `auto-snab-document-parser`
+
+Step 2 above is done for the code half. Full port history, branch/commit
+details, and remaining `ENV_DEV` setup steps are tracked in
+`docs/wiki/auto-snab-document-parser-release-repo.md` (not duplicated here)
+— see its "Langfuse tracing ported" entry. Prompt-versioning/dataset work
+is still not started in either repo.
