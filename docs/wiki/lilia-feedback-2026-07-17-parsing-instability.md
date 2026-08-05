@@ -159,6 +159,21 @@ Code-level investigation of the two-page path, tracing
   request itself was well-formed or the model simply returned an empty
   header despite good input.
 
+## Update 2026-08-05: Issue 1 (digit drift) reproduced live with a clean side-by-side pair
+
+During a 24-invoice live batch test through the Telegram bot (full report:
+`docs/wiki/invoice-bot-live-batch-test-2026-08-05.md`), the same physical
+document (Поставщик «ЛИР ООО», № ТТН `9610429080689`) was uploaded twice
+independently, 67 minutes apart, and produced two Langfuse traces with
+different totals: `31597.81` vs `total_with_vat: 35416.02` — a ~12%
+divergence on the same source pixels. Both full traces (structured JSON
+output, tokens, latency) are preserved in Langfuse and can be diffed directly
+instead of relying on Lilia's ~15 informally-tracked runs. This doesn't
+change the diagnosis (still points at OpenAI-side non-determinism per the
+Phase 4 gap noted above), but gives a reproducible, precisely-timestamped
+pair for anyone investigating Phase 5 (line/document total cross-validation)
+going forward.
+
 ## Suggested next step
 
 Get the actual ИП Минибаев source file(s) from Lilia (register under

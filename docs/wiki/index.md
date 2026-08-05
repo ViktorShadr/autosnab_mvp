@@ -35,4 +35,5 @@
 - [openai-invoice-parser-prompt.md](./openai-invoice-parser-prompt.md)
 - [langfuse-observability-integration-plan.md](./langfuse-observability-integration-plan.md)
 - [telegram-bot-ux-hardening-plan.md](./telegram-bot-ux-hardening-plan.md)
+- [invoice-bot-live-batch-test-2026-08-05.md](./invoice-bot-live-batch-test-2026-08-05.md)
 - [log.md](./log.md)
