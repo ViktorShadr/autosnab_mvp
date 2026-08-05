@@ -506,6 +506,8 @@ Acceptance:
   `quantity_us * price_us` within the configured tolerance;
 - no ambiguous product exception is selected automatically.
 
+**Update (2026-08-05/06): "recalculate document totals" line item was already done, not just planned.** `invoice_normalization_service.py` has summed line items with `Decimal` arithmetic and flagged mismatches against `document.total_with_vat` (tolerance `MONEY_TOLERANCE = Decimal("0.02")`) for a while before this note was written — this page was stale relative to the code. Triggered by the 2026-08-05 live batch test (`docs/wiki/invoice-bot-live-batch-test-2026-08-05.md`), the same cross-check was extended to `total_without_vat` and `vat_total` (previously normalized to `Decimal` but never independently reconciled against summed line values) — same `_flag`/`_close` pattern, same tolerance. Line-level `amount_without_vat`/`amount_with_vat` recalculation (qty×price, net+vat) was also already present. Still open from this Phase: INN checksum/merged-ИНН/КПП detection status unverified against this note, continuation-page/missing-page detection, deterministic form classification, and the full unit-conversion contract.
+
 ### Phase 6: turn the photos into an executable golden set
 
 - Store expected fixtures outside production code:

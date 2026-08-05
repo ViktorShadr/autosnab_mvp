@@ -17,6 +17,22 @@ class InvoiceDocumentData(BaseModel):
     total_without_vat: float | None = None
     vat_total: float | None = None
     total_with_vat: float | None = None
+    # Model's own confidence (0-1) per header field, keyed by this class's field
+    # names (e.g. "document_number", "supplier_name"). Mirrors the per-item/
+    # per-packaging-fact `confidence` below, which previously had no document-level
+    # counterpart -- see docs/wiki/invoice-bot-live-batch-test-2026-08-05.md.
+    # Not yet surfaced in the Telegram card: wire in only after validating real
+    # values against golden-set documents (docs/wiki/invoice-recognition-hardening-plan.md
+    # Phase 6), the same discipline used for other model-behavior changes.
+    document_confidence: dict[str, float] | None = Field(
+        default=None,
+        description=(
+            "Твоя уверенность (0-1) в каждом распознанном поле шапки документа, "
+            "по ключам document_date, document_number, supplier_name, total_with_vat. "
+            "Указывай ключ только для полей, которые ты фактически заполнил; для "
+            "пустого/не распознанного поля confidence не указывай вовсе."
+        ),
+    )
 
 
 class InvoiceItemPackage(BaseModel):

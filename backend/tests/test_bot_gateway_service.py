@@ -223,3 +223,57 @@ def test_background_marks_quality_rejection_for_bot(db, monkeypatch):
     assert status.status == "quality_rejected"
     assert status.completed is True
     assert "Замените скан" in status.message
+
+
+def test_background_masks_raw_exception_and_logs_it_for_bot(db, monkeypatch, caplog):
+    """Regression test for the 2026-08-05 live batch test: a Postgres DNS failure
+    reached the user as a raw `(psycopg2.OperationalError) could not translate host
+    name...` traceback, and nothing was logged server-side to notice it happened.
+    See docs/wiki/invoice-bot-live-batch-test-2026-08-05.md.
+    """
+    from sqlalchemy.exc import OperationalError
+
+    from app.routers import invoice_review
+
+    draft = bot_gateway_service.append_draft_page(
+        db,
+        chat_id="chat-db-outage",
+        source_user_id="tg-db-outage",
+        source_username=None,
+        filename="invoice.jpg",
+        content_type="image/jpeg",
+        file_bytes=b"image",
+    )
+
+    def raise_db_outage(**_kwargs):
+        raise OperationalError(
+            "SELECT 1", {}, Exception("could not translate host name to address: Temporary failure in name resolution")
+        )
+
+    monkeypatch.setattr(bot_gateway_service, "SessionLocal", TestingSessionLocal)
+    monkeypatch.setattr(invoice_review, "_process_invoice_upload", raise_db_outage)
+
+    import logging
+
+    with caplog.at_level(logging.ERROR, logger="app.services.bot_gateway_service"):
+        bot_gateway_service._process_bot_upload_background(
+            trace_id="trace-db-outage",
+            upload_id=draft.upload_id,
+            file_paths=[str(Path(settings.uploaded_invoices_dir) / "unused.jpg")],
+            file_names=["invoice.jpg"],
+            file_types=["image/jpeg"],
+            create_google_sheet=False,
+            extraction_method="openai",
+            public_api_base_url="http://test",
+        )
+
+    db.expire_all()
+    status = bot_gateway_service.get_upload_status(db, draft.upload_id)
+    assert status.status == "processing_error"
+    assert "could not translate host name" not in status.message
+    assert "psycopg2" not in status.message
+    assert "OperationalError" not in status.message
+
+    assert any("could not translate host name" in record.getMessage() for record in caplog.records) or any(
+        record.exc_info for record in caplog.records
+    )

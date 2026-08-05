@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import os
 import sys
 from pathlib import Path
@@ -7,9 +8,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 
+from aiogram.types import Chat, ErrorEvent, Message, Update  # noqa: E402
+
 from app.config import settings  # noqa: E402
 from app.schemas.invoice_review import BotDocumentSummary, BotUploadStatusResponse, PipelineLogEntry  # noqa: E402
-from app.telegram_bot import poller  # noqa: E402
+from app.telegram_bot import handlers, poller  # noqa: E402
 from app.telegram_bot.handlers import _matches  # noqa: E402
 from app.telegram_bot.keyboard import DRAFT_ACTIONS_KEYBOARD, sheet_link_keyboard  # noqa: E402
 from app.telegram_bot.messages import format_result_message, stage_text_for  # noqa: E402
@@ -76,6 +79,38 @@ def test_format_result_message_includes_summary_but_not_the_raw_sheet_link():
     assert "Номер: INV-1" in text
     assert "Сумма: 123.45" in text
     assert "https://sheets.example/doc" not in text
+
+
+def test_format_result_message_always_shows_all_four_header_fields_with_reasons():
+    """Regression test for the 2026-08-05 live batch test: a result card with only
+    `Сумма` recognized silently omitted the other three fields with no explanation.
+    All four header lines must now always appear, and a missing field shows the
+    review-flag reason instead of just disappearing.
+    """
+    status = BotUploadStatusResponse(
+        upload_id="bot-upload-partial",
+        status="requires_review",
+        message="Документ обработан, но требует проверки в модуле проверки данных.",
+        completed=True,
+        source_channel="telegram_bot",
+        document_kind="primary_document",
+        files_count=1,
+        original_filename="page-1.jpg",
+        document_summary=BotDocumentSummary(
+            total_sum=12840.0,
+            header_review_notes={
+                "supplier_name": "Наименование поставщика не распознано.",
+                "document_number": "Номер документа не распознан.",
+            },
+        ),
+    )
+
+    text = format_result_message(status)
+
+    assert "Поставщик: не распознан — Наименование поставщика не распознано." in text
+    assert "Номер: не распознан — Номер документа не распознан." in text
+    assert "Дата: не распознана" in text
+    assert "Сумма: 12840.0" in text
 
 
 def test_format_result_message_without_summary_is_just_the_message():
@@ -158,3 +193,42 @@ def test_poll_loop_edits_progress_message_once_per_stage_even_as_pipeline_logs_k
         "📊 Загружаем в таблицу...",
     ]
     assert bot.sent == ["Документ обработан."]
+
+
+def test_finalize_and_start_poll_returns_masked_message_on_non_value_error(monkeypatch):
+    """Regression test for the 2026-08-05 live batch test: `/done` produced zero reply
+    when `finalize_draft` raised something other than `ValueError` (e.g. the same DB
+    outage seen elsewhere in that session) — the exception propagated out of the
+    handler uncaught and aiogram silently swallowed it. `_finalize_and_start_poll` must
+    now return a masked message instead of letting the caller send nothing.
+    """
+    from sqlalchemy.exc import OperationalError
+
+    def raise_db_outage(_chat_id):
+        raise OperationalError("SELECT 1", {}, Exception("could not translate host name to address"))
+
+    monkeypatch.setattr(handlers, "_finalize_draft_sync", raise_db_outage)
+
+    error = asyncio.run(handlers._finalize_and_start_poll(bot=_FakeBot(), chat_id="chat-done-outage"))
+
+    assert error is not None
+    assert "could not translate host name" not in error
+    assert "OperationalError" not in error
+
+
+def test_global_error_handler_sends_masked_message_instead_of_silence():
+    """Backstop test: any handler exception that still escapes uncaught (not just the
+    `/done` path covered above) must reach the user as a friendly message via the
+    router-level error handler, never total silence.
+    """
+    chat = Chat(id=999, type="private")
+    message = Message(message_id=1, date=datetime.datetime.now(), chat=chat, text="hello")
+    update = Update(update_id=1, message=message)
+    event = ErrorEvent(update=update, exception=RuntimeError("boom: /app/uploads/secret.json"))
+    bot = _FakeBot()
+
+    asyncio.run(handlers.handle_error(event, bot))
+
+    assert len(bot.sent) == 1
+    assert "/app/uploads/secret.json" not in bot.sent[0]
+    assert "boom" not in bot.sent[0]

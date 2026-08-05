@@ -50,6 +50,19 @@ def stage_text_for(stage: str) -> str | None:
     return STAGE_TEXT.get(stage)
 
 
+# (summary attribute, label, "not recognized" phrase agreeing with the label's
+# grammatical gender, matching normalization field name for the review-flag lookup).
+# Always shown, even when empty, per the 2026-08-05 live batch test finding that a
+# silently-omitted field left the user with no idea a field was missing at all —
+# see docs/wiki/invoice-bot-live-batch-test-2026-08-05.md.
+_HEADER_FIELDS: tuple[tuple[str, str, str, str], ...] = (
+    ("supplier", "Поставщик", "не распознан", "supplier_name"),
+    ("invoice_number", "Номер", "не распознан", "document_number"),
+    ("invoice_date", "Дата", "не распознана", "document_date"),
+    ("total_sum", "Сумма", "не распознана", "total_with_vat"),
+)
+
+
 def format_result_message(status_response) -> str:
     """Build the final Telegram reply once a bot upload finishes (`status_response.completed`).
 
@@ -59,14 +72,14 @@ def format_result_message(status_response) -> str:
     lines = [status_response.message]
     summary = status_response.document_summary
     if summary:
-        if summary.supplier:
-            lines.append(f"Поставщик: {summary.supplier}")
-        if summary.invoice_number:
-            lines.append(f"Номер: {summary.invoice_number}")
-        if summary.invoice_date:
-            lines.append(f"Дата: {summary.invoice_date}")
-        if summary.total_sum is not None:
-            lines.append(f"Сумма: {summary.total_sum}")
+        notes = summary.header_review_notes or {}
+        for attr, label, missing_phrase, flag_field in _HEADER_FIELDS:
+            value = getattr(summary, attr)
+            if value not in (None, ""):
+                lines.append(f"{label}: {value}")
+                continue
+            reason = notes.get(flag_field)
+            lines.append(f"{label}: {missing_phrase}" + (f" — {reason}" if reason else ""))
     if status_response.google_spreadsheet_error:
         lines.append(f"Ошибка публикации: {status_response.google_spreadsheet_error}")
     return "\n".join(lines)

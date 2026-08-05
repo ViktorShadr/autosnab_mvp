@@ -245,6 +245,11 @@ class BotDocumentSummary(BaseModel):
     items_count: int = 0
     pages_count: int = 0
     duplicate_indicator: str | None = None
+    # Document-scope review-flag reasons keyed by the normalization field name
+    # (e.g. "supplier_name", "document_number") — lets the Telegram card explain
+    # *why* a header field is missing instead of silently omitting it. See
+    # docs/wiki/invoice-bot-live-batch-test-2026-08-05.md.
+    header_review_notes: dict[str, str] | None = None
 
 
 class BotUploadStatusResponse(BaseModel):

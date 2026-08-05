@@ -1320,6 +1320,27 @@ def test_missing_document_number_requires_review():
     )
 
 
+def test_document_confidence_round_trips_through_normalization():
+    """Schema/normalization round-trip only -- does not call the live OpenAI API.
+    See docs/wiki/invoice-bot-live-batch-test-2026-08-05.md and
+    docs/wiki/invoice-recognition-hardening-plan.md (Phase 6) for why the actual
+    model-behavior change still needs validation against real documents before
+    being surfaced in the Telegram card.
+    """
+    payload = _parsed_invoice()
+    payload["document"]["document_confidence"] = {
+        "document_number": 0.95,
+        "supplier_name": 0.4,
+    }
+
+    normalized = normalize_invoice_result(InvoiceParserResult.model_validate(payload))
+
+    assert normalized.document.document_confidence == {
+        "document_number": 0.95,
+        "supplier_name": 0.4,
+    }
+
+
 def test_missing_supplier_name_requires_review():
     payload = _parsed_invoice()
     payload["document"]["supplier_name"] = ""
@@ -1382,6 +1403,22 @@ def test_russian_document_date_is_normalized(raw_date, expected):
         (
             "total_mismatch",
             lambda data: data["document"].update(total_with_vat=999),
+            "",
+            "Требует проверки",
+            "Правка вручную",
+            "",
+        ),
+        (
+            "total_without_vat_mismatch",
+            lambda data: data["document"].update(total_without_vat=999),
+            "",
+            "Требует проверки",
+            "Правка вручную",
+            "",
+        ),
+        (
+            "vat_total_mismatch",
+            lambda data: data["document"].update(vat_total=999),
             "",
             "Требует проверки",
             "Правка вручную",

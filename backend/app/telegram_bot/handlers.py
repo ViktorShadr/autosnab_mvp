@@ -11,13 +11,14 @@ import asyncio
 import contextlib
 import logging
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart
-from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove
+from aiogram.types import CallbackQuery, ErrorEvent, Message, ReplyKeyboardRemove
 
 from app.db.session import SessionLocal
 from app.services import bot_gateway_service
+from app.services.error_masking_service import mask_error_for_user
 from app.telegram_bot import poller
 from app.telegram_bot.keyboard import DRAFT_ACTIONS_KEYBOARD
 from app.telegram_bot.messages import (
@@ -115,6 +116,9 @@ async def _finalize_and_start_poll(bot, chat_id: str) -> str | None:
         accepted = await asyncio.to_thread(_finalize_draft_sync, chat_id)
     except ValueError as exc:
         return str(exc)
+    except Exception as exc:  # noqa: BLE001 - never let a finalize failure go fully silent to the user
+        logger.exception("Failed to finalize draft for chat_id=%s", chat_id)
+        return mask_error_for_user(exc)
     # No reply_markup here: Telegram's editMessageText rejects edits on any message
     # carrying a custom (non-inline) reply keyboard, and the poller edits this message
     # in place as stages progress.
@@ -205,3 +209,22 @@ async def handle_reset_callback(callback: CallbackQuery) -> None:
 @router.message()
 async def handle_unknown(message: Message) -> None:
     await message.answer(UNKNOWN_TEXT_HELP, reply_markup=ReplyKeyboardRemove())
+
+
+@router.errors()
+async def handle_error(event: ErrorEvent, bot: Bot) -> None:
+    """Last-resort safety net: any exception a handler above didn't catch itself
+    (aiogram's default behavior is to log it and reply with nothing) still gets a
+    friendly reply here instead of the user seeing total silence — see
+    docs/wiki/invoice-bot-live-batch-test-2026-08-05.md for the live repro."""
+    logger.exception("Unhandled exception while processing a Telegram update", exc_info=event.exception)
+    update = event.update
+    chat_id: int | None = None
+    if update.message is not None:
+        chat_id = update.message.chat.id
+    elif update.callback_query is not None and update.callback_query.message is not None:
+        chat_id = update.callback_query.message.chat.id
+    if chat_id is None:
+        return
+    with contextlib.suppress(TelegramBadRequest):
+        await bot.send_message(chat_id, mask_error_for_user(event.exception))

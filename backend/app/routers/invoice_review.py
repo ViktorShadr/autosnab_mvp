@@ -1,5 +1,6 @@
 import html
 import json
+import logging
 import shutil
 from threading import Thread
 from pathlib import Path
@@ -56,6 +57,7 @@ from app.services.invoice_review_service import (
 )
 from app.services.database_health_service import describe_database_write_error
 from app.services.document_extraction_service import extract_invoice_document, extract_invoice_document_set
+from app.services.error_masking_service import mask_error_for_user
 from app.services.google_sheets_service import load_invoice_reference_catalogs
 from app.services.item_normalization_service import apply_reference_mapping_to_payload
 from app.services.normalization import canonical_invoice_number
@@ -67,6 +69,8 @@ from app.services.upload_trace_service import (
     set_trace_metadata,
     set_trace_result,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/invoice-review", tags=["invoice-review"])
 
@@ -1440,14 +1444,13 @@ def _process_invoice_upload(
             pipeline_logs.append(mapping_complete_log)
             trace_log(mapping_complete_log)
         except Exception as exc:  # noqa: BLE001 - reference outage must remain visible but not destroy OCR output
-            parsed.setdefault("parser_notes", []).append(
-                f"Не удалось выполнить сопоставление со справочниками Google Sheets: {exc}"
-            )
+            logger.exception("Reference-catalog mapping failed for request_id=%s", request_id)
+            parsed.setdefault("parser_notes", []).append(mask_error_for_user(exc))
             mapping_error_log = {
                 "stage": "reference_mapping_failed",
                 "status": "error",
                 "message": "Не удалось выполнить сопоставление со справочниками Google Sheets.",
-                "details": {"error": str(exc)},
+                "details": {"error": mask_error_for_user(exc)},
             }
             pipeline_logs.append(mapping_error_log)
             trace_log(mapping_error_log)
@@ -1528,13 +1531,14 @@ def _process_invoice_upload(
             }
             response["pipeline_logs"].append(google_ok_log)
             trace_log(google_ok_log)
-        except Exception as exc:  # noqa: BLE001 - external provider errors must be surfaced to user
-            response["google_spreadsheet_error"] = str(exc)
+        except Exception as exc:  # noqa: BLE001 - external provider errors must be surfaced to user, but masked
+            logger.exception("Google Sheets write failed for receiving_id=%s", receiving.id)
+            response["google_spreadsheet_error"] = mask_error_for_user(exc)
             google_error_log = {
                 "stage": "google_sheet_failed",
                 "status": "error",
                 "message": "Не удалось записать результат в Google Sheets.",
-                "details": {"error": str(exc)},
+                "details": {"error": mask_error_for_user(exc)},
             }
             response["pipeline_logs"].append(google_error_log)
             trace_log(google_error_log)

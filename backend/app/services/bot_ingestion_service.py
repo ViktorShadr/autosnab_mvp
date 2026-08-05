@@ -222,6 +222,13 @@ def build_bot_document_summary(receiving: Receiving | None) -> dict[str, Any] | 
         except ValueError:
             total_sum = None
 
+    review_flags = (header.get("parser_metadata") or {}).get("review_flags") or []
+    header_review_notes = {
+        flag["field"]: flag["reason"]
+        for flag in review_flags
+        if isinstance(flag, dict) and flag.get("scope") == "document" and flag.get("line_number") is None and flag.get("field")
+    }
+
     return {
         "supplier": supplier or receiving.supplier or None,
         "invoice_number": invoice_number or None,
@@ -231,6 +238,7 @@ def build_bot_document_summary(receiving: Receiving | None) -> dict[str, Any] | 
         "items_count": len(items) if isinstance(items, list) and items else len(receiving.items),
         "pages_count": len(source_files) if isinstance(source_files, list) else 0,
         "duplicate_indicator": header.get("duplicate_indicator") or None,
+        "header_review_notes": header_review_notes or None,
     }
 
 

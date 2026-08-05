@@ -8,6 +8,7 @@ can call the same logic. Mirrors the six `/bot/*` endpoints in
 
 from __future__ import annotations
 
+import logging
 import mimetypes
 from pathlib import Path
 from threading import Thread
@@ -47,6 +48,7 @@ from app.services.bot_ingestion_service import (
     update_upload_journal,
 )
 from app.services.database_health_service import describe_database_write_error
+from app.services.error_masking_service import mask_error_for_user
 from app.services.upload_trace_service import (
     append_trace_log,
     finalize_trace,
@@ -54,6 +56,8 @@ from app.services.upload_trace_service import (
     initialize_trace,
     set_trace_metadata,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def append_draft_page(
@@ -310,8 +314,12 @@ def _process_bot_upload_background(
             if isinstance(error_detail, dict) and error_detail.get("error_code") == "image_quality_rejected":
                 journal_status = "quality_rejected"
         else:
-            db_hint = describe_database_write_error(exc)
-            error_message = db_hint or str(exc)
+            logger.exception(
+                "Bot upload processing failed (upload_id=%s, db_hint=%s)",
+                upload_id,
+                describe_database_write_error(exc),
+            )
+            error_message = mask_error_for_user(exc)
         append_trace_log(
             trace_id,
             {

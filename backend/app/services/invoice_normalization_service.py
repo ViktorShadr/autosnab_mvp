@@ -131,6 +131,34 @@ def normalize_invoice_result(
             "warning",
         )
 
+    item_total_without_vat = _sum(item.amount_without_vat for item in result.items)
+    if result.document.total_without_vat is None and item_total_without_vat is not None:
+        result.document.total_without_vat = item_total_without_vat
+        result.normalization_log.append("document.total_without_vat calculated from items")
+    elif item_total_without_vat is not None and not _close(result.document.total_without_vat, item_total_without_vat):
+        _flag(
+            result,
+            "document",
+            None,
+            "total_without_vat",
+            "Сумма товарных строк без НДС не совпадает с итогом документа.",
+            "warning",
+        )
+
+    item_vat_total = _sum(item.vat_amount for item in result.items)
+    if result.document.vat_total is None and item_vat_total is not None:
+        result.document.vat_total = item_vat_total
+        result.normalization_log.append("document.vat_total calculated from items")
+    elif item_vat_total is not None and not _close(result.document.vat_total, item_vat_total):
+        _flag(
+            result,
+            "document",
+            None,
+            "vat_total",
+            "Сумма НДС по товарным строкам не совпадает с итогом документа.",
+            "warning",
+        )
+
     if ocr_error:
         _flag(result, "document", None, "source_trace", f"Ошибка OCR: {ocr_error}", "error")
         result.upload_status = "Не готово"
