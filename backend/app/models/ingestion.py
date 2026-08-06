@@ -18,6 +18,12 @@ class IngestionUpload(Base):
     username: Mapped[str | None] = mapped_column(String(255), nullable=True)
     chat_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     organization_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Phase 1 multi-tenant seam, additive to the free-text organization_name
+    # label above (not a rename). See
+    # docs/wiki/multi-tenant-provisioning-and-document-archive.md.
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("organizations.id"), nullable=True, index=True
+    )
     point_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     original_filename: Mapped[str] = mapped_column(String(255))
     file_type: Mapped[str] = mapped_column(String(64))
