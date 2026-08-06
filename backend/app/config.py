@@ -30,6 +30,11 @@ class Settings(BaseSettings):
 
     google_drive_folder_id: str | None = None
     google_target_spreadsheet_id: str | None = None
+    # Phase 1 multi-tenant provisioning seam: source spreadsheet copied via
+    # Drive files.copy for each new Organization. Manually triggered only
+    # (organization_provisioning_service.py), not a self-serve API -- see
+    # docs/wiki/multi-tenant-provisioning-and-document-archive.md.
+    google_organization_template_spreadsheet_id: str | None = None
     google_target_sheet_name: str = "Накладная"
     google_target_header_row_count: int = 2
     google_conversion_exceptions_sheet_name: str | None = None

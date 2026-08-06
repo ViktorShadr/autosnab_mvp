@@ -48,6 +48,11 @@ class Receiving(Base):
     delivery_address: Mapped[str | None] = mapped_column(String(500), nullable=True)
     chat_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     user_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Phase 1 multi-tenant seam, nullable so existing single-org rows are
+    # unaffected. See docs/wiki/multi-tenant-provisioning-and-document-archive.md.
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("organizations.id"), nullable=True, index=True
+    )
     status: Mapped[ReceivingStatus] = mapped_column(
         Enum(ReceivingStatus), default=ReceivingStatus.receiving_started
     )
