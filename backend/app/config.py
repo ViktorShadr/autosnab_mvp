@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     google_conversion_exceptions_sheet_name: str | None = None
     google_packaging_facts_sheet_name: str = "Факты фасовки AI (техн.)"
     google_sheets_enabled: bool = False
+    # Collapse rows from past calendar months in the shared invoice sheet so
+    # operators only see the current month expanded by default. Off switch
+    # for instant rollback in prod without a code change; see
+    # docs/wiki/multi-tenant-provisioning-and-document-archive.md.
+    google_sheets_row_grouping_enabled: bool = True
     google_apps_script_enabled: bool = False
     google_drive_ocr_enabled: bool = True
     google_drive_ocr_language: str = "ru"
