@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 
@@ -64,6 +66,11 @@ class InvoiceReviewCreateRequest(BaseModel):
     file_id: str | None = None
     file_type: str = "photo"
     file_url: str | None = None
+    # Secondary durable copy in object storage; see
+    # docs/wiki/multi-tenant-provisioning-and-document-archive.md.
+    archive_url: str | None = None
+    archive_key: str | None = None
+    archived_at: datetime | None = None
     raw_text: str | None = None
     request_id: str | None = None
     supplier: str | None = None

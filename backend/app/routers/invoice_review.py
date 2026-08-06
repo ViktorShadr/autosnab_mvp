@@ -1,6 +1,7 @@
 import html
 import json
 import shutil
+from datetime import datetime
 from threading import Thread
 from pathlib import Path
 from uuid import uuid4
@@ -55,6 +56,7 @@ from app.services.invoice_review_service import (
     send_from_google_sheet,
 )
 from app.services.database_health_service import describe_database_write_error
+from app.services.document_archive_service import upload_to_archive
 from app.services.document_extraction_service import extract_invoice_document, extract_invoice_document_set
 from app.services.google_sheets_service import load_invoice_reference_catalogs
 from app.services.item_normalization_service import apply_reference_mapping_to_payload
@@ -1461,10 +1463,41 @@ def _process_invoice_upload(
     ]
     parser_metadata["evidence_version"] = evidence.get("evidence_version")
     parser_metadata["logical_document_id"] = evidence.get("logical_document_id")
+
+    # Secondary durable copy in object storage; local disk (file_url below)
+    # stays the working copy regardless of archive outcome -- an archive
+    # failure must never abort the recognition pipeline. See
+    # docs/wiki/multi-tenant-provisioning-and-document-archive.md.
+    archive_url = None
+    archive_key = None
+    archived_at = None
+    if settings.document_archive_enabled:
+        try:
+            archive_result = upload_to_archive(
+                file_path,
+                organization_slug=settings.document_archive_default_organization_slug,
+                filename=file_name,
+            )
+            archive_url = archive_result.url
+            archive_key = archive_result.key
+            archived_at = datetime.utcnow()
+        except Exception as exc:  # noqa: BLE001 - archive outage must never block the pipeline
+            archive_error_log = {
+                "stage": "document_archive_failed",
+                "status": "error",
+                "message": "Не удалось сохранить документ в электронный архив.",
+                "details": {"error": str(exc)},
+            }
+            pipeline_logs.append(archive_error_log)
+            trace_log(archive_error_log)
+
     payload = InvoiceReviewCreateRequest(
         file_id="; ".join(source_names),
         file_type=file_type,
         file_url=file_path,
+        archive_url=archive_url,
+        archive_key=archive_key,
+        archived_at=archived_at,
         raw_text=extraction.get("raw_text"),
         request_id=request_id,
         supplier=parsed.get("supplier"),
