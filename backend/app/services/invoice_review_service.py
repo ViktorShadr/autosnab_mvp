@@ -111,6 +111,9 @@ def create_invoice_review(db: Session, payload) -> Receiving:
         file_type=payload.file_type,
         source="invoice_review_mvp4",
         file_url=payload.file_url,
+        archive_url=payload.archive_url,
+        archive_key=payload.archive_key,
+        archived_at=payload.archived_at,
         ocr_status="ocr_processed" if recognized_items else "manual_review",
         raw_text=payload.raw_text,
         recognized_items_json=json.dumps({"header": header_meta, "items": recognized_items}, ensure_ascii=False),
@@ -853,7 +856,8 @@ def _shared_invoice_item_row(
         "Время загрузки документа": header_values.get("upload_time", ""),
         "ID документа": header_values.get("document_id", ""),
         "Ссылка на исходный документ": (
-            (getattr(receiving, "documents", None) and getattr(receiving.documents[-1], "file_url", ""))
+            (getattr(receiving, "documents", None) and getattr(receiving.documents[-1], "archive_url", ""))
+            or (getattr(receiving, "documents", None) and getattr(receiving.documents[-1], "file_url", ""))
             or ""
         ),
     }

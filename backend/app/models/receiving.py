@@ -97,6 +97,12 @@ class ReceivingDocument(Base):
     invoice_number: Mapped[str | None] = mapped_column(String(128), nullable=True)
     invoice_date: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # Secondary durable copy in object storage; local disk (file_url today
+    # holds the on-disk path, see invoice_review.py) remains the working
+    # copy. See docs/wiki/multi-tenant-provisioning-and-document-archive.md.
+    archive_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    archive_key: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     receiving: Mapped[Receiving] = relationship(back_populates="documents")
 

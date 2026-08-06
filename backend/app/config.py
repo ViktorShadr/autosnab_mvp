@@ -48,6 +48,22 @@ class Settings(BaseSettings):
     public_api_base_url: str = "https://YOUR_API_HOST"
     uploaded_invoices_dir: str = "uploads/invoices"
 
+    # Electronic archive of raw invoice files (photos/PDF), S3-compatible
+    # object storage. Off by default; local disk stays the working copy
+    # regardless -- this is a secondary durable copy, never a hard
+    # dependency for the recognition pipeline. See
+    # docs/wiki/multi-tenant-provisioning-and-document-archive.md.
+    document_archive_enabled: bool = False
+    document_archive_bucket: str | None = None
+    document_archive_endpoint_url: str = "https://storage.yandexcloud.net"
+    document_archive_region: str = "ru-central1"
+    document_archive_access_key_id: str | None = None
+    document_archive_secret_access_key: str | None = None
+    # {organization_slug}/{yyyy}/{mm}/{dd}/{filename} -- the /DD level is a
+    # direct match for Galina's own framing ("1 числа — 5 накладных").
+    document_archive_key_prefix_template: str = "{organization_slug}/{yyyy}/{mm}/{dd}/{filename}"
+    document_archive_default_organization_slug: str = "default"
+
     # Document extraction pipeline. OpenAI is the default structuring layer;
     # PDF text, MinerU, and OCR remain evidence providers.
     document_extraction_backend: str = "openai"
