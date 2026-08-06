@@ -1,5 +1,6 @@
 import json
 import re
+from datetime import datetime
 from typing import Any
 
 from app.config import settings
@@ -553,6 +554,163 @@ def _add_invoice_bottom_separator(
     ).execute()
 
 
+_MONTH_KEY_PATTERNS = (
+    re.compile(r"^(?P<y>\d{4})-(?P<m>\d{2})-\d{2}"),  # "Время загрузки документа": YYYY-MM-DD HH:MM:SS
+    re.compile(r"^\d{1,2}\.(?P<m>\d{1,2})\.(?P<y>\d{4})"),  # "Дата документа" fallback: DD.MM.YYYY
+)
+
+
+def _parse_month_key(value: Any) -> tuple[int, int] | None:
+    """Best-effort (year, month) extraction for row-grouping, tolerant of the
+    two date-ish formats this sheet actually contains: the code-generated
+    "Время загрузки документа" (always `YYYY-MM-DD HH:MM:SS`, `invoice_review_service.py`
+    `_format_datetime_for_sheet`) and the AI/OCR-extracted free-text
+    "Дата документа" (format not guaranteed). Returns None on anything else
+    rather than raising -- an unparsed date must never break the write path."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for pattern in _MONTH_KEY_PATTERNS:
+        match = pattern.match(text)
+        if match:
+            try:
+                return int(match.group("y")), int(match.group("m"))
+            except ValueError:
+                continue
+    return None
+
+
+def _historical_grouping_date_column_index(target_headers: list[str]) -> int | None:
+    # Prefer the code-generated upload timestamp: always present, always the
+    # same format. "Дата документа" is AI/OCR free text and may be missing or
+    # unparseable, so it's only a fallback.
+    for header_name in ("Время загрузки документа", "Дата документа"):
+        if header_name in target_headers:
+            return target_headers.index(header_name)
+    return None
+
+
+def _ensure_historical_row_groups(
+    sheets_service,
+    spreadsheet_id: str,
+    sheet_id: int,
+    sheet_name: str,
+    header_row_count: int,
+    target_headers: list[str],
+) -> None:
+    """Collapse every row older than the current calendar month into a single
+    Sheets row group, so an operator opening the sheet only sees the current
+    month expanded by default (see docs/wiki/multi-tenant-provisioning-and-
+    document-archive.md, Galina's feedback on 300+ visible rows). Idempotent
+    and self-healing: recomputes the desired range from live data on every
+    call and reconciles existing groups to match, rather than assuming a
+    prior group's range shifted correctly after `insertDimension`.
+    """
+    if not settings.google_sheets_row_grouping_enabled:
+        return
+
+    date_column_index = _historical_grouping_date_column_index(target_headers)
+    if date_column_index is None:
+        return
+    if not hasattr(sheets_service.spreadsheets().values(), "get"):
+        # Matches the same test-double short-circuit as _read_target_headers:
+        # a values() resource without .get() can't be queried for real data.
+        return
+
+    sheet_meta = sheets_service.spreadsheets().get(
+        spreadsheetId=spreadsheet_id,
+        fields="sheets(properties(sheetId,gridProperties(rowCount)),rowGroups(range,collapsed))",
+    ).execute()
+    target_sheet_meta = next(
+        (
+            sheet
+            for sheet in sheet_meta.get("sheets", [])
+            if sheet.get("properties", {}).get("sheetId") == sheet_id
+        ),
+        None,
+    )
+    if target_sheet_meta is None:
+        return
+    row_count = (target_sheet_meta.get("properties", {}).get("gridProperties") or {}).get("rowCount", 0)
+    if row_count <= header_row_count:
+        return
+
+    date_column_a1 = _column_index_to_a1(date_column_index)
+    data_range = f"{sheet_name}!{date_column_a1}{header_row_count + 1}:{date_column_a1}{row_count}"
+    date_values = _get_values(sheets_service, spreadsheet_id, data_range)
+
+    current_month_key = (datetime.now().year, datetime.now().month)
+    past_row_start: int | None = None  # 0-based sheet row index (first past-month row)
+    past_row_end: int | None = None  # 0-based, exclusive
+    last_known_is_past = False  # carries the classification across blank separator rows
+    for offset, row in enumerate(date_values):
+        row_index = header_row_count + offset
+        month_key = _parse_month_key(row[0] if row else "")
+        is_past = (month_key < current_month_key) if month_key is not None else last_known_is_past
+        if month_key is not None:
+            last_known_is_past = is_past
+        if is_past:
+            if past_row_start is None:
+                past_row_start = row_index
+            past_row_end = row_index + 1
+
+    existing_row_groups = [
+        group
+        for group in (target_sheet_meta.get("rowGroups") or [])
+        if group.get("range", {}).get("dimension") == "ROWS"
+    ]
+
+    if past_row_start is None:
+        if existing_row_groups:
+            _delete_row_groups(sheets_service, spreadsheet_id, sheet_id, existing_row_groups)
+        return
+
+    desired_range = {
+        "sheetId": sheet_id,
+        "dimension": "ROWS",
+        "startIndex": past_row_start,
+        "endIndex": past_row_end,
+    }
+    if len(existing_row_groups) == 1:
+        existing_range = existing_row_groups[0].get("range", {})
+        already_collapsed = existing_row_groups[0].get("collapsed", False)
+        if (
+            existing_range.get("startIndex") == past_row_start
+            and existing_range.get("endIndex") == past_row_end
+            and already_collapsed
+        ):
+            return  # already correct, no API calls needed
+
+    if existing_row_groups:
+        _delete_row_groups(sheets_service, spreadsheet_id, sheet_id, existing_row_groups)
+    sheets_service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={
+            "requests": [
+                {"addDimensionGroup": {"range": desired_range}},
+                {
+                    "updateDimensionGroup": {
+                        "dimensionGroup": {"range": desired_range, "collapsed": True},
+                        "fields": "collapsed",
+                    }
+                },
+            ]
+        },
+    ).execute()
+
+
+def _delete_row_groups(sheets_service, spreadsheet_id: str, sheet_id: int, row_groups: list[dict]) -> None:
+    sheets_service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={
+            "requests": [
+                {"deleteDimensionGroup": {"range": {**group["range"], "sheetId": sheet_id}}}
+                for group in row_groups
+            ]
+        },
+    ).execute()
+
+
 def _get_values(sheets_service, spreadsheet_id: str, range_name: str) -> list[list[Any]]:
     result = sheets_service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=range_name).execute()
     return result.get("values", [])
@@ -909,6 +1067,14 @@ def _insert_into_existing_spreadsheet(
         spreadsheet_id,
         spreadsheet,
         sheet_data.get("packaging_facts_rows") or [],
+    )
+    _ensure_historical_row_groups(
+        sheets_service,
+        spreadsheet_id,
+        target_sheet["sheetId"],
+        target_sheet_name,
+        header_row_count,
+        target_headers,
     )
 
     return {

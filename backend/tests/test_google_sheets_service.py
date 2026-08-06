@@ -15,7 +15,10 @@ from app.services.google_sheets_service import (  # noqa: E402
     PACKAGING_FACTS_SHEET_HEADERS,
     SHARED_INVOICE_HEADERS,
     _create_invoice_review_spreadsheet,
+    _ensure_historical_row_groups,
+    _historical_grouping_date_column_index,
     _insert_into_existing_spreadsheet,
+    _parse_month_key,
     _project_shared_rows_to_target_headers,
     _remap_source_rows_to_shared_sheet,
     _table_rows_as_dicts,
@@ -926,3 +929,189 @@ def test_create_invoice_review_spreadsheet_rejects_service_account_mode(monkeypa
         _create_invoice_review_spreadsheet(
             sheets_service=None, drive_service=None, sheet_data={}
         )
+
+
+def test_parse_month_key_handles_upload_timestamp_and_document_date_formats():
+    assert _parse_month_key("2026-07-20 08:00:00") == (2026, 7)
+    assert _parse_month_key("20.07.2026") == (2026, 7)
+    assert _parse_month_key("5.7.2026") == (2026, 7)
+    assert _parse_month_key("") is None
+    assert _parse_month_key(None) is None
+    assert _parse_month_key("не дата") is None
+
+
+def test_historical_grouping_date_column_index_prefers_upload_timestamp():
+    assert _historical_grouping_date_column_index(SHARED_INVOICE_HEADERS) == SHARED_INVOICE_HEADERS.index(
+        "Время загрузки документа"
+    )
+    headers_without_upload_time = [h for h in SHARED_INVOICE_HEADERS if h != "Время загрузки документа"]
+    assert _historical_grouping_date_column_index(headers_without_upload_time) == headers_without_upload_time.index(
+        "Дата документа"
+    )
+    assert _historical_grouping_date_column_index(["Поставщик"]) is None
+
+
+class _FakeGroupingValuesResourceExec:
+    """Wraps per-row values so blank rows still yield an empty cell instead of
+    being skipped by a truthy filter (a real Sheets API response trims
+    trailing/empty cells per row, not whole rows)."""
+
+    def __init__(self, column_values):
+        self.column_values = column_values
+
+    def get(self, **kwargs):
+        rows = [[v] if v else [] for v in self.column_values]
+        return _FakeExecute({"values": rows})
+
+
+class _FakeGroupingSpreadsheetsResource:
+    def __init__(self, row_count, row_groups, column_values):
+        self.row_count = row_count
+        self.row_groups = row_groups
+        self.values_resource = _FakeGroupingValuesResourceExec(column_values)
+        self.batch_updates = []
+
+    def get(self, spreadsheetId, fields):
+        return _FakeExecute(
+            {
+                "sheets": [
+                    {
+                        "properties": {
+                            "sheetId": 321,
+                            "gridProperties": {"rowCount": self.row_count},
+                        },
+                        "rowGroups": self.row_groups,
+                    }
+                ]
+            }
+        )
+
+    def batchUpdate(self, spreadsheetId, body):
+        self.batch_updates.append(body)
+        return _FakeExecute({})
+
+    def values(self):
+        return self.values_resource
+
+
+class _FakeGroupingSheetsService:
+    def __init__(self, row_count, row_groups=None, column_values=None):
+        self.spreadsheets_resource = _FakeGroupingSpreadsheetsResource(
+            row_count, row_groups or [], column_values or []
+        )
+
+    def spreadsheets(self):
+        return self.spreadsheets_resource
+
+
+class _FixedNow:
+    @staticmethod
+    def now():
+        return SimpleNamespace(year=2026, month=8)
+
+
+# header_row_count=2 -> data starts at 0-based row index 2. Row 2 ("2026-08-05...")
+# and row 3 (blank separator) are the current month; row 4 ("2026-07-20...") starts
+# the past block, row 5 is a blank separator that must carry the "past" state
+# forward, row 6 ("2026-07-01...") extends it -> desired group is rows [4, 7).
+_PAST_MONTH_COLUMN_VALUES = [
+    "2026-08-05 10:00:00",
+    "",
+    "2026-07-20 08:00:00",
+    "",
+    "2026-07-01 09:00:00",
+]
+
+
+def test_ensure_historical_row_groups_creates_and_collapses_past_month_block(monkeypatch):
+    monkeypatch.setattr(google_sheets_service_module, "datetime", _FixedNow)
+    fake_service = _FakeGroupingSheetsService(row_count=7, column_values=_PAST_MONTH_COLUMN_VALUES)
+
+    _ensure_historical_row_groups(
+        fake_service, "sheet-id", 321, "Накладная", 2, SHARED_INVOICE_HEADERS
+    )
+
+    batch_updates = fake_service.spreadsheets_resource.batch_updates
+    assert len(batch_updates) == 1
+    requests = batch_updates[0]["requests"]
+    desired_range = {"sheetId": 321, "dimension": "ROWS", "startIndex": 4, "endIndex": 7}
+    assert requests[0] == {"addDimensionGroup": {"range": desired_range}}
+    assert requests[1] == {
+        "updateDimensionGroup": {
+            "dimensionGroup": {"range": desired_range, "collapsed": True},
+            "fields": "collapsed",
+        }
+    }
+
+
+def test_ensure_historical_row_groups_is_idempotent_when_already_correct(monkeypatch):
+    monkeypatch.setattr(google_sheets_service_module, "datetime", _FixedNow)
+    existing_group = {
+        "range": {"sheetId": 321, "dimension": "ROWS", "startIndex": 4, "endIndex": 7},
+        "collapsed": True,
+    }
+    fake_service = _FakeGroupingSheetsService(
+        row_count=7, row_groups=[existing_group], column_values=_PAST_MONTH_COLUMN_VALUES
+    )
+
+    _ensure_historical_row_groups(
+        fake_service, "sheet-id", 321, "Накладная", 2, SHARED_INVOICE_HEADERS
+    )
+
+    assert fake_service.spreadsheets_resource.batch_updates == []
+
+
+def test_ensure_historical_row_groups_reconciles_stale_range(monkeypatch):
+    monkeypatch.setattr(google_sheets_service_module, "datetime", _FixedNow)
+    stale_group = {
+        "range": {"sheetId": 321, "dimension": "ROWS", "startIndex": 2, "endIndex": 5},
+        "collapsed": True,
+    }
+    fake_service = _FakeGroupingSheetsService(
+        row_count=7, row_groups=[stale_group], column_values=_PAST_MONTH_COLUMN_VALUES
+    )
+
+    _ensure_historical_row_groups(
+        fake_service, "sheet-id", 321, "Накладная", 2, SHARED_INVOICE_HEADERS
+    )
+
+    batch_updates = fake_service.spreadsheets_resource.batch_updates
+    assert len(batch_updates) == 2
+    assert batch_updates[0]["requests"] == [
+        {"deleteDimensionGroup": {"range": stale_group["range"]}}
+    ]
+    desired_range = {"sheetId": 321, "dimension": "ROWS", "startIndex": 4, "endIndex": 7}
+    assert batch_updates[1]["requests"][0] == {"addDimensionGroup": {"range": desired_range}}
+
+
+def test_ensure_historical_row_groups_deletes_group_when_no_past_rows_remain(monkeypatch):
+    monkeypatch.setattr(google_sheets_service_module, "datetime", _FixedNow)
+    stale_group = {
+        "range": {"sheetId": 321, "dimension": "ROWS", "startIndex": 4, "endIndex": 7},
+        "collapsed": True,
+    }
+    all_current_month_values = ["2026-08-05 10:00:00", "", "2026-08-01 09:00:00"]
+    fake_service = _FakeGroupingSheetsService(
+        row_count=5, row_groups=[stale_group], column_values=all_current_month_values
+    )
+
+    _ensure_historical_row_groups(
+        fake_service, "sheet-id", 321, "Накладная", 2, SHARED_INVOICE_HEADERS
+    )
+
+    batch_updates = fake_service.spreadsheets_resource.batch_updates
+    assert len(batch_updates) == 1
+    assert batch_updates[0]["requests"] == [
+        {"deleteDimensionGroup": {"range": stale_group["range"]}}
+    ]
+
+
+def test_ensure_historical_row_groups_noop_when_disabled(monkeypatch):
+    monkeypatch.setattr(settings, "google_sheets_row_grouping_enabled", False)
+    fake_service = _FakeGroupingSheetsService(row_count=7, column_values=_PAST_MONTH_COLUMN_VALUES)
+
+    _ensure_historical_row_groups(
+        fake_service, "sheet-id", 321, "Накладная", 2, SHARED_INVOICE_HEADERS
+    )
+
+    assert fake_service.spreadsheets_resource.batch_updates == []
