@@ -1160,3 +1160,30 @@ once (two files needed line-wrapping to match this repo's style).
 **Not done yet**: initial prompt push (needs `ENV_DEV` credentials), MR,
 merge, and live verification of a prompt-linked trace in the Langfuse UI —
 same open items as the `autosnab_mvp` side.
+
+## `dry_weight_unknown` prompt-scope fix ported, 2026-08-07
+
+Found via today's Max chat read: Lilia re-hit the exact bug her 2026-07-31
+report already fixed in `autosnab_mvp` (commit `373a7aa`, 2026-08-01) — the
+fix was never ported here. Since the live bot she actually uses has run on
+this repo's GitLab dev environment since the 2026-08-04 proxy-fix
+switchover, she had never actually been running the fixed prompt.
+
+Ported the exact same prompt diff onto a new branch
+`fix/dry-weight-unknown-prompt-scope` (off `develop`, commit `dbf44ee`):
+`dry_weight_unknown` in `openai_invoice_parser_service.py`'s `SYSTEM_PROMPT`
+now only fires alongside `in_brine`/`in_syrup`/`in_marinade`/`in_oil`, plus
+the two worked examples (`МАСЛИНЫ Б/К 300Г` vs `КЕФИР ФЕРМЕРСКИЙ 800Г`).
+Prompt-only change, no schema/code logic touched — diff verified
+line-for-line identical to the `autosnab_mvp` source commit.
+
+**Tests**: `test_openai_invoice_pipeline.py` 55/55 passed. Full suite
+(excluding `test_receiving.py`): 320 passed / 2 skipped. `test_receiving.py`:
+8 failed / 32 passed — same 8 pre-existing failures as this repo's
+documented baseline, confirmed identical, zero regressions.
+
+Pushed to `origin` and MR `!34` opened (`fix/dry-weight-unknown-prompt-scope`
+→ `develop`) via the GitLab REST API using the stored credential (token never
+printed). **Not done yet**: not merged, not deployed — awaiting user
+merge/deploy decision. Full detail and the original root-cause finding:
+`docs/wiki/unit-conversion-rules.md` → "Follow-up, 2026-08-07".

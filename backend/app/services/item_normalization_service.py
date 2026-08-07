@@ -103,6 +103,20 @@ def normalize_item_candidate(item: NormalizedInvoiceItem) -> list[dict[str, str]
     item.accounting_unit_candidate = accounting_unit or _normalize_unit(item.accounting_unit_candidate)
     item.accounting_quantity_candidate = _multiply(quantity, multiplier)
 
+    if (
+        quantity is not None
+        and document_unit
+        and re.fullmatch(r"\d+([.,]\d+)?", document_unit)
+        and _numbers_equal(_number(document_unit), quantity)
+    ):
+        issues.append(
+            _issue(
+                "quantity_document",
+                "Единица измерения распознана как числовой код ОКЕИ, совпадающий "
+                "со значением количества — похоже, при чтении таблицы перепутаны "
+                "колонки «Единица измерения (код)» и «Количество».",
+            )
+        )
     if re.search(r"\b(?:САЛФЕТК|ЛИСТ)", item.clean_name, re.IGNORECASE) and item.package.unit == "л":
         issues.append(_issue("package", "Единица «л» может означать листы, а не литры."))
     if item.needs_review:
