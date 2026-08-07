@@ -1184,8 +1184,10 @@ documented baseline, confirmed identical, zero regressions.
 
 Pushed to `origin` and MR `!34` opened (`fix/dry-weight-unknown-prompt-scope`
 → `develop`) via the GitLab REST API using the stored credential (token never
-printed). **Not done yet**: not merged, not deployed — awaiting user
-merge/deploy decision. Full detail and the original root-cause finding:
+printed). **Merged into `develop` 2026-08-07** (`1633c8c`, source branch
+deleted) — merged separately, not by this session directly, confirmed via
+API/git log when checking MR state before merging `!35`. **Not yet
+deployed**. Full detail and the original root-cause finding:
 `docs/wiki/unit-conversion-rules.md` → "Follow-up, 2026-08-07".
 
 ## OKEI unit-code/quantity column-confusion fix ported, 2026-08-07
@@ -1212,7 +1214,14 @@ documented baseline, zero regressions.
 
 Pushed to `origin` and MR `!35` opened
 (`fix/okei-code-quantity-column-confusion` → `develop`) via the GitLab REST
-API using the stored credential (token never printed). **Not done yet**: not
-merged, not deployed. Full detail:
+API using the stored credential (token never printed). CI pipeline `#933`
+passed; **merged into `develop` 2026-08-07** via a real browser click on
+GitLab's Merge button (`38ac233`, source branch deleted) — chosen over the
+API per `[[gitlab-ci-actor-identity-access]]`/past sessions' experience that
+merge actions on this GitLab instance are more reliable from a real click
+than a scripted API call. Local `develop` re-synced and confirmed both
+`1633c8c` (`!34`) and `38ac233` (`!35`) present, both source branches
+confirmed deleted on `origin` after `git fetch --prune`. **Not yet
+deployed** anywhere. Full detail:
 `docs/wiki/unit-conversion-rules.md` → "Root cause found and fixed,
 2026-08-07".

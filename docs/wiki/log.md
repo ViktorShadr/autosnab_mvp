@@ -1757,3 +1757,11 @@
 - Запушено, MR `!35` открыт через GitLab REST API (сохранённый токен, не выводился в чат). Не смержено, не задеплоено.
 - Заодно обнаружено и исправлено: собственная ветка `fix/okei-code-quantity-column-confusion` в `autosnab_mvp` уже была запушена на GitHub (видимо, из более ранней, сжатой части этой же сессии) — PR туда пока не открывался, не просили.
 - Полный разбор: `docs/wiki/auto-snab-document-parser-release-repo.md` → "OKEI unit-code/quantity column-confusion fix ported, 2026-08-07".
+
+## [2026-08-07] (финал) okei-quantity-bug | Оба MR в auto-snab-document-parser смерджены
+
+- Пользователь попросил смерджить оба MR. Проверка через GitLab API показала: MR `!34` (dry_weight_unknown) уже был смержен ранее (не этой сессией) — `1633c8c`. MR `!35` (ОКЕИ-фикс) был открыт, CI-пайплайн `#933` ещё выполнялся — дождался (~2.5 мин), пайплайн прошёл успешно.
+- Смерджил `!35` через реальный клик в браузере на кнопке Merge (не через API — по опыту `[[gitlab-ci-actor-identity-access]]` мерджи на этом GitLab надёжнее с реального клика), коммит `38ac233`, source branch удалена.
+- Локальный `develop` в `auto-snab-document-parser` синхронизирован — оба мерджа (`1633c8c`, `38ac233`) присутствуют, обе исходные ветки подтверждённо удалены на origin после `git fetch --prune`.
+- Оба фикса (`dry_weight_unknown` narrowing и ОКЕИ-путаница) теперь в `develop` `auto-snab-document-parser`, но не задеплоены никуда.
+- Код не менялся, только merge-действия и вики-writeback. Полный разбор: `docs/wiki/auto-snab-document-parser-release-repo.md`.
