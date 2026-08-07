@@ -1748,3 +1748,12 @@
 - 4 новых теста в `test_openai_invoice_pipeline.py` (позитивный/два негативных случая для guard + assert на упоминание "ОКЕИ" в промпте). Полный бэкенд-сьют без изменений в остальном: 1 уже известное pre-existing падение (`test_document_extraction_service.py`), 10 уже известных (`test_receiving.py`) — оба подтверждены идентичными через `git stash`, ноль регрессий.
 - Изменения были сделаны поверх незакоммиченных правок на ветке `feature/organization-provisioning-seam` (не относящейся к этому багу) — перед коммитом всё аккуратно перенесено (`git stash` → новая ветка от `develop` → `git stash pop`) на отдельную ветку, чтобы не смешивать несвязанные фичи.
 - Не запушено, MR не открыт, не задеплоено — ждёт решения пользователя. Полный разбор: `docs/wiki/unit-conversion-rules.md` → "Follow-up, 2026-08-07".
+
+## [2026-08-07] (ещё позже) okei-quantity-bug | Фикс путаницы ОКЕИ-кода портирован в auto-snab-document-parser, MR !35 открыт
+
+- Пользователь попросил обновить `auto-snab-document-parser` с учётом последних изменений — портирован фикс путаницы ОКЕИ-кода/количества (см. предыдущую запись этого журнала).
+- Новая ветка `fix/okei-code-quantity-column-confusion` (от `develop`, после того как туда уже смержен `dry_weight_unknown`-фикс из MR `!34`): идентичный диф в `SYSTEM_PROMPT` и `normalize_item_candidate`, 4 теста, `ruff format`/`check` чисто.
+- Тесты: 58/58 в целевом файле, 323 passed/2 skipped в остальном сьюте, 8 уже известных pre-existing падений в `test_receiving.py` — те же, что и раньше, ноль регрессий.
+- Запушено, MR `!35` открыт через GitLab REST API (сохранённый токен, не выводился в чат). Не смержено, не задеплоено.
+- Заодно обнаружено и исправлено: собственная ветка `fix/okei-code-quantity-column-confusion` в `autosnab_mvp` уже была запушена на GitHub (видимо, из более ранней, сжатой части этой же сессии) — PR туда пока не открывался, не просили.
+- Полный разбор: `docs/wiki/auto-snab-document-parser-release-repo.md` → "OKEI unit-code/quantity column-confusion fix ported, 2026-08-07".

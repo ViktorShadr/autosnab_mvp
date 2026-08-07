@@ -1208,10 +1208,21 @@ backend suite unchanged elsewhere: 1 already-known pre-existing failure in
 `test_receiving.py` — both confirmed identical via `git stash`, zero
 regressions.
 
-**Not done yet**: not pushed, no MR, not deployed. Also still open: Lilia's
-2026-08-07 22:22 request to re-upload накл `114551` to see if it
-reproduces, and porting this same fix to `auto-snab-document-parser` once
-verified (same pattern as the `dry_weight_unknown` port gap).
+This repo's own branch (`fix/okei-code-quantity-column-confusion`) is pushed
+to `origin` on GitHub; no PR opened yet (not asked for).
+
+**Ported to `auto-snab-document-parser`, same session**: identical diff
+applied on branch `fix/okei-code-quantity-column-confusion` (off `develop`,
+that repo's dry_weight_unknown fix — MR `!34` — already merged there first).
+4 matching tests, `ruff format`/`check` clean, 323 passed / 2 skipped, same 8
+pre-existing `test_receiving.py` failures — zero regressions. Pushed, MR
+`!35` opened
+(`https://gitlab.testant.online/antipov-backend/auto-snab-document-parser/-/merge_requests/35`).
+Full detail: `docs/wiki/auto-snab-document-parser-release-repo.md`.
+
+**Not done yet**: neither PR/MR merged, neither repo deployed. Also still
+open: Lilia's 2026-08-07 22:22 request to re-upload накл `114551` to see if
+it reproduces.
 
 ## Open questions before production rollout
 

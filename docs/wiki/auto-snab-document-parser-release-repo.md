@@ -1187,3 +1187,32 @@ Pushed to `origin` and MR `!34` opened (`fix/dry-weight-unknown-prompt-scope`
 printed). **Not done yet**: not merged, not deployed — awaiting user
 merge/deploy decision. Full detail and the original root-cause finding:
 `docs/wiki/unit-conversion-rules.md` → "Follow-up, 2026-08-07".
+
+## OKEI unit-code/quantity column-confusion fix ported, 2026-08-07
+
+Root-cause investigation and fix done in `autosnab_mvp` this session (full
+trace in `docs/wiki/unit-conversion-rules.md` → "Root cause found and fixed,
+2026-08-07: ОКЕИ unit-code/quantity column confusion") — Lilia's four
+repeated bug reports (882/616, 114551, 2054) of a short ОКЕИ unit code
+landing in `quantity_document` turned out to be a vision-model column
+confusion, not a backend bug; no positional logic anywhere in the pipeline
+touches `document_unit`/`quantity_document`.
+
+Ported the identical diff onto branch `fix/okei-code-quantity-column-confusion`
+(off `develop`, after that repo's `dry_weight_unknown` fix — MR `!34` —
+was already merged): `SYSTEM_PROMPT` now describes the ОКЕИ-code-vs-quantity
+column layout explicitly; `normalize_item_candidate` flags `needs_review`
+when `document_unit` is a bare number equal to `quantity_document`. 4 new
+tests, `ruff format`/`check` clean.
+
+**Tests**: `test_openai_invoice_pipeline.py` 58/58 passed. Full suite
+(excluding `test_receiving.py`): 323 passed / 2 skipped. `test_receiving.py`:
+8 failed / 32 passed — same 8 pre-existing failures as this repo's
+documented baseline, zero regressions.
+
+Pushed to `origin` and MR `!35` opened
+(`fix/okei-code-quantity-column-confusion` → `develop`) via the GitLab REST
+API using the stored credential (token never printed). **Not done yet**: not
+merged, not deployed. Full detail:
+`docs/wiki/unit-conversion-rules.md` → "Root cause found and fixed,
+2026-08-07".
