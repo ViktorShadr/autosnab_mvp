@@ -1225,3 +1225,54 @@ confirmed deleted on `origin` after `git fetch --prune`. **Not yet
 deployed** anywhere. Full detail:
 `docs/wiki/unit-conversion-rules.md` → "Root cause found and fixed,
 2026-08-07".
+
+## Update, 2026-08-09: Andrey's ID-counter fix merged, deploy-blocking lint bug found and fixed, ketchup + calibre fixes, audit script
+
+Full session detail: `docs/wiki/unit-conversion-rules.md` → "Follow-up,
+2026-08-09: Andrey's `feature/invoice-parser-fixes`, deploy-blocking lint
+bug, ketchup and calibre fixes".
+
+Short version: intern Andrey Gomzikov's branch `feature/invoice-parser-
+fixes` (real `sheet_document_id`/`sheet_row_id` system with DB-unique
+indexes, allocated from the live sheet's actual max — fixes the
+Агротрэйд/ИП-Полуян ID-collision Lilia reported 2026-08-08/09) reviewed
+against the actual diff (not his summary), tested, merged (MR `!36`,
+`945df594`). **Found the merge itself silently broke deploy**: post-merge
+pipeline `#964` failed at `lint` (one import out of order in Andrey's diff),
+which gates `build-image`/`deploy-dev` — so `develop` had not actually
+redeployed despite the merge succeeding. Fixed with a one-line `ruff --fix`
+on `fix/develop-lint-import-order` (MR `!38`, merged `8aa0b068`); pipeline
+`#974` tracked for a real green `deploy-dev` this time. Also fixed two gaps
+Andrey's branch didn't cover (confirmed by reading the actual prompt, not
+assuming): ketchup wrongly getting `dry_weight_unknown` (MR `!37`) and
+seafood calibre ratios ("200/300", "61/70") leaking into quantity/weight
+facts (MR `!40`). Added a read-only audit script
+(`scripts/audit_duplicate_sheet_ids.py`, MR `!39`) for Lilia's team to see
+existing ID collisions already in the live sheet (the counter fix only
+prevents new ones). `!36` (Andrey's) and `!38` (the import-order lint fix) are merged into
+`develop`; `!37` (ketchup), `!39` (audit script), and `!40` (calibre) are
+open, not yet merged.
+
+**Second deploy-blocking bug on the same merge**: the post-`!38` deploy
+pipeline (`#974`) failed lint again — `ruff format --check` flagged 6 files,
+hidden until now because the earlier import-order failure aborted the job
+before format-check ran. Fixed on `fix/develop-ruff-format`, MR `!41`
+(pure formatting, zero logic change, full suite still 377/2/8 clean).
+While waiting for `!41`'s pipeline, the GitLab runner became unresponsive
+(`#975`/`#976`/`#977` stuck) — matches a previously-documented incident on
+this instance (2026-08-05 entry), not something fixable from this side.
+Stopped active polling after ~25 min; runner recovered on the next check,
+`!41` merged (`c0b5860e`).
+
+**Deploy confirmed green**: `develop` pipeline `#981` passed all 4 stages
+including `deploy-dev` — first real successful deploy since Andrey's
+original merge (`945df594` → `#964` never actually reached `deploy-dev`
+due to the two lint bugs found and fixed this session).
+
+`!36`, `!38`, and `!41` are merged into `develop` and deployed. `!37`
+(ketchup), `!39` (audit script), and `!40` (calibre) are still open — code
+reviewed and tested, deliberately not self-merged (no independent review).
+All three still need a real live re-test after merge before telling Lilia
+anything is resolved, and the already-deployed ID-counter/OKEI fixes need a
+live re-upload test of накл 114551/2854/616/ТТН 9610429080689 to confirm
+the deploy, not just the code.

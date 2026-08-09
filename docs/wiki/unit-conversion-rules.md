@@ -1224,6 +1224,131 @@ Full detail: `docs/wiki/auto-snab-document-parser-release-repo.md`.
 open: Lilia's 2026-08-07 22:22 request to re-upload накл `114551` to see if
 it reproduces.
 
+## Follow-up, 2026-08-09: Andrey's `feature/invoice-parser-fixes`, deploy-blocking lint bug, ketchup and calibre fixes
+
+Read yesterday's (08-08) and today's Max/Bitrix conversation with Lilia and
+Andrey Gomzikov directly (not from memory) before doing anything. Yesterday's
+critical report: the `ID документа`/`ID строки` counters had restarted from
+1 after a DB reset, so a new "Агротрэйд ООО" document got IDs (82/893)
+already used by an earlier "ИП Полуян" document — since packaging-rule and
+product-catalog mappings are keyed on these IDs, this risked silently
+applying the wrong supplier's rules to the new document. Lilia explicitly
+said to stop uploading until fixed. Same batch of messages also had a large
+QA dump on the `Факты фасовки AI (техн.)` sheet: OKEI codes 166/796/756
+leaking into quantity, seafood calibre ranges ("200/300" mussels, "61/70"
+shrimp) misread as counts/weight, a real 61kg-vs-12kg quantity error, a
+ketchup wrongly flagged `dry_weight_unknown`, and a unit-type mismatch on
+invoice 616. Viktor had delegated part of this to intern Andrey Gomzikov.
+
+**Andrey's branch reviewed and merged**: `feature/invoice-parser-fixes`
+(pushed 2026-08-09 01:16, MR `!36`) was already built on the latest `develop`
+(no conflicts). Read the full diff directly rather than trusting his summary
+message: it adds a real `sheet_document_id`/`sheet_row_id` system (new
+DB columns with **unique indexes**, allocated from the live sheet's actual
+max at write time via `_assign_stable_sheet_technical_ids`, guarded by an
+in-process lock) — this is a materially better fix for the ID-collision bug
+than a simple DB counter, since it self-heals from a DB reset by reading the
+sheet itself. Also extends the OKEI-code map (166/796/112) with a
+line-amount-based quantity repair, fixes invoices 114551 and 2854
+specifically, and hardens supplier/header/second-page/ТТН-МЕТРО extraction.
+Full test suite: 377 passed / 2 skipped, same 8 pre-existing
+`test_receiving.py` failures confirmed via direct comparison against
+`develop` HEAD (not `git stash`, since this was a different branch) — zero
+regressions. Checked the deployment's actual worker config
+(`docker-entrypoint.sh`: plain `uvicorn` with no `--workers` flag, single
+container, no compose `replicas`) — the in-process lock's residual
+multi-worker race risk flagged in planning turned out to be moot, not a real
+gap. Merged via a real browser click (`945df594`).
+
+**Real bug found: the merge itself broke deploy.** The post-merge pipeline
+(`#964` on `develop`) failed at the `lint` stage — Andrey's branch left the
+new `ocr_service` import out of alphabetical order in
+`openai_invoice_parser_service.py` (`ruff` `I001`), which is `allow_failure:
+false` and gates `build-image`/`deploy-dev` entirely. **This meant `develop`
+had not actually redeployed since the merge**, despite the merge itself
+succeeding — caught by reading the actual pipeline job list, not just
+"pipeline passed" on the MR page (that MR pipeline only ran security-scan
+jobs, a separate job set from the branch-push pipeline that does
+build/lint/build-image/deploy). Fixed with a one-line `ruff check --fix
+backend/app/` on a new branch (`fix/develop-lint-import-order`, MR `!38`),
+verified against the pre-existing `tests/` lint debt (22 errors, unrelated,
+confirmed CI only lints `backend/app/` not `tests/`) to make sure this was
+the *only* real blocker. Merged (`8aa0b068`); pipeline `#974` on `develop`
+tracked live for `build-image`/`deploy-dev` to actually go green this time.
+
+**Ketchup / `dry_weight_unknown` fixed** (`fix/dry-weight-unknown-liquid-
+products`, MR `!37`): the 2026-07-31 narrowing only excluded plain
+weighed/volumed products, but never distinguished "a solid product packed in
+a liquid" (olives, brine-packed meat — flags correctly apply) from "a
+product that is itself a liquid" (ketchup, sauces, mayonnaise, oil/syrup/
+honey sold as the product — flags never apply, `declared_package_mass`/
+`unit_volume` already equal the product's own mass/volume, "dry weight" is a
+meaningless concept for them). Added that distinction plus a worked ketchup
+example to `SYSTEM_PROMPT`. 1 new test, full suite unaffected.
+
+**Seafood calibre-ratio misread fixed** (`fix/seafood-calibre-ratio-
+misread`, MR `!40`): prompt now explicitly describes seafood calibre
+notation (`NNN/NNN`, e.g. "200/300", "61/70" — pieces-per-kg size grading,
+not a packaging_fact) with the mussel/shrimp examples from Lilia's report,
+and forbids turning it into any packaging_fact or quantity. Added a
+deterministic guard in `item_normalization_service.py`
+(`_calibre_range`/`_CALIBRE_RATIO_RE`), mirroring the existing OKEI-code
+guard: if `quantity_document` equals either half of a calibre ratio found in
+`raw_name`, attempt the same price×line-amount repair already used for the
+OKEI case; if that fails, flag `needs_review` instead of silently keeping
+the wrong number. 3 new tests (unrepairable-flags, repaired-via-line-amount,
+does-not-false-positive-on-unrelated-quantity). Full suite: 380 passed / 2
+skipped, same 8 known `test_receiving.py` failures — zero regressions.
+
+**Duplicate-sheet-ID audit script added** (`chore/audit-duplicate-sheet-
+ids`, MR `!39`): read-only script (`scripts/audit_duplicate_sheet_ids.py`)
+that reads the live `Накладная` sheet's `ID документа`/`ID строки` columns
+and reports every value that already appears more than once, with supplier/
+invoice-number/date context per occurrence — for Lilia's team to see the
+full extent of data already corrupted before the counter fix shipped
+(the fix only prevents *new* collisions, e.g. the Агротрэйд/Полуян case
+already in the sheet is not retroactively repaired by it). Verified
+structurally (imports/logic resolve correctly, fails only on missing local
+Google OAuth session, which is expected on this workstation with no `.env`)
+but **not run against the live sheet** — no credentials available here;
+needs to be run wherever the backend's real Google credentials are
+reachable (VPS, or a temporary CI debug job per
+`[[temporary-ci-debug-job-technique]]`).
+
+**Second deploy-blocking bug found on the same merge**: pipeline `#974`
+(the real develop deploy attempt, after the import-order fix) failed lint
+again — `ruff format --check` flagged 6 files as unformatted. Root cause:
+the lint job runs `ruff check` before `ruff format --check`, and the
+import-order failure had aborted the job before format-check ever got a
+chance to run on `#964`, hiding this second issue. Fixed with a pure
+`ruff format` (no logic changes) on `fix/develop-ruff-format`, MR `!41`,
+full suite re-confirmed clean (377/2/8, zero regressions).
+
+**GitLab CI runner became unresponsive while waiting for `!41`'s pipeline**
+(`#977`/`#976` stuck `Pending`, `#975` stuck `Canceling` after an explicit
+cancel) — this matches a previously-documented incident on this exact
+GitLab instance (2026-08-05 live-batch-test entry: "перестал отвечать на
+15+ минут без автовосстановления"), not something fixable from this side.
+Stopped active polling after ~25 minutes; the runner recovered on the next
+check, `!41`'s pipeline (`#977`) finished, merged (`c0b5860e`).
+
+**Deploy confirmed green**: the resulting `develop` pipeline (`#981`) passed
+all 4 stages — `build`, `lint`, `build-image`, and critically `deploy-dev`
+— for the first time since Andrey's original merge. `develop` is now
+actually deployed with the ID-counter fix, both lint/format fixes, in the
+real dev environment, not just merged in git.
+
+**Not done this session** (explicitly deferred by the user): moving the
+"Загрузка" select-all checkbox to the top of the `Накладная` sheet
+(Apps Script UI, Lilia's own team's territory) — Lilia's other minor asks
+(multi-page upload combining, historical row cleanup) also untouched.
+**Still needed after this session**: merge MRs `!37`/`!39`/`!40` (open,
+reviewed code but not self-merged), then a real live re-upload test through
+the Telegram bot of накл 114551/2854/616 and the ТТН 9610429080689 case
+(confirming the deployed fix, not just the code), and running the audit
+script for real — before telling Lilia anything is closed out. Full session
+detail also in `docs/wiki/auto-snab-document-parser-release-repo.md`.
+
 ## Open questions before production rollout
 
 - Required quantity and price precision in the target accounting system.
