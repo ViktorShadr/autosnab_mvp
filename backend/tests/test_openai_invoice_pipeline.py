@@ -143,6 +143,7 @@ def test_openai_parser_uses_structured_response_and_returns_legacy_payload(tmp_p
     assert "packaging_facts" in SYSTEM_PROMPT
     assert "packaging_risk_flags" in SYSTEM_PROMPT
     assert "quantity_multiplier" not in SYSTEM_PROMPT
+    assert "ОКЕИ" in SYSTEM_PROMPT
 
 
 def test_openai_parser_records_langfuse_generation_when_enabled(monkeypatch):
@@ -422,6 +423,51 @@ def test_item_normalization_uses_explicit_units_per_package_from_document_column
     assert item.quantity_multiplier == 9.0
     assert item.accounting_quantity_candidate == 18.0
     assert item.accounting_unit_candidate == "л"
+
+
+def test_item_normalization_flags_okei_code_confused_with_quantity():
+    """Root cause traced 2026-08-07 (Lilia's накл 114551/2054 reports): the AI
+    sometimes reads the ОКЕИ unit-code column (e.g. 796=шт, 166=кг) into
+    quantity_document instead of the real count. When document_unit is a bare
+    numeric code equal to quantity_document, flag for review instead of
+    silently writing the wrong number."""
+    item = NormalizedInvoiceItem(
+        raw_name="МЯСО МИДИИ ВАРЕНО-МОРОЖЕНОЕ",
+        document_unit="796",
+        quantity_document=796,
+        confidence=0.95,
+    )
+
+    issues = normalize_item_candidate(item)
+
+    assert item.needs_review is True
+    assert any(issue["field"] == "quantity_document" for issue in issues)
+
+
+def test_item_normalization_does_not_flag_normal_unit_and_quantity():
+    item = NormalizedInvoiceItem(
+        raw_name="БЕДРО Б/К 12КГ АВРОРА",
+        document_unit="кг",
+        quantity_document=12,
+        confidence=0.95,
+    )
+
+    issues = normalize_item_candidate(item)
+
+    assert not any(issue["field"] == "quantity_document" for issue in issues)
+
+
+def test_item_normalization_does_not_flag_numeric_unit_different_from_quantity():
+    item = NormalizedInvoiceItem(
+        raw_name="ТОВАР С НЕТИПИЧНЫМ КОДОМ ЕД.ИЗМ.",
+        document_unit="166",
+        quantity_document=12,
+        confidence=0.95,
+    )
+
+    issues = normalize_item_candidate(item)
+
+    assert not any(issue["field"] == "quantity_document" for issue in issues)
 
 
 def test_packaging_facts_adapter_maps_unit_weight_and_dry_weight():

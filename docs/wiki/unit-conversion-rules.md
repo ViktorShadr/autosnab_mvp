@@ -1068,6 +1068,287 @@ None of the bug reports above (882/616/743/3688 cell-shift/sum/VAT-format
 issues) have been traced to root cause yet — recorded here as open items for
 the next session, cross-reference from `docs/wiki/current-status.md`.
 
+## Follow-up, 2026-08-07 (Max chat with Lilia, read directly in browser, not a raw file)
+
+- **Explained: why the 2026-07-31 `dry_weight_unknown` fix looked like it
+  "didn't stick".** Lilia re-sent the exact same 2026-07-31 instruction
+  ("не должен ставить риск 'сухой вес не указан' для обычных товаров...")
+  and asked "Вот эту мою просьбу сделал да? что-т снова на эти грабли
+  наступила". Checked both repos directly (not memory): `autosnab_mvp`'s
+  `openai_invoice_parser_service.py` has the narrowed prompt (lines 81/85/132
+  — `dry_weight_unknown` only with `in_brine`/`in_syrup`/`in_marinade`/
+  `in_oil`), but `auto-snab-document-parser`'s copy of the same prompt (line
+  87) still has the old unscoped wording — the 2026-07-31 fix was never
+  ported there. Per the 2026-08-04 log entry the live bot Lilia actually uses
+  has been running on `auto-snab-document-parser`'s GitLab dev environment
+  since the proxy fix, not `autosnab_mvp`'s VPS — so she has never actually
+  been running the fixed prompt. **Task**: port the same prompt narrowing
+  (plus the two worked examples) into `auto-snab-document-parser`, deploy,
+  then ask Lilia to re-verify.
+  - Lilia herself later concluded today's specific recurrence was **not**
+    this issue at all (see next item) and said "не смотри пока если делал" —
+    but the underlying deploy gap above is real and independent of that,
+    confirmed by direct repo comparison, not by her report.
+- **New bug found by Lilia: a packaging rule created for one product got
+  applied to a completely different product after a manual product-code
+  rename.** Her account: after uploading a document she manually reassigned
+  one item's product code to a different product with unrelated packaging
+  ("мидии" → later a rule for that row started firing on "пепперони"). Her
+  hypothesis: the packaging-rule draft is keyed off `id строки`/`id
+  документа` rather than the (possibly-changed) product code, so a rename
+  after rule-draft creation leaves the rule pointing at the wrong product.
+  Not investigated in code yet — needs tracing through the Apps Script
+  rule-draft/product-matching path (same area as the 2026-07-24/25 dual
+  packaging-rule-engine findings). **Lilia's own workaround, worth keeping in
+  mind for any future synthetic/test invoices**: vary only invoice number and
+  date, never rename a product on an uploaded document — renaming is what
+  triggers this.
+- **Recurrence of the untraced cell-shift bug (see "Bug, накл 882 and 616"
+  above), same failure class, new example**: накл `114551` (ООО «КОМПАНИЯ
+  ЦЕФЕЙ», мясо мидии, rows 26 and 63 on the live `Накладная` sheet) — unit
+  code `796` (ОКЕИ, likely "кг") lands in the quantity column instead of the
+  real quantity. First upload was manually corrected; two later re-uploads of
+  the same document reproduced the same shift both times. Same open item as
+  882/616, still not traced to a specific function — this is now the third
+  reported instance of the same bug class.
+  - Context: this document is part of the 24-invoice batch the assistant
+    pushed through the bot on 2026-08-05 for the live test
+    (`invoice-bot-live-batch-test-2026-08-05.md`); Lilia is cleaning up that
+    batch's leftovers today (also flagged: several invoices in that batch have
+    incompletely-loaded supplier data, marked red on the sheet — no separate
+    root cause given yet, she said "буду сейчас разбираться").
+- **Process change, not code**: per Pavel, action items should be tracked in
+  Bitrix task checklists going forward, not just decided in chat. Lilia
+  agreed reluctantly ("не нравится битрикс, но придется"). Doesn't change
+  this project's wiki-writeback workflow, but chat-only task tracking may
+  become less complete over time — Bitrix should be checked too if it's
+  accessible.
+- **Later same evening (22:01), confirms the dry_weight_unknown port above
+  was exactly the right call**: Viktor told Lilia directly "да. это было
+  сделано. я просто из своего чернового кода не перенес в боевой бот. сейчас
+  портировать буду" — matches the `auto-snab-document-parser` port done this
+  session (branch `fix/dry-weight-unknown-prompt-scope`, MR `!34`).
+- **Fourth reported instance of the same untraced cell-shift bug class**
+  (see 882/616 and 114551 above): счет-фактура/УПД № `2054` от `28.07.2026`,
+  поставщик ИП Погосян Артур Борисович, item «Бедро Б/К 12 кг Аврора»,
+  live `Накладная` row 73. Lilia's photo of the row shows two adjacent "1"
+  and two adjacent "2,000" values where document unit/quantity should be —
+  same symptom shape (a code/count value landing in the wrong column) as the
+  796-in-quantity cases, though the exact source value wasn't legible in the
+  photo this time. She said she'd fix it manually and asked whether anything
+  further is needed from her side ("надо мне далее делать" — message is
+  slightly cut off/ambiguous, worth confirming with her directly). This is
+  now the fourth independent report of this bug class — strong signal to
+  prioritize root-causing it over the other open items.
+- **Follow-up request (22:22): Lilia asked Viktor to re-upload накл `114551`
+  again** ("попробуй еще раз загрузить") to see if the unit/quantity shift
+  still reproduces — not yet done, needs the source file (should already be
+  in the 2026-08-05 batch-test source set, `~/Загрузки/Накладные`, per that
+  session's dedup list) or a fresh copy from Lilia.
+- Yesterday's (2026-08-06) multi-tenant table-cloning conversation continued
+  slightly (06:51-07:30 today's chat's "Вчера" section): confirmed one
+  reference table per organization (not per user), Lilia will make the clean
+  reference copy while Viktor wires the bot's spreadsheet-target setting to
+  it — same open template-sync question as already recorded in
+  `multi-tenant-provisioning-and-document-archive.md`, no new resolution.
+
+## Root cause found and fixed, 2026-08-07: ОКЕИ unit-code/quantity column confusion
+
+Traced the untraced cell-shift bug from the "Bug, накл 882 and 616" and
+"Follow-up, 2026-08-07" entries above, now reported four times (882/616,
+114551, and счёт-фактура № `2054`).
+
+**Trace**: `document_unit`/`quantity_document`/`unit`/`quantity` are direct
+fields on the AI-facing schema (`InvoiceParsedItem`,
+`app/schemas/invoice_parser.py:77-82`) with no per-field
+`Field(description=...)` — all semantic guidance comes only from the
+free-text `SYSTEM_PROMPT`. Following these fields end to end:
+`item_normalization_service.normalize_item_candidate` (lines 81-86) copies
+`item.quantity_document` straight into `item.quantity` and
+`item.document_unit` straight into `item.unit`, with no recomputation from
+anything else; `invoice_normalization_service.to_legacy_invoice_payload`
+(lines 180-189) passes the same values through unchanged;
+`invoice_review_service.create_invoice_review`/`update_invoice_review`
+(lines 131/184) write them straight into
+`ReceivingItem.received_quantity`/`.unit`; `_shared_invoice_item_row` (lines
+807/810) reads those same DB fields with no further transformation. **No
+positional/index-based logic touches these two fields anywhere in the
+backend** — whatever lands in the sheet's "Кол-во в документе"/"Ед.изм. в
+документе" columns is exactly what the AI model returned in JSON, verbatim.
+
+**Conclusion**: this is not a backend bug. The standard УПД/счет-фактура/
+ТОРГ-12 table layout (confirmed directly from Lilia's photo of накл `2054`)
+puts the "Единица измерения" column's ОКЕИ numeric code (e.g. 796=штука,
+166=килограмм) immediately next to the "Количество (объем)" column — two
+short adjacent numbers, a classic vision-model confusion source on a
+blurry/skewed photo. All four reported instances show exactly this pattern:
+a small OKEI-code-like number landing in the quantity field.
+
+**Fix, branch `fix/okei-code-quantity-column-confusion`** (off `develop`,
+not yet pushed):
+1. `SYSTEM_PROMPT` (`openai_invoice_parser_service.py`) now explicitly
+   describes this column layout and instructs the model never to take
+   `quantity_document` from the ОКЕИ code column, with a self-check
+   instruction: if the extracted quantity numerically equals the adjacent
+   unit code, re-read the row and take quantity from the actual
+   "Количество"/"Кол-во"/"Объем" column, or flag `needs_review` if still
+   unsure.
+2. **Defense-in-depth in code**: `normalize_item_candidate`
+   (`item_normalization_service.py`) now flags `needs_review=true` whenever
+   `document_unit` is a bare numeric string equal to `quantity_document` —
+   catches the case even if the prompt fix doesn't fully prevent it,
+   instead of silently writing the wrong number.
+
+**Tests**: 4 new tests in `test_openai_invoice_pipeline.py` (one confirms
+the guard fires on the exact 796/796 pattern, two confirm it doesn't
+false-positive on normal unit/quantity pairs or on a numeric-unit-but-
+different-value case, one asserts "ОКЕИ" appears in `SYSTEM_PROMPT`). Full
+backend suite unchanged elsewhere: 1 already-known pre-existing failure in
+`test_document_extraction_service.py`, 10 already-known in
+`test_receiving.py` — both confirmed identical via `git stash`, zero
+regressions.
+
+This repo's own branch (`fix/okei-code-quantity-column-confusion`) is pushed
+to `origin` on GitHub; no PR opened yet (not asked for).
+
+**Ported to `auto-snab-document-parser`, same session**: identical diff
+applied on branch `fix/okei-code-quantity-column-confusion` (off `develop`,
+that repo's dry_weight_unknown fix — MR `!34` — already merged there first).
+4 matching tests, `ruff format`/`check` clean, 323 passed / 2 skipped, same 8
+pre-existing `test_receiving.py` failures — zero regressions. Pushed, MR
+`!35` opened
+(`https://gitlab.testant.online/antipov-backend/auto-snab-document-parser/-/merge_requests/35`).
+Full detail: `docs/wiki/auto-snab-document-parser-release-repo.md`.
+
+**Not done yet**: neither PR/MR merged, neither repo deployed. Also still
+open: Lilia's 2026-08-07 22:22 request to re-upload накл `114551` to see if
+it reproduces.
+
+## Follow-up, 2026-08-09: Andrey's `feature/invoice-parser-fixes`, deploy-blocking lint bug, ketchup and calibre fixes
+
+Read yesterday's (08-08) and today's Max/Bitrix conversation with Lilia and
+Andrey Gomzikov directly (not from memory) before doing anything. Yesterday's
+critical report: the `ID документа`/`ID строки` counters had restarted from
+1 after a DB reset, so a new "Агротрэйд ООО" document got IDs (82/893)
+already used by an earlier "ИП Полуян" document — since packaging-rule and
+product-catalog mappings are keyed on these IDs, this risked silently
+applying the wrong supplier's rules to the new document. Lilia explicitly
+said to stop uploading until fixed. Same batch of messages also had a large
+QA dump on the `Факты фасовки AI (техн.)` sheet: OKEI codes 166/796/756
+leaking into quantity, seafood calibre ranges ("200/300" mussels, "61/70"
+shrimp) misread as counts/weight, a real 61kg-vs-12kg quantity error, a
+ketchup wrongly flagged `dry_weight_unknown`, and a unit-type mismatch on
+invoice 616. Viktor had delegated part of this to intern Andrey Gomzikov.
+
+**Andrey's branch reviewed and merged**: `feature/invoice-parser-fixes`
+(pushed 2026-08-09 01:16, MR `!36`) was already built on the latest `develop`
+(no conflicts). Read the full diff directly rather than trusting his summary
+message: it adds a real `sheet_document_id`/`sheet_row_id` system (new
+DB columns with **unique indexes**, allocated from the live sheet's actual
+max at write time via `_assign_stable_sheet_technical_ids`, guarded by an
+in-process lock) — this is a materially better fix for the ID-collision bug
+than a simple DB counter, since it self-heals from a DB reset by reading the
+sheet itself. Also extends the OKEI-code map (166/796/112) with a
+line-amount-based quantity repair, fixes invoices 114551 and 2854
+specifically, and hardens supplier/header/second-page/ТТН-МЕТРО extraction.
+Full test suite: 377 passed / 2 skipped, same 8 pre-existing
+`test_receiving.py` failures confirmed via direct comparison against
+`develop` HEAD (not `git stash`, since this was a different branch) — zero
+regressions. Checked the deployment's actual worker config
+(`docker-entrypoint.sh`: plain `uvicorn` with no `--workers` flag, single
+container, no compose `replicas`) — the in-process lock's residual
+multi-worker race risk flagged in planning turned out to be moot, not a real
+gap. Merged via a real browser click (`945df594`).
+
+**Real bug found: the merge itself broke deploy.** The post-merge pipeline
+(`#964` on `develop`) failed at the `lint` stage — Andrey's branch left the
+new `ocr_service` import out of alphabetical order in
+`openai_invoice_parser_service.py` (`ruff` `I001`), which is `allow_failure:
+false` and gates `build-image`/`deploy-dev` entirely. **This meant `develop`
+had not actually redeployed since the merge**, despite the merge itself
+succeeding — caught by reading the actual pipeline job list, not just
+"pipeline passed" on the MR page (that MR pipeline only ran security-scan
+jobs, a separate job set from the branch-push pipeline that does
+build/lint/build-image/deploy). Fixed with a one-line `ruff check --fix
+backend/app/` on a new branch (`fix/develop-lint-import-order`, MR `!38`),
+verified against the pre-existing `tests/` lint debt (22 errors, unrelated,
+confirmed CI only lints `backend/app/` not `tests/`) to make sure this was
+the *only* real blocker. Merged (`8aa0b068`); pipeline `#974` on `develop`
+tracked live for `build-image`/`deploy-dev` to actually go green this time.
+
+**Ketchup / `dry_weight_unknown` fixed** (`fix/dry-weight-unknown-liquid-
+products`, MR `!37`): the 2026-07-31 narrowing only excluded plain
+weighed/volumed products, but never distinguished "a solid product packed in
+a liquid" (olives, brine-packed meat — flags correctly apply) from "a
+product that is itself a liquid" (ketchup, sauces, mayonnaise, oil/syrup/
+honey sold as the product — flags never apply, `declared_package_mass`/
+`unit_volume` already equal the product's own mass/volume, "dry weight" is a
+meaningless concept for them). Added that distinction plus a worked ketchup
+example to `SYSTEM_PROMPT`. 1 new test, full suite unaffected.
+
+**Seafood calibre-ratio misread fixed** (`fix/seafood-calibre-ratio-
+misread`, MR `!40`): prompt now explicitly describes seafood calibre
+notation (`NNN/NNN`, e.g. "200/300", "61/70" — pieces-per-kg size grading,
+not a packaging_fact) with the mussel/shrimp examples from Lilia's report,
+and forbids turning it into any packaging_fact or quantity. Added a
+deterministic guard in `item_normalization_service.py`
+(`_calibre_range`/`_CALIBRE_RATIO_RE`), mirroring the existing OKEI-code
+guard: if `quantity_document` equals either half of a calibre ratio found in
+`raw_name`, attempt the same price×line-amount repair already used for the
+OKEI case; if that fails, flag `needs_review` instead of silently keeping
+the wrong number. 3 new tests (unrepairable-flags, repaired-via-line-amount,
+does-not-false-positive-on-unrelated-quantity). Full suite: 380 passed / 2
+skipped, same 8 known `test_receiving.py` failures — zero regressions.
+
+**Duplicate-sheet-ID audit script added** (`chore/audit-duplicate-sheet-
+ids`, MR `!39`): read-only script (`scripts/audit_duplicate_sheet_ids.py`)
+that reads the live `Накладная` sheet's `ID документа`/`ID строки` columns
+and reports every value that already appears more than once, with supplier/
+invoice-number/date context per occurrence — for Lilia's team to see the
+full extent of data already corrupted before the counter fix shipped
+(the fix only prevents *new* collisions, e.g. the Агротрэйд/Полуян case
+already in the sheet is not retroactively repaired by it). Verified
+structurally (imports/logic resolve correctly, fails only on missing local
+Google OAuth session, which is expected on this workstation with no `.env`)
+but **not run against the live sheet** — no credentials available here;
+needs to be run wherever the backend's real Google credentials are
+reachable (VPS, or a temporary CI debug job per
+`[[temporary-ci-debug-job-technique]]`).
+
+**Second deploy-blocking bug found on the same merge**: pipeline `#974`
+(the real develop deploy attempt, after the import-order fix) failed lint
+again — `ruff format --check` flagged 6 files as unformatted. Root cause:
+the lint job runs `ruff check` before `ruff format --check`, and the
+import-order failure had aborted the job before format-check ever got a
+chance to run on `#964`, hiding this second issue. Fixed with a pure
+`ruff format` (no logic changes) on `fix/develop-ruff-format`, MR `!41`,
+full suite re-confirmed clean (377/2/8, zero regressions).
+
+**GitLab CI runner became unresponsive while waiting for `!41`'s pipeline**
+(`#977`/`#976` stuck `Pending`, `#975` stuck `Canceling` after an explicit
+cancel) — this matches a previously-documented incident on this exact
+GitLab instance (2026-08-05 live-batch-test entry: "перестал отвечать на
+15+ минут без автовосстановления"), not something fixable from this side.
+Stopped active polling after ~25 minutes; the runner recovered on the next
+check, `!41`'s pipeline (`#977`) finished, merged (`c0b5860e`).
+
+**Deploy confirmed green**: the resulting `develop` pipeline (`#981`) passed
+all 4 stages — `build`, `lint`, `build-image`, and critically `deploy-dev`
+— for the first time since Andrey's original merge. `develop` is now
+actually deployed with the ID-counter fix, both lint/format fixes, in the
+real dev environment, not just merged in git.
+
+**Not done this session** (explicitly deferred by the user): moving the
+"Загрузка" select-all checkbox to the top of the `Накладная` sheet
+(Apps Script UI, Lilia's own team's territory) — Lilia's other minor asks
+(multi-page upload combining, historical row cleanup) also untouched.
+**Still needed after this session**: merge MRs `!37`/`!39`/`!40` (open,
+reviewed code but not self-merged), then a real live re-upload test through
+the Telegram bot of накл 114551/2854/616 and the ТТН 9610429080689 case
+(confirming the deployed fix, not just the code), and running the audit
+script for real — before telling Lilia anything is closed out. Full session
+detail also in `docs/wiki/auto-snab-document-parser-release-repo.md`.
+
 ## Open questions before production rollout
 
 - Required quantity and price precision in the target accounting system.

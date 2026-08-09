@@ -1160,3 +1160,119 @@ once (two files needed line-wrapping to match this repo's style).
 **Not done yet**: initial prompt push (needs `ENV_DEV` credentials), MR,
 merge, and live verification of a prompt-linked trace in the Langfuse UI —
 same open items as the `autosnab_mvp` side.
+
+## `dry_weight_unknown` prompt-scope fix ported, 2026-08-07
+
+Found via today's Max chat read: Lilia re-hit the exact bug her 2026-07-31
+report already fixed in `autosnab_mvp` (commit `373a7aa`, 2026-08-01) — the
+fix was never ported here. Since the live bot she actually uses has run on
+this repo's GitLab dev environment since the 2026-08-04 proxy-fix
+switchover, she had never actually been running the fixed prompt.
+
+Ported the exact same prompt diff onto a new branch
+`fix/dry-weight-unknown-prompt-scope` (off `develop`, commit `dbf44ee`):
+`dry_weight_unknown` in `openai_invoice_parser_service.py`'s `SYSTEM_PROMPT`
+now only fires alongside `in_brine`/`in_syrup`/`in_marinade`/`in_oil`, plus
+the two worked examples (`МАСЛИНЫ Б/К 300Г` vs `КЕФИР ФЕРМЕРСКИЙ 800Г`).
+Prompt-only change, no schema/code logic touched — diff verified
+line-for-line identical to the `autosnab_mvp` source commit.
+
+**Tests**: `test_openai_invoice_pipeline.py` 55/55 passed. Full suite
+(excluding `test_receiving.py`): 320 passed / 2 skipped. `test_receiving.py`:
+8 failed / 32 passed — same 8 pre-existing failures as this repo's
+documented baseline, confirmed identical, zero regressions.
+
+Pushed to `origin` and MR `!34` opened (`fix/dry-weight-unknown-prompt-scope`
+→ `develop`) via the GitLab REST API using the stored credential (token never
+printed). **Merged into `develop` 2026-08-07** (`1633c8c`, source branch
+deleted) — merged separately, not by this session directly, confirmed via
+API/git log when checking MR state before merging `!35`. **Not yet
+deployed**. Full detail and the original root-cause finding:
+`docs/wiki/unit-conversion-rules.md` → "Follow-up, 2026-08-07".
+
+## OKEI unit-code/quantity column-confusion fix ported, 2026-08-07
+
+Root-cause investigation and fix done in `autosnab_mvp` this session (full
+trace in `docs/wiki/unit-conversion-rules.md` → "Root cause found and fixed,
+2026-08-07: ОКЕИ unit-code/quantity column confusion") — Lilia's four
+repeated bug reports (882/616, 114551, 2054) of a short ОКЕИ unit code
+landing in `quantity_document` turned out to be a vision-model column
+confusion, not a backend bug; no positional logic anywhere in the pipeline
+touches `document_unit`/`quantity_document`.
+
+Ported the identical diff onto branch `fix/okei-code-quantity-column-confusion`
+(off `develop`, after that repo's `dry_weight_unknown` fix — MR `!34` —
+was already merged): `SYSTEM_PROMPT` now describes the ОКЕИ-code-vs-quantity
+column layout explicitly; `normalize_item_candidate` flags `needs_review`
+when `document_unit` is a bare number equal to `quantity_document`. 4 new
+tests, `ruff format`/`check` clean.
+
+**Tests**: `test_openai_invoice_pipeline.py` 58/58 passed. Full suite
+(excluding `test_receiving.py`): 323 passed / 2 skipped. `test_receiving.py`:
+8 failed / 32 passed — same 8 pre-existing failures as this repo's
+documented baseline, zero regressions.
+
+Pushed to `origin` and MR `!35` opened
+(`fix/okei-code-quantity-column-confusion` → `develop`) via the GitLab REST
+API using the stored credential (token never printed). CI pipeline `#933`
+passed; **merged into `develop` 2026-08-07** via a real browser click on
+GitLab's Merge button (`38ac233`, source branch deleted) — chosen over the
+API per `[[gitlab-ci-actor-identity-access]]`/past sessions' experience that
+merge actions on this GitLab instance are more reliable from a real click
+than a scripted API call. Local `develop` re-synced and confirmed both
+`1633c8c` (`!34`) and `38ac233` (`!35`) present, both source branches
+confirmed deleted on `origin` after `git fetch --prune`. **Not yet
+deployed** anywhere. Full detail:
+`docs/wiki/unit-conversion-rules.md` → "Root cause found and fixed,
+2026-08-07".
+
+## Update, 2026-08-09: Andrey's ID-counter fix merged, deploy-blocking lint bug found and fixed, ketchup + calibre fixes, audit script
+
+Full session detail: `docs/wiki/unit-conversion-rules.md` → "Follow-up,
+2026-08-09: Andrey's `feature/invoice-parser-fixes`, deploy-blocking lint
+bug, ketchup and calibre fixes".
+
+Short version: intern Andrey Gomzikov's branch `feature/invoice-parser-
+fixes` (real `sheet_document_id`/`sheet_row_id` system with DB-unique
+indexes, allocated from the live sheet's actual max — fixes the
+Агротрэйд/ИП-Полуян ID-collision Lilia reported 2026-08-08/09) reviewed
+against the actual diff (not his summary), tested, merged (MR `!36`,
+`945df594`). **Found the merge itself silently broke deploy**: post-merge
+pipeline `#964` failed at `lint` (one import out of order in Andrey's diff),
+which gates `build-image`/`deploy-dev` — so `develop` had not actually
+redeployed despite the merge succeeding. Fixed with a one-line `ruff --fix`
+on `fix/develop-lint-import-order` (MR `!38`, merged `8aa0b068`); pipeline
+`#974` tracked for a real green `deploy-dev` this time. Also fixed two gaps
+Andrey's branch didn't cover (confirmed by reading the actual prompt, not
+assuming): ketchup wrongly getting `dry_weight_unknown` (MR `!37`) and
+seafood calibre ratios ("200/300", "61/70") leaking into quantity/weight
+facts (MR `!40`). Added a read-only audit script
+(`scripts/audit_duplicate_sheet_ids.py`, MR `!39`) for Lilia's team to see
+existing ID collisions already in the live sheet (the counter fix only
+prevents new ones). `!36` (Andrey's) and `!38` (the import-order lint fix) are merged into
+`develop`; `!37` (ketchup), `!39` (audit script), and `!40` (calibre) are
+open, not yet merged.
+
+**Second deploy-blocking bug on the same merge**: the post-`!38` deploy
+pipeline (`#974`) failed lint again — `ruff format --check` flagged 6 files,
+hidden until now because the earlier import-order failure aborted the job
+before format-check ran. Fixed on `fix/develop-ruff-format`, MR `!41`
+(pure formatting, zero logic change, full suite still 377/2/8 clean).
+While waiting for `!41`'s pipeline, the GitLab runner became unresponsive
+(`#975`/`#976`/`#977` stuck) — matches a previously-documented incident on
+this instance (2026-08-05 entry), not something fixable from this side.
+Stopped active polling after ~25 min; runner recovered on the next check,
+`!41` merged (`c0b5860e`).
+
+**Deploy confirmed green**: `develop` pipeline `#981` passed all 4 stages
+including `deploy-dev` — first real successful deploy since Andrey's
+original merge (`945df594` → `#964` never actually reached `deploy-dev`
+due to the two lint bugs found and fixed this session).
+
+`!36`, `!38`, and `!41` are merged into `develop` and deployed. `!37`
+(ketchup), `!39` (audit script), and `!40` (calibre) are still open — code
+reviewed and tested, deliberately not self-merged (no independent review).
+All three still need a real live re-test after merge before telling Lilia
+anything is resolved, and the already-deployed ID-counter/OKEI fixes need a
+live re-upload test of накл 114551/2854/616/ТТН 9610429080689 to confirm
+the deploy, not just the code.
