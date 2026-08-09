@@ -247,6 +247,12 @@ backend/uploads/sbis/*
 
 # Local Codex CLI tool config — workstation-specific, not project data
 .codex/
+
+# Shared wiki/manifests now live in the sibling autosnab-memory repo
+# (github.com/ViktorShadr/autosnab-memory); these are symlinks into it,
+# not real tracked directories. See docs root AGENTS.md/CLAUDE.md.
+/docs/wiki
+/manifests
 /.idea/.gitignore
 /.idea/autosnab_mvp.iml
 /.idea/misc.xml

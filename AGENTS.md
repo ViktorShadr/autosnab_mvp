@@ -2,6 +2,20 @@
 
 这仓库默认走 `wiki-first`，不是 `chat-first`。
 
+## 0. 知识库现在是共享的（symlink，不是本地目录）
+
+`docs/wiki/` 和 `manifests/` 已经不是这个仓库自己的内容——它们是指向同级目录
+`../autosnab-memory`（`github.com/ViktorShadr/autosnab-memory`，private）的符号链接。
+这个仓库和 `auto-snab-document-parser` 共用同一份知识库，供 Viktor（Claude Code）
+和 Andrey（Codex）同步读写，不再各自维护一份会漂移的副本。
+
+- **开始任务前**：`cd ../autosnab-memory && git pull`（如果目录不存在，先
+  `git clone git@github.com:ViktorShadr/autosnab-memory.git ../autosnab-memory`）。
+- **写回知识后**：在 `../autosnab-memory` 里 `git add -A && git commit && git push`——
+  不是在这个仓库里提交，这个仓库根本不追踪 `docs/wiki`/`manifests` 的内容。
+- 下面第 1-4 条里提到的所有路径（`docs/wiki/index.md`、`manifests/raw_sources.csv`
+  等）照常从这个仓库根目录访问即可，symlink 对脚本和相对路径完全透明。
+
 ## 1. 每个新 session 默认先干嘛
 
 只要任务不是纯闲聊，默认先：

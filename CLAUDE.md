@@ -3,6 +3,22 @@
 ## Knowledge System
 This project uses a wiki-first knowledge system. Knowledge lives in `docs/wiki/`, not in chat history.
 
+### The knowledge base is now shared (symlink, not a local directory)
+`docs/wiki/` and `manifests/` are no longer this repo's own content — they are
+symlinks into the sibling directory `../autosnab-memory`
+(`github.com/ViktorShadr/autosnab-memory`, private). This repo and
+`auto-snab-document-parser` share the exact same knowledge base, so Viktor
+(Claude Code) and Andrey (Codex) read/write the same source instead of two
+drifting copies.
+
+- **Before starting work**: `cd ../autosnab-memory && git pull` (clone it first
+  if it isn't present: `git clone git@github.com:ViktorShadr/autosnab-memory.git ../autosnab-memory`).
+- **After any wiki writeback**: commit and push from `../autosnab-memory`, not
+  from this repo — this repo no longer tracks `docs/wiki`/`manifests` content at all.
+- Every path below (`docs/wiki/index.md`, `manifests/raw_sources.csv`, etc.) is
+  still read the normal way from this repo's root — the symlink is transparent
+  to scripts and relative paths.
+
 ## Session Protocol (mandatory)
 
 ### Session Start
