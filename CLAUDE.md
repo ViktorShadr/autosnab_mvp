@@ -1,5 +1,15 @@
 # autosnab_mvp — Claude Rules
 
+> **ARCHIVED (2026-08-09).** This repo is no longer the active development
+> target — all new work goes to `auto-snab-document-parser`
+> (`gitlab.testant.online/antipov-backend/auto-snab-document-parser`, the
+> sole production deploy target). This repo is kept for historical
+> reference and 3 unmerged PRs (row-grouping, document archive,
+> multi-tenant seam) intentionally left open/undecided. The shared
+> knowledge base (`docs/wiki`/`manifests` symlink target) is unaffected —
+> it's still `../autosnab-memory`, shared by both code repos regardless of
+> which one is active.
+
 ## Knowledge System
 This project uses a wiki-first knowledge system. Knowledge lives in `docs/wiki/`, not in chat history.
 

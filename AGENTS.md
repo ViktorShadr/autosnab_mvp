@@ -1,5 +1,12 @@
 # autosnab_mvp Agent Rules
 
+> **ARCHIVED (2026-08-09).** 这个仓库不再是开发目标——所有新工作去
+> `auto-snab-document-parser`（`gitlab.testant.online/antipov-backend/auto-snab-document-parser`，
+> 唯一的 prod 部署目标）。这里留着只是历史参考 + 3 个未合并的 PR
+> （row-grouping、document archive、multi-tenant seam）暂时挂起，未决定。
+> 共享知识库（`docs/wiki`/`manifests` 的 symlink 目标）不受影响，
+> 继续是 `../autosnab-memory`，两个代码仓库都在用同一份。
+
 这仓库默认走 `wiki-first`，不是 `chat-first`。
 
 ## 0. 知识库现在是共享的（symlink，不是本地目录）
